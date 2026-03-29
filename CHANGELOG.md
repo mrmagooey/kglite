@@ -5,6 +5,17 @@ All notable changes to KGLite will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Multi-label nodes** — nodes can carry additional labels beyond their primary type. `CREATE (n:Person:Director {name:"Alice"})` stores `Person` as the primary label and `Director` as an extra label. Extra labels are preserved across saves/loads (backward-compatible with existing `.kgl` files).
+- **`SET n:Label`** — adds an extra label to an existing node. Primary label is immutable.
+- **`REMOVE n:Label`** — removes an extra label from a node. Attempting to remove the primary label returns an error.
+- **`labels(n)`** — now returns a JSON array of all labels (primary + extras), e.g. `["Person", "Director"]`. Previously returned a single-element JSON string.
+- **`n.labels` property access** — resolves to the same JSON array as `labels(n)`.
+- **`"labels"` key in node dicts** — all nodes returned to Python now include a `labels` list alongside the existing `"type"` key.
+
 ## [0.6.18] - 2026-03-30
 
 ### Fixed

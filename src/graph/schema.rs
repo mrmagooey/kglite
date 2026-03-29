@@ -768,6 +768,7 @@ pub struct NodeInfo {
     pub id: Value,
     pub title: Value,
     pub node_type: String,
+    pub extra_labels: Vec<String>,
     pub properties: HashMap<String, Value>,
 }
 
@@ -2758,6 +2759,8 @@ pub struct NodeData {
     pub id: Value,
     pub title: Value,
     pub node_type: String,
+    #[serde(default)]
+    pub extra_labels: Vec<String>,
     pub(crate) properties: PropertyStorage,
 }
 
@@ -2782,6 +2785,7 @@ impl NodeData {
             id,
             title,
             node_type,
+            extra_labels: Vec::new(),
             properties: PropertyStorage::Map(interned_props),
         }
     }
@@ -2803,6 +2807,7 @@ impl NodeData {
             id,
             title,
             node_type,
+            extra_labels: Vec::new(),
             properties: PropertyStorage::from_compact(pairs, schema),
         }
     }
@@ -2819,6 +2824,7 @@ impl NodeData {
             id,
             title,
             node_type,
+            extra_labels: Vec::new(),
             properties: PropertyStorage::from_compact(properties, schema),
         }
     }
@@ -2835,6 +2841,7 @@ impl NodeData {
             id,
             title,
             node_type,
+            extra_labels: Vec::new(),
             properties: PropertyStorage::Map(map),
         }
     }
@@ -2931,6 +2938,7 @@ impl NodeData {
             id: self.id.clone(),
             title: self.title.clone(),
             node_type: self.node_type.clone(),
+            extra_labels: self.extra_labels.clone(),
             properties: self.properties_cloned(interner),
         }
     }
