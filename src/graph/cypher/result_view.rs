@@ -171,16 +171,34 @@ impl ResultView {
             Self::discover_property_keys(&nodes_vec, &graph.interner)
         };
 
-        let mut columns = vec!["type".into(), "title".into(), "id".into()];
+        let mut columns = vec![
+            "type".into(),
+            "title".into(),
+            "id".into(),
+            "labels".into(),
+        ];
         columns.extend(prop_keys.iter().cloned());
 
         let rows: Vec<Vec<PreProcessedValue>> = nodes_vec
             .iter()
             .map(|node| {
+                let mut label_strs: Vec<serde_json::Value> =
+                    std::iter::once(node.node_type.as_str())
+                        .chain(node.extra_labels.iter().map(|s| s.as_str()))
+                        .map(|l| serde_json::Value::String(l.to_string()))
+                        .collect();
+                label_strs.sort_by(|a, b| {
+                    a.as_str().unwrap_or("").cmp(b.as_str().unwrap_or(""))
+                });
+                label_strs.dedup();
+                let labels_value =
+                    PreProcessedValue::ParsedJson(serde_json::Value::Array(label_strs));
+
                 let mut row = vec![
                     PreProcessedValue::Plain(Value::String(node.node_type.clone())),
                     PreProcessedValue::Plain(node.title.clone()),
                     PreProcessedValue::Plain(node.id.clone()),
+                    labels_value,
                 ];
                 for key in &prop_keys {
                     row.push(PreProcessedValue::Plain(
