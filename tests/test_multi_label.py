@@ -1,7 +1,11 @@
 """Tests for multi-label node support: CREATE (n:Primary:Extra), SET n:Label, REMOVE n:Label, labels(n)."""
 
+import os
+import tempfile
+
 import pytest
 
+import kglite
 from kglite import KnowledgeGraph
 
 
@@ -188,3 +192,28 @@ def test_python_dict_labels_after_remove(g):
     nodes = g.select("Person").collect()
     node = nodes[0]
     assert node["labels"] == ["Person"]
+
+
+# ---------------------------------------------------------------------------
+# Save / load roundtrip
+# ---------------------------------------------------------------------------
+
+
+def test_save_load_preserves_extra_labels(g):
+    g.cypher("CREATE (n:Person:Director {name: 'Alice'})")
+    g.cypher("CREATE (n:Person {name: 'Bob'})")
+    g.cypher("MATCH (n:Person {name: 'Bob'}) SET n:Manager")
+
+    with tempfile.NamedTemporaryFile(suffix=".kgl", delete=False) as f:
+        path = f.name
+    try:
+        g.save(path)
+        loaded = kglite.load(path)
+
+        result = loaded.cypher("MATCH (n:Person) RETURN n.name, labels(n) ORDER BY n.name")
+        by_name = {r["n.name"]: r["labels(n)"] for r in result}
+
+        assert set(by_name["Alice"]) == {"Person", "Director"}
+        assert set(by_name["Bob"]) == {"Person", "Manager"}
+    finally:
+        os.unlink(path)
