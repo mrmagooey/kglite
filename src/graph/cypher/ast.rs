@@ -439,11 +439,11 @@ pub enum CreateElement {
     Edge(CreateEdgePattern),
 }
 
-/// Node pattern in CREATE: (var:Label {key: expr, ...})
+/// Node pattern in CREATE: (var:Label:ExtraLabel {key: expr, ...})
 #[derive(Debug, Clone)]
 pub struct CreateNodePattern {
     pub variable: Option<String>,
-    pub label: Option<String>,
+    pub labels: Vec<String>,
     pub properties: Vec<(String, Expression)>,
 }
 

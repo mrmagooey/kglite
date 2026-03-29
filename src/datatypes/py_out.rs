@@ -15,6 +15,13 @@ pub fn nodeinfo_to_pydict(py: Python, node: &NodeInfo) -> PyResult<Py<PyAny>> {
     dict.set_item("title", value_to_py(py, &node.title)?)?;
     dict.set_item("id", value_to_py(py, &node.id)?)?;
 
+    let mut all_labels: Vec<&str> = std::iter::once(node.node_type.as_str())
+        .chain(node.extra_labels.iter().map(|s| s.as_str()))
+        .collect();
+    all_labels.sort_unstable();
+    all_labels.dedup();
+    dict.set_item("labels", PyList::new(py, &all_labels)?)?;
+
     // Always merge properties directly into the main dictionary
     for (k, v) in &node.properties {
         dict.set_item(k, value_to_py(py, v)?)?;

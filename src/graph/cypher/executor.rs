@@ -4399,15 +4399,22 @@ impl<'a> CypherExecutor<'a> {
                 Ok(Value::Null)
             }
             "labels" => {
-                // labels(n) returns list of node labels (as JSON list)
+                // labels(n) returns all labels as a JSON array string
                 if let Some(Expression::Variable(var)) = args.first() {
                     if let Some(&idx) = row.node_bindings.get(var) {
                         if let Some(node) = self.graph.graph.node_weight(idx) {
-                            let node_type = node.get_node_type_ref();
-                            return Ok(Value::String(format!(
-                                "[\"{}\"]",
-                                node_type.replace('\\', "\\\\").replace('"', "\\\"")
-                            )));
+                            let mut all_labels: Vec<String> = std::iter::once(&node.node_type)
+                                .chain(node.extra_labels.iter())
+                                .map(|l| {
+                                    format!(
+                                        "\"{}\"",
+                                        l.replace('\\', "\\\\").replace('"', "\\\"")
+                                    )
+                                })
+                                .collect();
+                            all_labels.sort_unstable();
+                            all_labels.dedup();
+                            return Ok(Value::String(format!("[{}]", all_labels.join(", "))));
                         }
                     }
                 }
@@ -7859,11 +7866,12 @@ fn create_node(
         .or_else(|| properties.get("title"))
         .cloned()
         .unwrap_or_else(|| {
-            let label = node_pat.label.as_deref().unwrap_or("Node");
+            let label = node_pat.labels.first().map(|s| s.as_str()).unwrap_or("Node");
             Value::String(format!("{}_{}", label, graph.graph.node_bound()))
         });
 
-    let label = node_pat.label.clone().unwrap_or_else(|| "Node".to_string());
+    let label = node_pat.labels.first().cloned().unwrap_or_else(|| "Node".to_string());
+    let extra_labels: Vec<String> = node_pat.labels.iter().skip(1).cloned().collect();
 
     // Pre-intern all property keys (borrows only graph.interner)
     let interned_keys: Vec<InternedKey> = properties
@@ -7883,7 +7891,7 @@ fn create_node(
     let schema = Arc::clone(graph.type_schemas.get(&label).unwrap());
 
     // Create compact node using the shared TypeSchema
-    let node_data = NodeData::new_compact(
+    let mut node_data = NodeData::new_compact(
         id,
         title,
         label.clone(),
@@ -7891,6 +7899,7 @@ fn create_node(
         &mut graph.interner,
         &schema,
     );
+    node_data.extra_labels = extra_labels;
 
     let node_idx = graph.graph.add_node(node_data);
 
@@ -8073,10 +8082,15 @@ fn execute_set(
                     }
                 }
                 SetItem::Label { variable, label } => {
-                    return Err(format!(
-                        "SET label (SET {}:{}) is not yet supported",
-                        variable, label
-                    ));
+                    let node_idx = row.node_bindings.get(variable).ok_or_else(|| {
+                        format!("Variable '{}' not bound to a node in SET", variable)
+                    })?;
+                    if let Some(node) = graph.get_node_mut(*node_idx) {
+                        if node.node_type != *label && !node.extra_labels.contains(label) {
+                            node.extra_labels.push(label.clone());
+                            stats.properties_set += 1;
+                        }
+                    }
                 }
             }
         }
@@ -8292,10 +8306,26 @@ fn execute_remove(
                     }
                 }
                 RemoveItem::Label { variable, label } => {
-                    return Err(format!(
-                        "REMOVE label (REMOVE {}:{}) is not supported — kglite uses single node_type",
-                        variable, label
-                    ));
+                    let node_idx = row.node_bindings.get(variable).ok_or_else(|| {
+                        format!("Variable '{}' not bound to a node in REMOVE", variable)
+                    })?;
+                    // Primary label is immutable
+                    if graph
+                        .get_node(*node_idx)
+                        .is_some_and(|n| n.node_type == *label)
+                    {
+                        return Err(format!(
+                            "Cannot REMOVE primary label '{}' — use SET n.type = '...' to change type",
+                            label
+                        ));
+                    }
+                    if let Some(node) = graph.get_node_mut(*node_idx) {
+                        let before = node.extra_labels.len();
+                        node.extra_labels.retain(|l| l != label);
+                        if node.extra_labels.len() < before {
+                            stats.properties_removed += 1;
+                        }
+                    }
                 }
             }
         }
@@ -8414,7 +8444,7 @@ fn try_match_merge_pattern(
                     }
                 }
 
-                let label = node_pat.label.as_deref().unwrap_or("Node");
+                let label = node_pat.labels.first().map(|s| s.as_str()).unwrap_or("Node");
 
                 // Evaluate expected properties
                 let expected_props: Vec<(&str, Value)> = node_pat
@@ -8865,6 +8895,15 @@ fn resolve_node_property(node: &NodeData, property: &str, graph: &DirGraph) -> V
         "id" => node.id.clone(),
         "title" | "name" => node.title.clone(),
         "type" | "node_type" | "label" => Value::String(node.node_type.clone()),
+        "labels" => {
+            let mut all_labels: Vec<String> = std::iter::once(&node.node_type)
+                .chain(node.extra_labels.iter())
+                .map(|l| format!("\"{}\"", l.replace('\\', "\\\\").replace('"', "\\\"")))
+                .collect();
+            all_labels.sort_unstable();
+            all_labels.dedup();
+            Value::String(format!("[{}]", all_labels.join(", ")))
+        }
         _ => {
             if let Some(val) = node.get_property_value(resolved) {
                 return val;

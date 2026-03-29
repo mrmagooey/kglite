@@ -1576,29 +1576,27 @@ impl CypherParser {
         Ok(CreatePattern { elements })
     }
 
-    /// Parse a node in a CREATE pattern: (var:Label {key: expr, ...})
+    /// Parse a node in a CREATE pattern: (var:Label:ExtraLabel {key: expr, ...})
     fn parse_create_node(&mut self) -> Result<CreateNodePattern, String> {
         self.expect(&CypherToken::LParen)?;
         let mut variable = None;
-        let mut label = None;
+        let mut labels = Vec::new();
         let mut properties = Vec::new();
 
         // Parse optional variable name
         if let Some(CypherToken::Identifier(_)) = self.peek() {
-            // It's a variable if followed by : or { or )
-            // (not a property access or function call)
             if let Some(CypherToken::Identifier(name)) = self.peek().cloned() {
                 self.advance();
                 variable = Some(name);
             }
         }
 
-        // Parse optional :Label
-        if self.check(&CypherToken::Colon) {
+        // Parse optional :Label (multiple colon-separated labels allowed)
+        while self.check(&CypherToken::Colon) {
             self.advance();
             if let Some(CypherToken::Identifier(name)) = self.peek().cloned() {
                 self.advance();
-                label = Some(name);
+                labels.push(name);
             } else {
                 return Err("Expected label name after ':'".to_string());
             }
@@ -1612,7 +1610,7 @@ impl CypherParser {
         self.expect(&CypherToken::RParen)?;
         Ok(CreateNodePattern {
             variable,
-            label,
+            labels,
             properties,
         })
     }
@@ -2419,7 +2417,7 @@ mod tests {
             assert_eq!(c.patterns[0].elements.len(), 1);
             if let CreateElement::Node(np) = &c.patterns[0].elements[0] {
                 assert_eq!(np.variable, Some("n".to_string()));
-                assert_eq!(np.label, Some("Person".to_string()));
+                assert_eq!(np.labels, vec!["Person".to_string()]);
                 assert_eq!(np.properties.len(), 2);
                 assert_eq!(np.properties[0].0, "name");
                 assert_eq!(np.properties[1].0, "age");
