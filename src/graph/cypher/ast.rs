@@ -149,12 +149,13 @@ pub struct MatchClause {
     pub distinct_node_hint: Option<String>,
 }
 
-/// Path variable assignment: `p = shortestPath(pattern)`
+/// Path variable assignment: `p = shortestPath(pattern)` or `p = allShortestPaths(pattern)`
 #[derive(Debug, Clone)]
 pub struct PathAssignment {
     pub variable: String,
     pub pattern_index: usize,
     pub is_shortest_path: bool,
+    pub is_all_shortest_paths: bool,
 }
 
 // ============================================================================

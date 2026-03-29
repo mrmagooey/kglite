@@ -239,22 +239,23 @@ impl CypherParser {
 
         let mut path_assignments = Vec::new();
 
-        // Check for path assignment: p = shortestPath(...)
-        // Pattern: Identifier Equals [Identifier("shortestPath") LParen] pattern [RParen]
+        // Check for path assignment: p = shortestPath(...) or p = allShortestPaths(...)
+        // Pattern: Identifier Equals [Identifier("shortestPath"|"allShortestPaths") LParen] pattern [RParen]
         if self.is_path_assignment() {
             let path_var = self.consume_identifier()?;
             self.expect(&CypherToken::Equals)?;
 
-            // Check for shortestPath( wrapper
-            let is_shortest = self.is_shortest_path_call();
-            if is_shortest {
-                self.advance(); // consume "shortestPath" identifier
+            // Check for shortestPath( or allShortestPaths( wrapper
+            let (is_shortest, is_all_shortest) = self.classify_path_call();
+            let has_wrapper = is_shortest || is_all_shortest;
+            if has_wrapper {
+                self.advance(); // consume the function name identifier
                 self.expect(&CypherToken::LParen)?;
             }
 
             let patterns = self.parse_match_patterns()?;
 
-            if is_shortest {
+            if has_wrapper {
                 self.expect(&CypherToken::RParen)?;
             }
 
@@ -262,6 +263,7 @@ impl CypherParser {
                 variable: path_var,
                 pattern_index: 0,
                 is_shortest_path: is_shortest,
+                is_all_shortest_paths: is_all_shortest,
             });
 
             let clause = MatchClause {
@@ -299,14 +301,20 @@ impl CypherParser {
             && self.peek_at(1) == Some(&CypherToken::Equals)
     }
 
-    /// Check if current position is shortestPath( — called AFTER consuming "var ="
-    fn is_shortest_path_call(&self) -> bool {
+    /// Classify the path function call at the current position — called AFTER consuming "var =".
+    /// Returns (is_shortest_path, is_all_shortest_paths).
+    fn classify_path_call(&self) -> (bool, bool) {
         if let Some(CypherToken::Identifier(name)) = self.peek() {
-            name.eq_ignore_ascii_case("shortestPath")
-                && self.peek_at(1) == Some(&CypherToken::LParen)
-        } else {
-            false
+            if self.peek_at(1) == Some(&CypherToken::LParen) {
+                if name.eq_ignore_ascii_case("shortestPath") {
+                    return (true, false);
+                }
+                if name.eq_ignore_ascii_case("allShortestPaths") {
+                    return (false, true);
+                }
+            }
         }
+        (false, false)
     }
 
     /// Consume an identifier token and return the string

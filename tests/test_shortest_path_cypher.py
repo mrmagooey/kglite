@@ -437,3 +437,124 @@ class TestNormalMatchNotBroken:
         result = graph.cypher("MATCH (n:Person) WHERE n.age > 28 RETURN n.name")
         assert len(result) == 1
         assert result[0]["n.name"] == "Alice"
+
+
+class TestAllShortestPaths:
+    """Tests for allShortestPaths() Cypher function."""
+
+    def test_diamond_returns_two_paths(self, diamond_graph):
+        """Diamond graph has two shortest paths from A to D — both returned."""
+        result = diamond_graph.cypher(
+            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[:EDGE*..10]->(b:Node {name: 'D'})) "
+            "RETURN length(p)"
+        )
+        assert len(result) == 2
+        assert all(row["length(p)"] == 2 for row in result)
+
+    def test_diamond_all_intermediate_nodes_covered(self, diamond_graph):
+        """The two paths through B and C are both found."""
+        result = diamond_graph.cypher(
+            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[:EDGE*..10]->(b:Node {name: 'D'})) "
+            "RETURN nodes(p)"
+        )
+        intermediates = {row["nodes(p)"][1]["title"] for row in result}
+        assert intermediates == {"B", "C"}
+
+    def test_chain_returns_single_path(self, chain_graph):
+        """Chain has only one shortest path — only one row returned."""
+        result = chain_graph.cypher(
+            "MATCH p = allShortestPaths((a:Person {name: 'Alice'})-[:KNOWS*..10]->(b:Person {name: 'Eve'})) "
+            "RETURN length(p)"
+        )
+        assert len(result) == 1
+        assert result[0]["length(p)"] == 4
+
+    def test_no_path_returns_empty(self, chain_graph):
+        """No path between disconnected nodes returns no rows."""
+        chain_graph.cypher("CREATE (:Person {name: 'Isolated'})")
+        result = chain_graph.cypher(
+            "MATCH p = allShortestPaths((a:Person {name: 'Alice'})-[:KNOWS*..10]->(b:Person {name: 'Isolated'})) "
+            "RETURN length(p)"
+        )
+        assert len(result) == 0
+
+    def test_length_function(self, diamond_graph):
+        """length(p) works correctly for allShortestPaths results."""
+        result = diamond_graph.cypher(
+            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[:EDGE*..10]->(b:Node {name: 'D'})) "
+            "RETURN length(p)"
+        )
+        for row in result:
+            assert row["length(p)"] == 2
+
+    def test_nodes_function(self, diamond_graph):
+        """nodes(p) returns correct node lists for each path."""
+        result = diamond_graph.cypher(
+            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[:EDGE*..10]->(b:Node {name: 'D'})) "
+            "RETURN nodes(p)"
+        )
+        for row in result:
+            nodes = row["nodes(p)"]
+            assert isinstance(nodes, list)
+            assert len(nodes) == 3
+            assert nodes[0]["title"] == "A"
+            assert nodes[-1]["title"] == "D"
+
+    def test_relationships_function(self, diamond_graph):
+        """relationships(p) returns list of edge type strings."""
+        result = diamond_graph.cypher(
+            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[:EDGE*..10]->(b:Node {name: 'D'})) "
+            "RETURN relationships(p)"
+        )
+        for row in result:
+            rels = row["relationships(p)"]
+            assert isinstance(rels, list)
+            assert rels == ["EDGE", "EDGE"]
+
+    def test_directed_respects_direction(self, chain_graph):
+        """Directed allShortestPaths finds no path against edge direction."""
+        result = chain_graph.cypher(
+            "MATCH p = allShortestPaths((a:Person {name: 'Eve'})-[:KNOWS*..10]->(b:Person {name: 'Alice'})) "
+            "RETURN length(p)"
+        )
+        assert len(result) == 0
+
+    def test_undirected_finds_reverse(self, chain_graph):
+        """Undirected allShortestPaths finds path against edge direction."""
+        result = chain_graph.cypher(
+            "MATCH p = allShortestPaths((a:Person {name: 'Eve'})-[:KNOWS*..10]-(b:Person {name: 'Alice'})) "
+            "RETURN length(p)"
+        )
+        assert len(result) == 1
+        assert result[0]["length(p)"] == 4
+
+    def test_adjacent_nodes_single_path(self, diamond_graph):
+        """Directly connected nodes have exactly one shortest path."""
+        result = diamond_graph.cypher(
+            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[:EDGE*..10]->(b:Node {name: 'B'})) "
+            "RETURN length(p)"
+        )
+        assert len(result) == 1
+        assert result[0]["length(p)"] == 1
+
+    def test_shortcut_only_shortest_returned(self, shortcut_graph):
+        """Only the shortest path (direct edge) is returned, not longer alternatives."""
+        result = shortcut_graph.cypher(
+            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[*..10]->(b:Node {name: 'C'})) "
+            "RETURN length(p)"
+        )
+        # Direct shortcut A->C (length 1) is shorter than A->B->C (length 2)
+        assert len(result) == 1
+        assert result[0]["length(p)"] == 1
+
+    def test_source_target_variables_accessible(self, diamond_graph):
+        """Source and target node variables are accessible in RETURN."""
+        result = diamond_graph.cypher(
+            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[:EDGE*..10]->(b:Node {name: 'D'})) "
+            "RETURN a.name, b.name, length(p)"
+        )
+        assert len(result) == 2
+        for row in result:
+            assert row["a.name"] == "A"
+            assert row["b.name"] == "D"
+            assert row["length(p)"] == 2

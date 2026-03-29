@@ -442,6 +442,242 @@ pub fn shortest_path_directed(
     None
 }
 
+/// Find ALL shortest paths between two nodes using undirected multi-parent BFS.
+/// Returns every path that has the minimum hop count. Empty if no path exists.
+pub fn all_shortest_paths(
+    graph: &DirGraph,
+    source: NodeIndex,
+    target: NodeIndex,
+    connection_types: Option<&[String]>,
+    via_types: Option<&[String]>,
+    deadline: Option<Instant>,
+) -> Vec<PathResult> {
+    if source == target {
+        return vec![PathResult {
+            path: vec![source],
+            cost: 0,
+        }];
+    }
+
+    let via_set: Option<HashSet<&str>> =
+        via_types.map(|vt| vt.iter().map(|s| s.as_str()).collect());
+    let interned = intern_connection_types(connection_types);
+
+    let node_bound = graph.graph.node_bound();
+    // BFS level of each node (u32::MAX = not yet reached)
+    let mut level: Vec<u32> = vec![u32::MAX; node_bound];
+    // All BFS parents per node — multiple parents possible at the same level
+    let mut parents: Vec<Vec<u32>> = vec![Vec::new(); node_bound];
+
+    let source_idx = source.index();
+    let target_idx = target.index();
+
+    level[source_idx] = 0;
+
+    let mut current_frontier: Vec<usize> = vec![source_idx];
+    let mut next_frontier: Vec<usize> = Vec::new();
+    let mut current_level: u32 = 0;
+    let mut found = false;
+    let mut visit_count = 0u32;
+
+    while !current_frontier.is_empty() && !found {
+        current_level += 1;
+        next_frontier.clear();
+
+        for &curr_idx in &current_frontier {
+            let current = NodeIndex::new(curr_idx);
+            let neighbors = filtered_neighbors_undirected(graph, current, interned.as_deref());
+
+            for neighbor in neighbors {
+                let n_idx = neighbor.index();
+
+                if n_idx != target_idx && !node_passes_via_filter(graph, neighbor, &via_set) {
+                    continue;
+                }
+
+                visit_count += 1;
+                if visit_count.is_multiple_of(1000) {
+                    if let Some(dl) = deadline {
+                        if Instant::now() > dl {
+                            return Vec::new();
+                        }
+                    }
+                }
+
+                if level[n_idx] == u32::MAX {
+                    // First time reaching this node at this level
+                    level[n_idx] = current_level;
+                    parents[n_idx].push(curr_idx as u32);
+                    if n_idx == target_idx {
+                        found = true;
+                    } else {
+                        next_frontier.push(n_idx);
+                    }
+                } else if level[n_idx] == current_level {
+                    // Another shortest-path parent reaching this node at the same level
+                    parents[n_idx].push(curr_idx as u32);
+                    if n_idx == target_idx {
+                        found = true;
+                    }
+                }
+                // level[n_idx] < current_level: already visited at an earlier level — skip
+            }
+        }
+
+        std::mem::swap(&mut current_frontier, &mut next_frontier);
+    }
+
+    if !found {
+        return Vec::new();
+    }
+
+    let cost = level[target_idx] as usize;
+
+    // Reconstruct all paths by backtracking from target through parent chains
+    let mut partial_paths: Vec<Vec<usize>> = vec![vec![target_idx]];
+    let mut complete_paths: Vec<Vec<NodeIndex>> = Vec::new();
+
+    // partial_paths stores nodes in reverse order: [target, ..., source].
+    // When source is reached, reverse to get the canonical [source, ..., target] order.
+    while !partial_paths.is_empty() {
+        let mut next_partial: Vec<Vec<usize>> = Vec::new();
+        for path in partial_paths {
+            let last = *path.last().unwrap();
+            if last == source_idx {
+                let full_path: Vec<NodeIndex> =
+                    path.iter().rev().map(|&i| NodeIndex::new(i)).collect();
+                complete_paths.push(full_path);
+            } else {
+                for &parent_idx in &parents[last] {
+                    let mut new_path = path.clone();
+                    new_path.push(parent_idx as usize);
+                    next_partial.push(new_path);
+                }
+            }
+        }
+        partial_paths = next_partial;
+    }
+
+    complete_paths
+        .into_iter()
+        .map(|path| PathResult { cost, path })
+        .collect()
+}
+
+/// Find ALL shortest paths between two nodes following only outgoing edges (directed).
+/// Returns every path of minimum hop count. Empty if no path exists.
+pub fn all_shortest_paths_directed(
+    graph: &DirGraph,
+    source: NodeIndex,
+    target: NodeIndex,
+    connection_types: Option<&[String]>,
+    via_types: Option<&[String]>,
+    deadline: Option<Instant>,
+) -> Vec<PathResult> {
+    if source == target {
+        return vec![PathResult {
+            path: vec![source],
+            cost: 0,
+        }];
+    }
+
+    let via_set: Option<HashSet<&str>> =
+        via_types.map(|vt| vt.iter().map(|s| s.as_str()).collect());
+    let interned = intern_connection_types(connection_types);
+
+    let node_bound = graph.graph.node_bound();
+    let mut level: Vec<u32> = vec![u32::MAX; node_bound];
+    let mut parents: Vec<Vec<u32>> = vec![Vec::new(); node_bound];
+
+    let source_idx = source.index();
+    let target_idx = target.index();
+
+    level[source_idx] = 0;
+
+    let mut current_frontier: Vec<usize> = vec![source_idx];
+    let mut next_frontier: Vec<usize> = Vec::new();
+    let mut current_level: u32 = 0;
+    let mut found = false;
+    let mut visit_count = 0u32;
+
+    while !current_frontier.is_empty() && !found {
+        current_level += 1;
+        next_frontier.clear();
+
+        for &curr_idx in &current_frontier {
+            let current = NodeIndex::new(curr_idx);
+            let neighbors = filtered_neighbors_outgoing(graph, current, interned.as_deref());
+
+            for neighbor in neighbors {
+                let n_idx = neighbor.index();
+
+                if n_idx != target_idx && !node_passes_via_filter(graph, neighbor, &via_set) {
+                    continue;
+                }
+
+                visit_count += 1;
+                if visit_count.is_multiple_of(1000) {
+                    if let Some(dl) = deadline {
+                        if Instant::now() > dl {
+                            return Vec::new();
+                        }
+                    }
+                }
+
+                if level[n_idx] == u32::MAX {
+                    level[n_idx] = current_level;
+                    parents[n_idx].push(curr_idx as u32);
+                    if n_idx == target_idx {
+                        found = true;
+                    } else {
+                        next_frontier.push(n_idx);
+                    }
+                } else if level[n_idx] == current_level {
+                    parents[n_idx].push(curr_idx as u32);
+                    if n_idx == target_idx {
+                        found = true;
+                    }
+                }
+            }
+        }
+
+        std::mem::swap(&mut current_frontier, &mut next_frontier);
+    }
+
+    if !found {
+        return Vec::new();
+    }
+
+    let cost = level[target_idx] as usize;
+
+    let mut partial_paths: Vec<Vec<usize>> = vec![vec![target_idx]];
+    let mut complete_paths: Vec<Vec<NodeIndex>> = Vec::new();
+
+    while !partial_paths.is_empty() {
+        let mut next_partial: Vec<Vec<usize>> = Vec::new();
+        for path in partial_paths {
+            let last = *path.last().unwrap();
+            if last == source_idx {
+                let full_path: Vec<NodeIndex> =
+                    path.iter().rev().map(|&i| NodeIndex::new(i)).collect();
+                complete_paths.push(full_path);
+            } else {
+                for &parent_idx in &parents[last] {
+                    let mut new_path = path.clone();
+                    new_path.push(parent_idx as usize);
+                    next_partial.push(new_path);
+                }
+            }
+        }
+        partial_paths = next_partial;
+    }
+
+    complete_paths
+        .into_iter()
+        .map(|path| PathResult { cost, path })
+        .collect()
+}
+
 /// Find all paths between two nodes up to a maximum number of hops.
 /// Warning: This can be expensive for graphs with many paths!
 ///

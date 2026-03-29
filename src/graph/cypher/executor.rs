@@ -563,8 +563,11 @@ impl<'a> CypherExecutor<'a> {
         clause: &MatchClause,
         existing: ResultSet,
     ) -> Result<ResultSet, String> {
-        // Check for shortestPath assignments
+        // Check for shortestPath / allShortestPaths assignments
         if let Some(pa) = clause.path_assignments.first() {
+            if pa.is_all_shortest_paths {
+                return self.execute_all_shortest_paths_match(clause, pa, existing);
+            }
             if pa.is_shortest_path {
                 return self.execute_shortest_path_match(clause, pa, existing);
             }
@@ -734,7 +737,7 @@ impl<'a> CypherExecutor<'a> {
         // For single-hop `MATCH p = (a)-[:REL]->(b)`, synthesize a PathBinding
         // from the edge binding.
         for pa in &clause.path_assignments {
-            if pa.is_shortest_path {
+            if pa.is_shortest_path || pa.is_all_shortest_paths {
                 continue;
             }
             // Identify the VLP edge variable from this pattern so we look up
@@ -944,6 +947,143 @@ impl<'a> CypherExecutor<'a> {
                         .collect();
 
                     // Store path binding
+                    row.path_bindings.insert(
+                        path_assignment.variable.clone(),
+                        PathBinding {
+                            source: source_idx,
+                            target: target_idx,
+                            hops: path_result.cost,
+                            path: path_nodes,
+                        },
+                    );
+
+                    all_rows.push(row);
+                }
+            }
+        }
+
+        Ok(ResultSet {
+            rows: all_rows,
+            columns: existing.columns,
+        })
+    }
+
+    /// Execute an allShortestPaths MATCH: returns one row per shortest path between endpoints.
+    fn execute_all_shortest_paths_match(
+        &self,
+        clause: &MatchClause,
+        path_assignment: &PathAssignment,
+        existing: ResultSet,
+    ) -> Result<ResultSet, String> {
+        let pattern = clause
+            .patterns
+            .get(path_assignment.pattern_index)
+            .ok_or("Invalid pattern index for allShortestPaths")?;
+
+        let elements = &pattern.elements;
+        if elements.len() < 3 {
+            return Err(
+                "allShortestPaths requires a pattern like (a)-[:REL*..N]->(b)".to_string(),
+            );
+        }
+
+        let source_pattern = match &elements[0] {
+            PatternElement::Node(np) => np,
+            _ => return Err("allShortestPaths pattern must start with a node".to_string()),
+        };
+
+        let target_pattern = match elements.last() {
+            Some(PatternElement::Node(np)) => np,
+            _ => return Err("allShortestPaths pattern must end with a node".to_string()),
+        };
+
+        let (edge_direction, edge_connection_type) = elements
+            .iter()
+            .find_map(|elem| {
+                if let PatternElement::Edge(ep) = elem {
+                    Some((ep.direction, ep.connection_type.clone()))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or((EdgeDirection::Both, None));
+
+        let connection_types_vec: Option<Vec<String>> = edge_connection_type.map(|ct| vec![ct]);
+        let connection_types: Option<&[String]> = connection_types_vec.as_deref();
+
+        let executor = PatternExecutor::new_lightweight_with_params(self.graph, None, self.params)
+            .set_deadline(self.deadline);
+        let source_nodes = executor.find_matching_nodes_pub(source_pattern)?;
+        let target_nodes = executor.find_matching_nodes_pub(target_pattern)?;
+
+        let mut all_rows = Vec::new();
+
+        for &source_idx in &source_nodes {
+            for &target_idx in &target_nodes {
+                if source_idx == target_idx {
+                    continue;
+                }
+
+                let path_results = match edge_direction {
+                    EdgeDirection::Both => graph_algorithms::all_shortest_paths(
+                        self.graph,
+                        source_idx,
+                        target_idx,
+                        connection_types,
+                        None,
+                        self.deadline,
+                    ),
+                    EdgeDirection::Outgoing => graph_algorithms::all_shortest_paths_directed(
+                        self.graph,
+                        source_idx,
+                        target_idx,
+                        connection_types,
+                        None,
+                        self.deadline,
+                    ),
+                    EdgeDirection::Incoming => {
+                        let mut results = graph_algorithms::all_shortest_paths_directed(
+                            self.graph,
+                            target_idx,
+                            source_idx,
+                            connection_types,
+                            None,
+                            self.deadline,
+                        );
+                        for pr in &mut results {
+                            pr.path.reverse();
+                        }
+                        results
+                    }
+                };
+
+                for path_result in path_results {
+                    let mut row = ResultRow::new();
+
+                    if let Some(ref var) = source_pattern.variable {
+                        row.node_bindings.insert(var.clone(), source_idx);
+                    }
+                    if let Some(ref var) = target_pattern.variable {
+                        row.node_bindings.insert(var.clone(), target_idx);
+                    }
+
+                    let connections =
+                        graph_algorithms::get_path_connections(self.graph, &path_result.path);
+                    let path_nodes: Vec<(NodeIndex, String)> = path_result
+                        .path
+                        .iter()
+                        .skip(1)
+                        .enumerate()
+                        .map(|(i, &idx)| {
+                            let conn_type = if i < connections.len() {
+                                connections[i].clone().unwrap_or_default()
+                            } else {
+                                String::new()
+                            };
+                            (idx, conn_type)
+                        })
+                        .collect();
+
                     row.path_bindings.insert(
                         path_assignment.variable.clone(),
                         PathBinding {
