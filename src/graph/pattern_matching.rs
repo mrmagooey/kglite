@@ -4,7 +4,7 @@
 use crate::datatypes::values::Value;
 use crate::graph::cypher::result::Bindings;
 use crate::graph::filtering_methods::{compare_values, values_equal};
-use crate::graph::schema::{DirGraph, InternedKey};
+use crate::graph::schema::{DirGraph, InternedKey, NodeData};
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use petgraph::visit::{EdgeRef, NodeIndexable};
 use petgraph::Direction;
@@ -18,6 +18,30 @@ use std::time::Instant;
 /// so rayon overhead only pays off for very large match sets. Also avoids
 /// contention when multiple queries run concurrently (shared thread pool).
 const EXPANSION_RAYON_THRESHOLD: usize = 8192;
+
+/// Check whether a node matches a label, considering:
+/// 1. The primary `node_type` field.
+/// 2. The `extra_labels` vec (populated by SET n:Label in Cypher).
+/// 3. A `__kinds` JSON-array property (used by BloodHound-style imports
+///    where secondary kinds are stored as `"__kinds": '["Computer","Domain"]'`).
+fn node_matches_label(node: &NodeData, label: &str) -> bool {
+    if node.node_type == label {
+        return true;
+    }
+    if node.extra_labels.iter().any(|l| l == label) {
+        return true;
+    }
+    if let Some(kinds_cow) = node.get_property("__kinds") {
+        if let Value::String(kinds_json) = kinds_cow.as_ref() {
+            if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str(kinds_json.as_str()) {
+                return arr
+                    .iter()
+                    .any(|item| matches!(item, serde_json::Value::String(s) if s == label));
+            }
+        }
+    }
+    false
+}
 
 // ============================================================================
 // AST Types
@@ -1227,7 +1251,7 @@ impl<'a> PatternExecutor<'a> {
             if let Some(&idx) = self.pre_bindings.get(var) {
                 if let Some(node) = self.graph.graph.node_weight(idx) {
                     if let Some(ref node_type) = pattern.node_type {
-                        if &node.node_type != node_type {
+                        if !node_matches_label(node, node_type) {
                             return Ok(vec![]);
                         }
                     }
@@ -1249,19 +1273,39 @@ impl<'a> PatternExecutor<'a> {
                     return Ok(indexed);
                 }
             }
-            // Use type index — iterate by reference to avoid cloning the Vec
-            let type_nodes = match self.graph.type_indices.get(node_type) {
-                Some(indices) => indices.as_slice(),
-                None => return Ok(vec![]),
-            };
+            // Use type index for primary type, then scan all nodes for secondary
+            // label matches (extra_labels or __kinds property).
+            let primary: &[NodeIndex] = self
+                .graph
+                .type_indices
+                .get(node_type)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
+            // Collect secondary matches — nodes whose extra_labels or __kinds contains
+            // the label but whose primary node_type differs (avoid duplicating primaries).
+            let secondary: Vec<NodeIndex> = self
+                .graph
+                .graph
+                .node_indices()
+                .filter(|&idx| {
+                    if let Some(node) = self.graph.graph.node_weight(idx) {
+                        node.node_type != *node_type && node_matches_label(node, node_type)
+                    } else {
+                        false
+                    }
+                })
+                .collect();
+            if primary.is_empty() && secondary.is_empty() {
+                return Ok(vec![]);
+            }
+            let all_nodes: Vec<NodeIndex> = primary.iter().copied().chain(secondary).collect();
             if let Some(ref props) = pattern.properties {
-                Ok(type_nodes
-                    .iter()
-                    .copied()
+                Ok(all_nodes
+                    .into_iter()
                     .filter(|&idx| self.node_matches_properties(idx, props))
                     .collect())
             } else {
-                Ok(type_nodes.to_vec())
+                Ok(all_nodes)
             }
         } else {
             // No type specified - check all nodes
@@ -1736,7 +1780,7 @@ impl<'a> PatternExecutor<'a> {
                 self.graph
                     .graph
                     .node_weight(source)
-                    .map(|n| &n.node_type == node_type)
+                    .map(|n| node_matches_label(n, node_type))
                     .unwrap_or(false)
             } else {
                 true
@@ -1826,7 +1870,7 @@ impl<'a> PatternExecutor<'a> {
                             self.graph
                                 .graph
                                 .node_weight(target)
-                                .map(|n| &n.node_type == node_type)
+                                .map(|n| node_matches_label(n, node_type))
                                 .unwrap_or(false)
                         } else {
                             true
@@ -1919,7 +1963,7 @@ impl<'a> PatternExecutor<'a> {
         if min_hops == 0 {
             let node_matches = if let Some(ref node_type) = node_pattern.node_type {
                 if let Some(node) = self.graph.graph.node_weight(source) {
-                    &node.node_type == node_type
+                    node_matches_label(node, node_type)
                 } else {
                     false
                 }
@@ -2024,7 +2068,7 @@ impl<'a> PatternExecutor<'a> {
                         true
                     } else if let Some(ref node_type) = node_pattern.node_type {
                         if let Some(node) = self.graph.graph.node_weight(target) {
-                            &node.node_type == node_type
+                            node_matches_label(node, node_type)
                         } else {
                             false
                         }

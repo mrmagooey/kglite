@@ -10378,7 +10378,7 @@ mod tests {
                 .unwrap();
         let result = execute_mutable(&mut graph, &query, HashMap::new(), None);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not supported"));
+        assert!(result.unwrap_err().contains("Cannot REMOVE primary label"));
     }
 
     // ==================================================================
