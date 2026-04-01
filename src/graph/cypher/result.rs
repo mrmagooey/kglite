@@ -309,5 +309,9 @@ fn csv_value(buf: &mut String, val: &Value) {
             use std::fmt::Write;
             let _ = write!(buf, "{}", idx);
         }
+        Value::EdgeRef { edge_idx, .. } => {
+            use std::fmt::Write;
+            let _ = write!(buf, "{}", edge_idx);
+        }
     }
 }

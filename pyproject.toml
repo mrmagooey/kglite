@@ -58,7 +58,7 @@ Changelog = "https://github.com/kkollsga/kglite/blob/main/CHANGELOG.md"
 Issues = "https://github.com/kkollsga/kglite/issues"
 
 [tool.maturin]
-features = ["pyo3/extension-module"]
+features = ["python"]
 
 [tool.ruff]
 line-length = 120

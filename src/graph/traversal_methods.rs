@@ -1540,6 +1540,7 @@ pub fn get_children_properties(
                             }
                             Some(Value::Null) => "null".to_string(),
                             Some(Value::NodeRef(idx)) => format!("node#{}", idx),
+                            Some(Value::EdgeRef { edge_idx, .. }) => format!("edge#{}", edge_idx),
                             None => continue,
                         };
 

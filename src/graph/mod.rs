@@ -1,12 +1,16 @@
 // src/graph/mod.rs
 use crate::datatypes::values::{FilterCondition, Value};
+#[cfg(feature = "python")]
 use crate::datatypes::{py_in, py_out};
 use crate::graph::calculations::StatResult;
 use crate::graph::reporting::{OperationReport, OperationReports};
 use petgraph::graph::NodeIndex;
 use petgraph::visit::{EdgeRef, NodeIndexable};
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
+#[cfg(feature = "python")]
 use pyo3::types::{PyDict, PyList};
+#[cfg(feature = "python")]
 use pyo3::{Bound, IntoPyObjectExt};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -42,11 +46,17 @@ pub mod traversal_methods;
 pub mod value_operations;
 pub mod vector_search;
 
+#[cfg(feature = "python")]
 mod pymethods_algorithms;
+#[cfg(feature = "python")]
 mod pymethods_export;
+#[cfg(feature = "python")]
 mod pymethods_indexes;
+#[cfg(feature = "python")]
 mod pymethods_spatial;
+#[cfg(feature = "python")]
 mod pymethods_timeseries;
+#[cfg(feature = "python")]
 mod pymethods_vector;
 
 use schema::{
@@ -57,6 +67,7 @@ use schema::{
 /// Embedding column data extracted from a DataFrame: `[(column_name, [(node_id, embedding)])]`
 type EmbeddingColumnData = Vec<(String, Vec<(Value, Vec<f32>)>)>;
 
+#[cfg(feature = "python")]
 /// Extract `ConnectionDetail` from a Python `bool | list[str] | None` parameter.
 fn extract_detail_param(
     obj: Option<&Bound<'_, PyAny>>,
@@ -85,6 +96,7 @@ fn extract_detail_param(
     )))
 }
 
+#[cfg(feature = "python")]
 /// Extract `CypherDetail` from a Python `bool | list[str] | None` parameter.
 fn extract_cypher_param(obj: Option<&Bound<'_, PyAny>>) -> PyResult<introspection::CypherDetail> {
     let Some(obj) = obj else {
@@ -109,6 +121,7 @@ fn extract_cypher_param(obj: Option<&Bound<'_, PyAny>>) -> PyResult<introspectio
     ))
 }
 
+#[cfg(feature = "python")]
 /// Extract `FluentDetail` from a Python `bool | list[str] | None` parameter.
 fn extract_fluent_param(obj: Option<&Bound<'_, PyAny>>) -> PyResult<introspection::FluentDetail> {
     let Some(obj) = obj else {
@@ -161,17 +174,18 @@ fn resolve_noderefs(
 /// All read methods take `&self`; mutations use `Arc::make_mut` for copy-on-write.
 /// Supports Cypher queries, property filtering, traversals, graph algorithms,
 /// and code entity exploration methods (`find`, `source`, `context`, `toc`).
-#[pyclass]
+#[cfg_attr(feature = "python", pyclass)]
 pub struct KnowledgeGraph {
-    inner: Arc<DirGraph>,
-    selection: CowSelection, // Using Cow wrapper for copy-on-write semantics
-    reports: OperationReports,
-    last_mutation_stats: Option<cypher::result::MutationStats>,
+    pub(crate) inner: Arc<DirGraph>,
+    pub(crate) selection: CowSelection, // Using Cow wrapper for copy-on-write semantics
+    pub(crate) reports: OperationReports,
+    pub(crate) last_mutation_stats: Option<cypher::result::MutationStats>,
     /// Registered Python embedding model (not serialized — re-set after load).
-    embedder: Option<Py<PyAny>>,
+    #[cfg(feature = "python")]
+    pub(crate) embedder: Option<Py<PyAny>>,
     /// Temporal context for auto-filtering temporal nodes/connections.
     /// Set via `date()` method. Default = Today (resolve at query time).
-    temporal_context: TemporalContext,
+    pub(crate) temporal_context: TemporalContext,
 }
 
 /// Temporal context for automatic date filtering on select/traverse/collect.
@@ -195,6 +209,7 @@ impl TemporalContext {
     }
 }
 
+#[cfg(feature = "python")]
 /// Mutable working copy during a transaction.
 ///
 /// Created by `graph.begin()`, provides a separate `DirGraph` that can be
@@ -245,6 +260,7 @@ impl Clone for KnowledgeGraph {
             selection: self.selection.clone(), // Arc clone - O(1), shares data
             reports: self.reports.clone(),
             last_mutation_stats: self.last_mutation_stats.clone(),
+            #[cfg(feature = "python")]
             embedder: Python::attach(|py| self.embedder.as_ref().map(|m| m.clone_ref(py))),
             temporal_context: self.temporal_context.clone(),
         }
@@ -278,6 +294,7 @@ Example with sentence-transformers:
 
     g.set_embedder(Embedder())";
 
+#[cfg(feature = "python")]
 impl KnowledgeGraph {
     fn add_report(&mut self, report: OperationReport) -> usize {
         self.reports.add_report(report)
@@ -554,6 +571,7 @@ impl KnowledgeGraph {
     }
 }
 
+#[cfg(feature = "python")]
 /// Parse spatial column_types entries and produce a SpatialConfig + cleaned column_types dict.
 ///
 /// Recognizes: `location.lat`, `location.lon`, `geometry`, `point.<name>.lat`,
@@ -685,6 +703,7 @@ fn parse_spatial_column_types(
     Ok((Some(config), cleaned.unbind()))
 }
 
+#[cfg(feature = "python")]
 /// Parse temporal column_types entries and produce a TemporalConfig + cleaned column_types dict.
 ///
 /// Recognizes: `validFrom`, `validTo`. These are replaced with `datetime` in the
@@ -772,6 +791,7 @@ impl InlineTimeseriesConfig {
 /// - `channels` (required): list of column names for timeseries data
 /// - `resolution` (optional): "year", "month", "day", "hour", "minute" — auto-detected if omitted
 /// - `units` (optional): dict mapping channel name to unit string
+#[cfg(feature = "python")]
 fn parse_inline_timeseries(ts_dict: &Bound<'_, PyDict>) -> PyResult<InlineTimeseriesConfig> {
     // Parse 'time' key (required)
     let time_val = ts_dict
@@ -874,6 +894,7 @@ pub(super) fn get_graph_mut(arc: &mut Arc<DirGraph>) -> &mut DirGraph {
 /// Lightweight centrality result conversion: returns {title: score} dict.
 /// Creates ONE Python dict instead of N dicts — returns {title: score} format.
 /// ~3-4x faster PyO3 serialization for large graphs.
+#[cfg(feature = "python")]
 pub(super) fn centrality_results_to_py_dict(
     py: Python<'_>,
     graph: &DirGraph,
@@ -895,6 +916,7 @@ pub(super) fn centrality_results_to_py_dict(
 
 /// Convert centrality results to a pandas DataFrame with columns:
 /// type, title, id, score — sorted by score descending.
+#[cfg(feature = "python")]
 pub(super) fn centrality_results_to_dataframe(
     py: Python<'_>,
     graph: &DirGraph,
@@ -934,6 +956,7 @@ pub(super) fn centrality_results_to_dataframe(
 
 /// Helper to convert community detection results to Python dict.
 /// Accesses node data directly and uses interned keys for faster dict construction.
+#[cfg(feature = "python")]
 pub(super) fn community_results_to_py(
     py: Python<'_>,
     graph: &DirGraph,
@@ -978,6 +1001,7 @@ pub(super) fn community_results_to_py(
     Ok(dict.into())
 }
 
+#[cfg(feature = "python")]
 /// Parse the `method` parameter of `traverse()` — accepts a string or dict.
 ///
 /// String shorthand: `method='contains'` → MethodConfig with defaults.
@@ -1068,6 +1092,7 @@ fn parse_method_param(val: &Bound<'_, PyAny>) -> PyResult<traversal_methods::Met
 }
 
 /// Shared comparison traversal logic used by `compare()`.
+#[cfg(feature = "python")]
 #[allow(clippy::too_many_arguments)]
 fn compare_inner(
     inner: &Arc<DirGraph>,
@@ -1105,6 +1130,7 @@ fn compare_inner(
     Ok(actual)
 }
 
+#[cfg(feature = "python")]
 #[pymethods]
 impl KnowledgeGraph {
     #[new]
@@ -4743,6 +4769,7 @@ impl KnowledgeGraph {
                         Some(Value::DateTime(d)) => d.to_string(),
                         Some(Value::Point { lat, lon }) => format!("({}, {})", lat, lon),
                         Some(Value::NodeRef(idx)) => format!("node#{}", idx),
+                        Some(Value::EdgeRef { edge_idx, .. }) => format!("edge#{}", edge_idx),
                         Some(Value::Null) | None => "null".to_string(),
                     };
                     *groups.entry(key).or_insert(0) += 1;
@@ -6092,6 +6119,7 @@ impl KnowledgeGraph {
 // Transaction Implementation
 // ============================================================================
 
+#[cfg(feature = "python")]
 #[pymethods]
 impl Transaction {
     /// Execute a Cypher query within this transaction.

@@ -189,6 +189,7 @@ pub fn format_value_compact(val: &Value) -> String {
         Value::Point { lat, lon } => format!("point({}, {})", lat, lon),
         Value::Null => "null".to_string(),
         Value::NodeRef(idx) => format!("node#{}", idx),
+        Value::EdgeRef { edge_idx, .. } => format!("edge#{}", edge_idx),
     }
 }
 
@@ -224,6 +225,7 @@ pub fn format_value_compact_into(buf: &mut String, val: &Value) {
         Value::Point { lat, lon } => write!(buf, "point({}, {})", lat, lon).unwrap(),
         Value::Null => buf.push_str("null"),
         Value::NodeRef(idx) => write!(buf, "node#{}", idx).unwrap(),
+        Value::EdgeRef { edge_idx, .. } => write!(buf, "edge#{}", edge_idx).unwrap(),
     }
 }
 

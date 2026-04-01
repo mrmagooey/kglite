@@ -172,6 +172,7 @@ fn calculate_stats_for_nodes(
                             Value::Point { .. } => "point",
                             Value::Null => "null",
                             Value::NodeRef(_) => "noderef",
+                            Value::EdgeRef { .. } => "edgeref",
                         });
                     }
                 }

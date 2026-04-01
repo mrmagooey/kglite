@@ -41,6 +41,13 @@ pub enum Value {
     /// through collect() → index → WITH → property access pipelines.
     /// Never persisted — only exists during Cypher execution.
     NodeRef(u32),
+    /// Internal: petgraph EdgeIndex + endpoint NodeIndexes reference.
+    /// Never persisted — only exists during Cypher execution.
+    EdgeRef {
+        edge_idx: u32,
+        src_idx: u32,
+        dst_idx: u32,
+    },
 }
 
 // Implement Eq for Value
@@ -73,6 +80,7 @@ impl Ord for Value {
                 Value::DateTime(_) => 6,
                 Value::Point { .. } => 7,
                 Value::NodeRef(_) => 8,
+                Value::EdgeRef { .. } => 9,
             }
         }
         match (self, other) {
@@ -108,6 +116,7 @@ impl Ord for Value {
                 .unwrap_or(Ordering::Equal)
                 .then(a_lon.partial_cmp(b_lon).unwrap_or(Ordering::Equal)),
             (Value::NodeRef(a), Value::NodeRef(b)) => a.cmp(b),
+            (Value::EdgeRef { edge_idx: a, .. }, Value::EdgeRef { edge_idx: b, .. }) => a.cmp(b),
             // Cross-variant: order by discriminant
             _ => disc(self).cmp(&disc(other)),
         }
@@ -147,6 +156,7 @@ impl Hash for Value {
             }
             Value::Null => 0.hash(state),
             Value::NodeRef(v) => v.hash(state),
+            Value::EdgeRef { edge_idx, .. } => edge_idx.hash(state),
         }
     }
 }
@@ -381,7 +391,7 @@ impl DataFrame {
                     Value::Boolean(_) => Some(ColumnType::Boolean),
                     Value::DateTime(_) => Some(ColumnType::DateTime),
                     Value::Point { .. } => Some(ColumnType::String), // Serialize as WKT
-                    Value::Null | Value::NodeRef(_) => None,
+                    Value::Null | Value::NodeRef(_) | Value::EdgeRef { .. } => None,
                 };
             }
             if col_types.iter().all(|t| t.is_some()) {
@@ -517,8 +527,8 @@ impl DataFrame {
                 ColumnType::String,
                 ColumnData::String(vec![Some(format!("POINT({} {})", lon, lat)); num_rows]),
             ),
-            Value::NodeRef(_) => {
-                return Err("Cannot add a constant column with NodeRef value".to_string())
+            Value::NodeRef(_) | Value::EdgeRef { .. } => {
+                return Err("Cannot add a constant column with NodeRef/EdgeRef value".to_string())
             }
         };
         self.add_column(name, col_type, data)
@@ -617,6 +627,7 @@ pub fn format_value(value: &Value) -> String {
         Value::Point { lat, lon } => format!("point({}, {})", lat, lon),
         Value::Null => "NULL".to_string(),
         Value::NodeRef(idx) => format!("node#{}", idx),
+        Value::EdgeRef { edge_idx, .. } => format!("edge#{}", edge_idx),
     }
 }
 

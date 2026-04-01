@@ -8189,6 +8189,7 @@ fn value_type_name(v: &Value) -> String {
         Value::Point { .. } => "Point",
         Value::Null => "Null",
         Value::NodeRef(_) => "NodeRef",
+        Value::EdgeRef { .. } => "EdgeRef",
     }
     .to_string()
 }

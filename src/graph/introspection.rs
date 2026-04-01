@@ -557,6 +557,7 @@ fn value_type_name(v: &Value) -> &'static str {
         Value::Point { .. } => "point",
         Value::Null => "unknown",
         Value::NodeRef(_) => "noderef",
+        Value::EdgeRef { .. } => "edgeref",
     }
 }
 
@@ -586,6 +587,7 @@ fn value_display_compact(v: &Value) -> String {
         Value::UniqueId(u) => u.to_string(),
         Value::Point { lat, lon } => format!("({},{})", lat, lon),
         Value::NodeRef(idx) => format!("node#{}", idx),
+        Value::EdgeRef { edge_idx, .. } => format!("edge#{}", edge_idx),
         Value::Null => String::new(),
     }
 }

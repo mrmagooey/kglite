@@ -721,7 +721,7 @@ fn value_type_name(value: &Value) -> String {
         Value::UniqueId(_) => "int".to_string(),
         Value::Point { .. } => "string".to_string(), // serialized as string in CSV
         Value::Null => "string".to_string(),
-        Value::NodeRef(_) => "int".to_string(),
+        Value::NodeRef(_) | Value::EdgeRef { .. } => "int".to_string(),
     }
 }
 
@@ -863,6 +863,7 @@ fn value_to_string(value: &Value) -> String {
         Value::Point { lat, lon } => format!("point({}, {})", lat, lon),
         Value::Null => String::new(),
         Value::NodeRef(idx) => format!("node#{}", idx),
+        Value::EdgeRef { edge_idx, .. } => format!("edge#{}", edge_idx),
     }
 }
 
@@ -892,6 +893,7 @@ fn json_value(value: &Value) -> String {
         Value::Point { lat, lon } => format!("{{\"lat\":{},\"lon\":{}}}", lat, lon),
         Value::Null => "null".to_string(),
         Value::NodeRef(idx) => idx.to_string(),
+        Value::EdgeRef { edge_idx, .. } => edge_idx.to_string(),
     }
 }
 

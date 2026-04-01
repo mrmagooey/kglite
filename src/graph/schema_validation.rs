@@ -226,6 +226,7 @@ fn get_value_type_name(value: &Value) -> String {
         Value::Point { .. } => "point".to_string(),
         Value::Null => "null".to_string(),
         Value::NodeRef(_) => "noderef".to_string(),
+        Value::EdgeRef { .. } => "edgeref".to_string(),
     }
 }
 

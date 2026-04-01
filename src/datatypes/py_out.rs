@@ -47,6 +47,8 @@ pub fn value_to_py(py: Python, value: &Value) -> PyResult<Py<PyAny>> {
         Value::Null => Ok(py.None()),
         // NodeRef should be resolved before reaching Python; fallback to index
         Value::NodeRef(idx) => idx.into_py_any(py),
+        // EdgeRef should be resolved before reaching Python; fallback to edge index
+        Value::EdgeRef { edge_idx, .. } => edge_idx.into_py_any(py),
     }
 }
 

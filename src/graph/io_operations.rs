@@ -541,6 +541,7 @@ fn load_v3(buf: &[u8]) -> io::Result<KnowledgeGraph> {
         selection: CowSelection::new(),
         reports: OperationReports::new(),
         last_mutation_stats: None,
+        #[cfg(feature = "python")]
         embedder: None,
         temporal_context: TemporalContext::default(),
     })

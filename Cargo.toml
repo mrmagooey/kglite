@@ -10,10 +10,17 @@ license = "MIT"
 
 [lib]
 name = "kglite"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "staticlib"]
+
+[features]
+# python: enables PyO3 bindings (default for maturin / pip builds)
+default = ["python"]
+python = ["dep:pyo3"]
+# ffi: enables C-compatible extern "C" exports for Go CGO use
+ffi = []
 
 [dependencies]
-pyo3 = { version = "0.27", features = ["multiple-pymethods"] }
+pyo3 = { version = "0.27", features = ["extension-module", "multiple-pymethods"], optional = true }
 petgraph = { version = "0.8.3", features = ["serde-1"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
