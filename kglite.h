@@ -47,6 +47,18 @@ int kg_cypher(KgHandle *handle, const char *query, const char *params_json, char
  */
 int kg_cypher_batch(KgHandle *handle, const char *queries_json, char **out);
 
+/*
+ * Bulk-create edges by node index, bypassing Cypher for maximum throughput.
+ *
+ * - edges_json: JSON array of edge specs:
+ *   [{"src": <node_idx>, "dst": <node_idx>, "type": "EdgeType", "props": {...}}, ...]
+ * - skip_existing: if non-zero, skip duplicate-edge checks (faster for fresh edges)
+ * - out: receives a JSON string {"created": <count>}
+ *
+ * Returns 0 on success, -1 on error.
+ */
+int kg_create_edges_batch(KgHandle *handle, const char *edges_json, int skip_existing, char **out);
+
 /* Free a string allocated by kg_cypher or kg_cypher_batch. */
 void kg_free_string(char *s);
 

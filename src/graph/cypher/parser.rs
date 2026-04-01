@@ -516,7 +516,6 @@ impl CypherParser {
                 CypherToken::Star => parts.push("*".to_string()),
                 CypherToken::DotDot => parts.push("..".to_string()),
                 CypherToken::Dot => parts.push(".".to_string()),
-                CypherToken::Pipe => parts.push("|".to_string()),
                 CypherToken::Identifier(s) => parts.push(s.clone()),
                 CypherToken::StringLit(s) => {
                     let escaped = s.replace('\\', "\\\\").replace('\'', "\\'");
@@ -555,25 +554,12 @@ impl CypherParser {
 
     /// Parse OR expressions (lowest precedence)
     fn parse_or_predicate(&mut self) -> Result<Predicate, String> {
-        let mut left = self.parse_xor_predicate()?;
+        let mut left = self.parse_and_predicate()?;
 
         while self.check(&CypherToken::Or) {
             self.advance();
-            let right = self.parse_xor_predicate()?;
-            left = Predicate::Or(Box::new(left), Box::new(right));
-        }
-
-        Ok(left)
-    }
-
-    /// Parse XOR expressions (precedence between OR and AND)
-    fn parse_xor_predicate(&mut self) -> Result<Predicate, String> {
-        let mut left = self.parse_and_predicate()?;
-
-        while self.check(&CypherToken::Xor) {
-            self.advance();
             let right = self.parse_and_predicate()?;
-            left = Predicate::Xor(Box::new(left), Box::new(right));
+            left = Predicate::Or(Box::new(left), Box::new(right));
         }
 
         Ok(left)
@@ -688,17 +674,8 @@ impl CypherParser {
         // Check for IN
         if self.check(&CypherToken::In) {
             self.advance();
-            if self.check(&CypherToken::LBracket) {
-                let list = self.parse_list_expression()?;
-                return Ok(Predicate::In { expr: left, list });
-            } else {
-                // IN with a variable, parameter, or function call expression
-                let list_expr = self.parse_expression()?;
-                return Ok(Predicate::InExpression {
-                    expr: left,
-                    list_expr,
-                });
-            }
+            let list = self.parse_list_expression()?;
+            return Ok(Predicate::In { expr: left, list });
         }
 
         // Check for STARTS WITH
@@ -817,83 +794,6 @@ impl CypherParser {
 
     /// Parse an expression with operator precedence:
     /// additive (+, -) < multiplicative (*, /) < unary (-) < primary
-    /// Parse an expression that may have trailing comparison/predicate operators.
-    /// Used in RETURN and WITH items where predicates like `STARTS WITH`, `=`, `<>`
-    /// should be valid as expressions (evaluating to boolean).
-    fn parse_expression_with_predicates(&mut self) -> Result<Expression, String> {
-        let expr = self.parse_expression()?;
-        // Check for trailing comparison/predicate operators
-        match self.peek() {
-            Some(CypherToken::Equals)
-            | Some(CypherToken::NotEquals)
-            | Some(CypherToken::LessThan)
-            | Some(CypherToken::GreaterThan)
-            | Some(CypherToken::LessThanEquals)
-            | Some(CypherToken::GreaterThanEquals)
-            | Some(CypherToken::RegexMatch) => {
-                let operator = match self.peek() {
-                    Some(CypherToken::Equals) => ComparisonOp::Equals,
-                    Some(CypherToken::NotEquals) => ComparisonOp::NotEquals,
-                    Some(CypherToken::LessThan) => ComparisonOp::LessThan,
-                    Some(CypherToken::GreaterThan) => ComparisonOp::GreaterThan,
-                    Some(CypherToken::LessThanEquals) => ComparisonOp::LessThanEq,
-                    Some(CypherToken::GreaterThanEquals) => ComparisonOp::GreaterThanEq,
-                    Some(CypherToken::RegexMatch) => ComparisonOp::RegexMatch,
-                    _ => unreachable!(),
-                };
-                self.advance(); // consume operator
-                let right = self.parse_expression()?;
-                Ok(Expression::PredicateExpr(Box::new(Predicate::Comparison {
-                    left: expr,
-                    operator,
-                    right,
-                })))
-            }
-            Some(CypherToken::StartsWith) => {
-                self.advance(); // consume STARTS
-                self.expect(&CypherToken::With)?; // consume WITH
-                let pattern = self.parse_expression()?;
-                Ok(Expression::PredicateExpr(Box::new(Predicate::StartsWith {
-                    expr,
-                    pattern,
-                })))
-            }
-            Some(CypherToken::EndsWith) => {
-                self.advance(); // consume ENDS
-                self.expect(&CypherToken::With)?; // consume WITH
-                let pattern = self.parse_expression()?;
-                Ok(Expression::PredicateExpr(Box::new(Predicate::EndsWith {
-                    expr,
-                    pattern,
-                })))
-            }
-            Some(CypherToken::Contains) => {
-                self.advance(); // consume CONTAINS
-                let pattern = self.parse_expression()?;
-                Ok(Expression::PredicateExpr(Box::new(Predicate::Contains {
-                    expr,
-                    pattern,
-                })))
-            }
-            Some(CypherToken::In) => {
-                self.advance(); // consume IN
-                if self.check(&CypherToken::LBracket) {
-                    let list = self.parse_list_expression()?;
-                    Ok(Expression::PredicateExpr(Box::new(Predicate::In {
-                        expr,
-                        list,
-                    })))
-                } else {
-                    let list_expr = self.parse_expression()?;
-                    Ok(Expression::PredicateExpr(Box::new(
-                        Predicate::InExpression { expr, list_expr },
-                    )))
-                }
-            }
-            _ => Ok(expr),
-        }
-    }
-
     fn parse_expression(&mut self) -> Result<Expression, String> {
         let expr = self.parse_additive_expression()?;
         // Check for IS NULL / IS NOT NULL postfix
@@ -972,11 +872,6 @@ impl CypherParser {
                     self.advance();
                     let right = self.parse_unary_expression()?;
                     left = Expression::Divide(Box::new(left), Box::new(right));
-                }
-                Some(CypherToken::Percent) => {
-                    self.advance();
-                    let right = self.parse_unary_expression()?;
-                    left = Expression::Modulo(Box::new(left), Box::new(right));
                 }
                 _ => break,
             }
@@ -1144,21 +1039,7 @@ impl CypherParser {
                             return self.parse_list_quantifier_expr(q);
                         }
                     }
-                    let func_expr = self.parse_function_call(name)?;
-                    // Check for property access on function result: func().property
-                    if self.check(&CypherToken::Dot) {
-                        self.advance(); // consume dot
-                        match self.advance().cloned() {
-                            Some(CypherToken::Identifier(prop)) => {
-                                return Ok(Expression::ExprPropertyAccess {
-                                    expr: Box::new(func_expr),
-                                    property: prop,
-                                });
-                            }
-                            _ => return Err("Expected property name after '.'".to_string()),
-                        }
-                    }
-                    return Ok(func_expr);
+                    return self.parse_function_call(name);
                 }
 
                 // Check for property access: identifier.property
@@ -1301,21 +1182,14 @@ impl CypherParser {
                 self.expect(&CypherToken::Comma)?;
             }
 
-            // Check for .property shorthand or .* all-properties
+            // Check for .property shorthand
             if self.check(&CypherToken::Dot) {
                 self.advance(); // consume dot
                 match self.advance().cloned() {
                     Some(CypherToken::Identifier(prop)) => {
                         items.push(MapProjectionItem::Property(prop));
                     }
-                    Some(CypherToken::Star) => {
-                        items.push(MapProjectionItem::AllProperties);
-                    }
-                    _ => {
-                        return Err(
-                            "Expected property name or '*' after '.' in map projection".into()
-                        )
-                    }
+                    _ => return Err("Expected property name after '.' in map projection".into()),
                 }
             } else {
                 // alias: expression
@@ -1542,7 +1416,7 @@ impl CypherParser {
     }
 
     fn parse_return_item(&mut self) -> Result<ReturnItem, String> {
-        let expression = self.parse_expression_with_predicates()?;
+        let expression = self.parse_expression()?;
 
         let alias = if self.check(&CypherToken::As) {
             self.advance();

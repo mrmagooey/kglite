@@ -3693,15 +3693,13 @@ impl<'a> CypherExecutor<'a> {
                 if let Some(&idx) = row.node_bindings.get(name) {
                     return Ok(Value::NodeRef(idx.index() as u32));
                 }
-                // Edge variable — return connection_type as representative value
+                // Edge variable — return EdgeRef to preserve identity and enable property access
                 if let Some(edge) = row.edge_bindings.get(name) {
-                    if let Some(edge_data) = self.graph.graph.edge_weight(edge.edge_index) {
-                        return Ok(Value::String(
-                            edge_data
-                                .connection_type_str(&self.graph.interner)
-                                .to_string(),
-                        ));
-                    }
+                    return Ok(Value::EdgeRef {
+                        edge_idx: edge.edge_index.index() as u32,
+                        src_idx: edge.source.index() as u32,
+                        dst_idx: edge.target.index() as u32,
+                    });
                 }
                 // Path variable — return hops count
                 if let Some(path) = row.path_bindings.get(name) {
@@ -4740,12 +4738,15 @@ impl<'a> CypherExecutor<'a> {
                 Ok(Value::Null)
             }
             "id" => {
-                // id(n) returns the node id
+                // id(n) returns the node id; id(r) returns the edge index
                 if let Some(Expression::Variable(var)) = args.first() {
                     if let Some(&idx) = row.node_bindings.get(var) {
                         if let Some(node) = self.graph.graph.node_weight(idx) {
                             return Ok(resolve_node_property(node, "id", self.graph));
                         }
+                    }
+                    if let Some(edge) = row.edge_bindings.get(var) {
+                        return Ok(Value::Int64(edge.edge_index.index() as i64));
                     }
                 }
                 Ok(Value::Null)

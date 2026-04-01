@@ -79,10 +79,6 @@ pub struct NodePattern {
 pub struct EdgePattern {
     pub variable: Option<String>,
     pub connection_type: Option<String>,
-    /// Multiple allowed connection types from pipe syntax: `[:A|B|C]`.
-    /// When set, an edge matches if its type equals ANY of these types.
-    /// `connection_type` holds the first type for backward compatibility.
-    pub connection_types: Option<Vec<String>>,
     pub direction: EdgeDirection,
     pub properties: Option<HashMap<String, PropertyMatcher>>,
     /// Variable-length path configuration: (min_hops, max_hops)
@@ -199,7 +195,6 @@ pub enum Token {
     LessThan,    // <
     Star,        // * (for variable-length paths)
     DotDot,      // .. (for range in variable-length)
-    Pipe,        // | (for multi-type edges: [:A|B])
     Identifier(String),
     StringLit(String),
     IntLit(i64),
@@ -263,10 +258,6 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
             }
             '*' => {
                 tokens.push(Token::Star);
-                chars.next();
-            }
-            '|' => {
-                tokens.push(Token::Pipe);
                 chars.next();
             }
             '.' => {
@@ -462,7 +453,6 @@ impl Parser {
             Token::FloatLit(_) => "decimal",
             Token::BoolLit(_) => "boolean",
             Token::Parameter(_) => "parameter",
-            Token::Pipe => "|",
         }
     }
 
@@ -571,7 +561,6 @@ impl Parser {
 
         let mut variable = None;
         let mut connection_type = None;
-        let mut connection_types: Option<Vec<String>> = None;
         let mut properties = None;
         let mut var_length = None;
 
@@ -581,7 +570,7 @@ impl Parser {
                 // Empty edge pattern: []
             }
             Some(Token::Colon) => {
-                // No variable, just type: [:TYPE] or [:TYPE1|TYPE2]
+                // No variable, just type: [:TYPE]
                 self.advance(); // consume :
                 if let Some(Token::Identifier(name)) = self.advance().cloned() {
                     connection_type = Some(name);
@@ -613,26 +602,6 @@ impl Parser {
             _ => {}
         }
 
-        // Handle pipe-separated types: [:A|B|C]
-        // After parsing the first type, consume any |TYPE continuations
-        if connection_type.is_some() {
-            if let Some(Token::Pipe) = self.peek() {
-                let mut types = vec![connection_type.clone().unwrap()];
-                while let Some(Token::Pipe) = self.peek() {
-                    self.advance(); // consume |
-                    if let Some(Token::Identifier(name)) = self.advance().cloned() {
-                        types.push(name);
-                    } else {
-                        return Err(
-                            "Expected connection/edge type after '|'. Example: -[:KNOWS|LIKES]->"
-                                .to_string(),
-                        );
-                    }
-                }
-                connection_types = Some(types);
-            }
-        }
-
         // Check for variable-length marker: *
         if let Some(Token::Star) = self.peek() {
             var_length = Some(self.parse_var_length()?);
@@ -662,7 +631,6 @@ impl Parser {
         Ok(EdgePattern {
             variable,
             connection_type,
-            connection_types,
             direction,
             properties,
             var_length,
@@ -978,9 +946,9 @@ impl<'a> PatternExecutor<'a> {
         // Process edge-node pairs
         let mut i = 1;
         while i < pattern.elements.len() {
-            // max_matches is enforced DURING expansion (inner-loop checks below),
-            // not between hops, to avoid breaking before edges are expanded.
-            let is_last_hop = i + 2 >= pattern.elements.len();
+            if self.max_matches.is_some_and(|max| matches.len() >= max) {
+                break;
+            }
             if let Some(dl) = self.deadline {
                 if Instant::now() > dl {
                     return Err("Query timed out".to_string());
@@ -1107,17 +1075,11 @@ impl<'a> PatternExecutor<'a> {
                 let mut new_matches_seq = Vec::new();
                 let mut new_indices_seq = Vec::new();
                 let mut expand_count: usize = 0;
-                // At the last hop, enforce exact max_matches.
-                // At intermediate hops, use a generous overcommit (50x) to avoid
-                // expanding far more intermediates than needed while ensuring
-                // enough survive to produce max_matches final results.
-                let hop_limit = if is_last_hop {
-                    self.max_matches
-                } else {
-                    self.max_matches.map(|m| m.saturating_mul(50).max(1000))
-                };
                 for (current_match, &source_idx) in matches.iter().zip(current_indices.iter()) {
-                    if hop_limit.is_some_and(|max| new_matches_seq.len() >= max) {
+                    if self
+                        .max_matches
+                        .is_some_and(|max| new_matches_seq.len() >= max)
+                    {
                         break;
                     }
                     let expansions =
@@ -1131,7 +1093,10 @@ impl<'a> PatternExecutor<'a> {
                                 }
                             }
                         }
-                        if hop_limit.is_some_and(|max| new_matches_seq.len() >= max) {
+                        if self
+                            .max_matches
+                            .is_some_and(|max| new_matches_seq.len() >= max)
+                        {
                             break;
                         }
                         if let Some(ref var) = node_pattern.variable {
@@ -1200,13 +1165,8 @@ impl<'a> PatternExecutor<'a> {
                 }
             }
 
-            // Apply hop limit truncation (for parallel path which can't early-exit)
-            let truncate_limit = if is_last_hop {
-                self.max_matches
-            } else {
-                self.max_matches.map(|m| m.saturating_mul(50).max(1000))
-            };
-            if let Some(max) = truncate_limit {
+            // Apply max_matches truncation (for parallel path which can't early-exit)
+            if let Some(max) = self.max_matches {
                 new_matches.truncate(max);
                 new_indices.truncate(max);
             }
@@ -1512,15 +1472,12 @@ impl<'a> PatternExecutor<'a> {
             for (key, matcher) in props {
                 // Resolve alias: original column name → canonical field
                 let resolved = self.graph.resolve_alias(&node.node_type, key);
-                // Check special fields first: name/title maps to title, id maps to id,
-                // type/node_type/label maps to the node's type string.
+                // Check special fields first: name/title maps to title, id maps to id
                 // Use Cow to avoid cloning when possible
                 let value: Option<Cow<'_, Value>> = if resolved == "name" || resolved == "title" {
                     Some(Cow::Borrowed(&node.title))
                 } else if resolved == "id" {
                     Some(Cow::Borrowed(&node.id))
-                } else if resolved == "type" || resolved == "node_type" || resolved == "label" {
-                    Some(Cow::Owned(Value::String(node.node_type.clone())))
                 } else {
                     node.get_property(resolved)
                 };
@@ -1606,12 +1563,7 @@ impl<'a> PatternExecutor<'a> {
         node_pattern: &NodePattern,
     ) -> Result<Vec<(NodeIndex, MatchBinding)>, String> {
         // Early exit: if the specified connection type doesn't exist in the graph, skip all iteration
-        if let Some(ref types) = edge_pattern.connection_types {
-            // Multi-type: at least one must exist
-            if !types.iter().any(|t| self.graph.has_connection_type(t)) {
-                return Ok(Vec::new());
-            }
-        } else if let Some(ref conn_type) = edge_pattern.connection_type {
+        if let Some(ref conn_type) = edge_pattern.connection_type {
             if !self.graph.has_connection_type(conn_type) {
                 return Ok(Vec::new());
             }
@@ -1631,19 +1583,11 @@ impl<'a> PatternExecutor<'a> {
             EdgeDirection::Both => &[Direction::Outgoing, Direction::Incoming],
         };
 
-        // Pre-intern connection type(s) for fast u64 == u64 comparison in inner loop
-        let conn_keys: Option<Vec<InternedKey>> = edge_pattern
-            .connection_types
+        // Pre-intern connection type for fast u64 == u64 comparison in inner loop
+        let conn_key = edge_pattern
+            .connection_type
             .as_ref()
-            .map(|types| types.iter().map(|t| InternedKey::from_str(t)).collect());
-        let conn_key = if conn_keys.is_none() {
-            edge_pattern
-                .connection_type
-                .as_ref()
-                .map(|ct| InternedKey::from_str(ct))
-        } else {
-            None
-        };
+            .map(|ct| InternedKey::from_str(ct));
 
         for &direction in directions {
             let edges = self.graph.graph.edges_directed(source, direction);
@@ -1652,11 +1596,7 @@ impl<'a> PatternExecutor<'a> {
                 let edge_data = edge.weight();
 
                 // Check connection type if specified (u64 == u64)
-                if let Some(ref keys) = conn_keys {
-                    if !keys.contains(&edge_data.connection_type) {
-                        continue;
-                    }
-                } else if let Some(key) = conn_key {
+                if let Some(key) = conn_key {
                     if edge_data.connection_type != key {
                         continue;
                     }
@@ -1749,19 +1689,11 @@ impl<'a> PatternExecutor<'a> {
             EdgeDirection::Both => &[Direction::Outgoing, Direction::Incoming],
         };
 
-        // Pre-intern connection type(s) for fast u64 == u64 comparison in inner loop
-        let conn_keys: Option<Vec<InternedKey>> = edge_pattern
-            .connection_types
+        // Pre-intern connection type for fast u64 == u64 comparison in inner loop
+        let conn_key = edge_pattern
+            .connection_type
             .as_ref()
-            .map(|types| types.iter().map(|t| InternedKey::from_str(t)).collect());
-        let conn_key = if conn_keys.is_none() {
-            edge_pattern
-                .connection_type
-                .as_ref()
-                .map(|ct| InternedKey::from_str(ct))
-        } else {
-            None
-        };
+            .map(|ct| InternedKey::from_str(ct));
 
         // Global visited set — each node is explored at most once.
         // Vec<bool> is faster than HashSet for dense NodeIndex (no hashing, cache-friendly).
@@ -1824,12 +1756,8 @@ impl<'a> PatternExecutor<'a> {
                 for edge in edges {
                     let edge_data = edge.weight();
 
-                    // Check connection type(s) (u64 == u64)
-                    if let Some(ref keys) = conn_keys {
-                        if !keys.contains(&edge_data.connection_type) {
-                            continue;
-                        }
-                    } else if let Some(key) = conn_key {
+                    // Check connection type (u64 == u64)
+                    if let Some(key) = conn_key {
                         if edge_data.connection_type != key {
                             continue;
                         }
@@ -1936,19 +1864,11 @@ impl<'a> PatternExecutor<'a> {
             EdgeDirection::Both => &[Direction::Outgoing, Direction::Incoming],
         };
 
-        // Pre-intern connection type(s) for fast u64 == u64 comparison in inner loop
-        let conn_keys: Option<Vec<InternedKey>> = edge_pattern
-            .connection_types
+        // Pre-intern connection type for fast u64 == u64 comparison in inner loop
+        let conn_key = edge_pattern
+            .connection_type
             .as_ref()
-            .map(|types| types.iter().map(|t| InternedKey::from_str(t)).collect());
-        let conn_key = if conn_keys.is_none() {
-            edge_pattern
-                .connection_type
-                .as_ref()
-                .map(|ct| InternedKey::from_str(ct))
-        } else {
-            None
-        };
+            .map(|ct| InternedKey::from_str(ct));
 
         // BFS state: (current_node, depth, path_info)
         // path_info stores the path taken for creating variable-length edge binding
@@ -2012,12 +1932,8 @@ impl<'a> PatternExecutor<'a> {
                 for edge in edges {
                     let edge_data = edge.weight();
 
-                    // Check connection type(s) if specified (u64 == u64)
-                    if let Some(ref keys) = conn_keys {
-                        if !keys.contains(&edge_data.connection_type) {
-                            continue;
-                        }
-                    } else if let Some(key) = conn_key {
+                    // Check connection type if specified (u64 == u64)
+                    if let Some(key) = conn_key {
                         if edge_data.connection_type != key {
                             continue;
                         }

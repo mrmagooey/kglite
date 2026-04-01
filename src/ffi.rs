@@ -14,10 +14,13 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::sync::{Arc, Mutex};
 
+use petgraph::graph::NodeIndex;
+
+use crate::graph::batch_operations::ConnectionBatchProcessor;
 use crate::graph::cypher::{execute_mutable, is_mutation_query, parse_cypher, CypherExecutor};
 use crate::graph::cypher::ast::CypherQuery;
 use crate::graph::io_operations::{load_file, prepare_save, write_graph_v3};
-use crate::graph::schema::DirGraph;
+use crate::graph::schema::{DirGraph, EdgeData};
 use crate::datatypes::values::Value;
 
 // ─── Cypher parse cache ─────────────────────────────────────────────────
@@ -376,6 +379,138 @@ pub extern "C" fn kg_cypher_batch(
     // Combine results into a JSON array string
     let combined = format!("[{}]", results.join(","));
     match CString::new(combined) {
+        Ok(s) => {
+            unsafe { *out = s.into_raw() };
+            0
+        }
+        Err(e) => {
+            set_error(format!("result contains null bytes: {e}"));
+            -1
+        }
+    }
+}
+
+/// Bulk-create edges by node index, bypassing Cypher for maximum throughput.
+///
+/// - `edges_json`: JSON array of edge specs:
+///   `[{"src": <node_index>, "dst": <node_index>, "type": "EdgeType", "props": {...}}, ...]`
+///   `src` and `dst` are petgraph NodeIndex values (the `__node_idx` from query results).
+/// - `skip_existing`: if non-zero, skip duplicate-edge checks (faster when edges are known to be new)
+/// - `out`: receives a JSON string `{"created": <count>}`.
+///
+/// Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn kg_create_edges_batch(
+    handle: *mut KgHandle,
+    edges_json: *const c_char,
+    skip_existing: c_int,
+    out: *mut *mut c_char,
+) -> c_int {
+    clear_error();
+    if handle.is_null() || edges_json.is_null() || out.is_null() {
+        set_error("null argument");
+        return -1;
+    }
+
+    let json_str = unsafe { CStr::from_ptr(edges_json) }.to_string_lossy();
+    let entries: Vec<serde_json::Value> = match serde_json::from_str(&json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            set_error(format!("invalid edges JSON: {e}"));
+            return -1;
+        }
+    };
+
+    if entries.is_empty() {
+        let result = CString::new(r#"{"created":0}"#).unwrap();
+        unsafe { *out = result.into_raw() };
+        return 0;
+    }
+
+    // Parse all edge specs and group by type
+    let mut grouped: HashMap<String, Vec<(NodeIndex, NodeIndex, HashMap<String, Value>)>> =
+        HashMap::new();
+
+    for (i, entry) in entries.iter().enumerate() {
+        let src = match entry.get("src").and_then(|v| v.as_u64()) {
+            Some(v) => NodeIndex::new(v as usize),
+            None => {
+                set_error(format!("edges[{i}]: missing or invalid 'src'"));
+                return -1;
+            }
+        };
+        let dst = match entry.get("dst").and_then(|v| v.as_u64()) {
+            Some(v) => NodeIndex::new(v as usize),
+            None => {
+                set_error(format!("edges[{i}]: missing or invalid 'dst'"));
+                return -1;
+            }
+        };
+        let edge_type = match entry.get("type").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => {
+                set_error(format!("edges[{i}]: missing 'type'"));
+                return -1;
+            }
+        };
+
+        let props = if let Some(obj) = entry.get("props").and_then(|v| v.as_object()) {
+            match obj
+                .iter()
+                .map(|(k, v)| json_to_value(v.clone()).map(|val| (k.clone(), val)))
+                .collect::<Result<HashMap<String, Value>, String>>()
+            {
+                Ok(m) => m,
+                Err(e) => {
+                    set_error(format!("edges[{i}]: invalid props: {e}"));
+                    return -1;
+                }
+            }
+        } else {
+            HashMap::new()
+        };
+
+        grouped.entry(edge_type).or_default().push((src, dst, props));
+    }
+
+    // Acquire mutex ONCE
+    let handle_ref = unsafe { &mut *handle };
+    let mut arc = match handle_ref.inner.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            set_error(format!("mutex poisoned: {e}"));
+            return -1;
+        }
+    };
+    let graph = Arc::make_mut(&mut *arc);
+
+    let mut total_created: usize = 0;
+
+    // Process each edge type group with ConnectionBatchProcessor
+    for (edge_type, edges) in grouped {
+        let mut processor = ConnectionBatchProcessor::new(edges.len());
+        processor.set_skip_existence_check(skip_existing != 0);
+
+        for (src, dst, props) in edges {
+            if let Err(e) = processor.add_connection(src, dst, props, graph, &edge_type) {
+                set_error(format!("add_connection failed: {e}"));
+                return -1;
+            }
+        }
+
+        match processor.execute(graph, edge_type) {
+            Ok((stats, _metrics)) => {
+                total_created += stats.connections_created;
+            }
+            Err(e) => {
+                set_error(format!("edge batch execute failed: {e}"));
+                return -1;
+            }
+        }
+    }
+
+    let result_json = format!(r#"{{"created":{total_created}}}"#);
+    match CString::new(result_json) {
         Ok(s) => {
             unsafe { *out = s.into_raw() };
             0
