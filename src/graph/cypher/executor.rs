@@ -8715,13 +8715,27 @@ fn try_match_merge_pattern(
                 };
 
                 // --- Index-accelerated matching ---
+                // Check primary label first (fast path via indexes), then fall back
+                // to scanning all nodes for secondary label matches (extra_labels / __kinds).
 
                 // 1. If pattern contains "id" property, use O(1) id_index lookup
                 if let Some((_, id_value)) = expected_props.iter().find(|(k, _)| *k == "id") {
                     if let Some(idx) = graph.lookup_by_id_readonly(label, id_value) {
-                        // ID matched — verify remaining properties (if any)
                         if expected_props.len() == 1 || node_matches_all(idx, &expected_props) {
                             return Ok(Some(build_result(idx)));
+                        }
+                    }
+                    // Also check other primary types for secondary label match
+                    for (other_type, _) in &graph.type_indices {
+                        if other_type.as_str() == label { continue; }
+                        if let Some(idx) = graph.lookup_by_id_readonly(other_type, id_value) {
+                            if let Some(node) = graph.graph.node_weight(idx) {
+                                if crate::graph::pattern_matching::node_matches_label(node, label)
+                                    && node_matches_all(idx, &expected_props)
+                                {
+                                    return Ok(Some(build_result(idx)));
+                                }
+                            }
                         }
                     }
                     return Ok(None);
@@ -8730,27 +8744,39 @@ fn try_match_merge_pattern(
                 // 2. Single non-id property: try property index
                 if expected_props.len() == 1 {
                     let (key, ref value) = expected_props[0];
-                    // Map name/title aliases to the stored field name
                     let index_key = if key == "name" || key == "title" {
                         "title"
                     } else {
                         key
                     };
+                    // Primary label index
                     if let Some(candidates) = graph.lookup_by_index(label, index_key, value) {
                         for &idx in &candidates {
                             if node_matches_all(idx, &expected_props) {
                                 return Ok(Some(build_result(idx)));
                             }
                         }
-                        return Ok(None);
                     }
-                    // No index — fall through to linear scan
+                    // Secondary label: scan other type indexes
+                    for (other_type, _) in &graph.type_indices {
+                        if other_type.as_str() == label { continue; }
+                        if let Some(candidates) = graph.lookup_by_index(other_type, index_key, value) {
+                            for &idx in &candidates {
+                                if let Some(node) = graph.graph.node_weight(idx) {
+                                    if crate::graph::pattern_matching::node_matches_label(node, label)
+                                        && node_matches_all(idx, &expected_props)
+                                    {
+                                        return Ok(Some(build_result(idx)));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // No index hit — fall through to linear scan
                 }
 
-                // 3. Multi-property: try composite index
+                // 3. Multi-property: try composite index (primary label only)
                 if expected_props.len() >= 2 {
-                    // Build sorted key/value arrays for composite lookup
-                    // (exclude id/name/title which use special storage)
                     let mut indexable: Vec<(&str, &Value)> = expected_props
                         .iter()
                         .filter(|(k, _)| *k != "id" && *k != "name" && *k != "title")
@@ -8770,15 +8796,25 @@ fn try_match_merge_pattern(
                                     return Ok(Some(build_result(idx)));
                                 }
                             }
-                            return Ok(None);
                         }
                     }
                 }
 
-                // 4. Fall back to linear scan (no index covers the pattern)
+                // 4. Linear scan: primary label first, then all nodes for secondary matches
                 if let Some(type_nodes) = graph.type_indices.get(label) {
                     for &idx in type_nodes {
                         if node_matches_all(idx, &expected_props) {
+                            return Ok(Some(build_result(idx)));
+                        }
+                    }
+                }
+                // Secondary label scan: check all other nodes
+                for idx in graph.graph.node_indices() {
+                    if let Some(node) = graph.graph.node_weight(idx) {
+                        if node.node_type != label
+                            && crate::graph::pattern_matching::node_matches_label(node, label)
+                            && node_matches_all(idx, &expected_props)
+                        {
                             return Ok(Some(build_result(idx)));
                         }
                     }
@@ -10467,6 +10503,98 @@ mod tests {
 
         assert_eq!(result.stats.as_ref().unwrap().relationships_created, 1);
         assert_eq!(graph.graph.edge_count(), 2);
+    }
+
+    #[test]
+    fn test_merge_finds_node_by_extra_labels() {
+        // Simulate BloodHound ingest: node created as Base, then MERGE'd as Group
+        let mut graph = DirGraph::new();
+
+        // Step 1: Create node with primary type Base
+        let q1 = super::super::parser::parse_cypher(
+            "CREATE (n:Base {objectid: 'TEST-1', name: 'TestGroup'})"
+        ).unwrap();
+        execute_mutable(&mut graph, &q1, HashMap::new(), None).unwrap();
+
+        // Step 2: Add Group as extra label (simulates SET n:Group from upstream)
+        let q2 = super::super::parser::parse_cypher(
+            "MATCH (n:Base {objectid: 'TEST-1'}) SET n:Group"
+        ).unwrap();
+        execute_mutable(&mut graph, &q2, HashMap::new(), None).unwrap();
+
+        // Step 3: MERGE as Group — should find existing node, NOT create a new one
+        let q3 = super::super::parser::parse_cypher(
+            "MERGE (n:Group {objectid: 'TEST-1'}) SET n.updated = true"
+        ).unwrap();
+        let result = execute_mutable(&mut graph, &q3, HashMap::new(), None).unwrap();
+
+        assert_eq!(result.stats.as_ref().unwrap().nodes_created, 0,
+            "MERGE should find existing node via extra_labels, not create a new one");
+        assert_eq!(graph.graph.node_count(), 1,
+            "Should still have exactly 1 node");
+    }
+
+    #[test]
+    fn test_merge_finds_node_by_kinds_property() {
+        // Simulate BloodHound __kinds property approach
+        let mut graph = DirGraph::new();
+
+        // Step 1: Create node as Base with __kinds containing Group
+        let q1 = super::super::parser::parse_cypher(
+            r#"CREATE (n:Base {objectid: "TEST-2", __kinds: '["Base","Group"]'})"#
+        ).unwrap();
+        execute_mutable(&mut graph, &q1, HashMap::new(), None).unwrap();
+
+        // Step 2: MERGE as Group — should find via __kinds check
+        let q2 = super::super::parser::parse_cypher(
+            r#"MERGE (n:Group {objectid: "TEST-2"})"#
+        ).unwrap();
+        let result = execute_mutable(&mut graph, &q2, HashMap::new(), None).unwrap();
+
+        assert_eq!(result.stats.as_ref().unwrap().nodes_created, 0,
+            "MERGE should find existing node via __kinds property");
+        assert_eq!(graph.graph.node_count(), 1);
+    }
+
+    #[test]
+    fn test_merge_secondary_label_full_ingest_simulation() {
+        // Full BloodHound-style ingest simulation:
+        // 1. Relationship ingest creates stub: MERGE (s:Base {objectid: X})
+        // 2. Relationship ingest creates stub: MERGE (e:Base {objectid: Y})
+        // 3. Relationship ingest adds edge
+        // 4. Node ingest: MERGE (n:Base {objectid: Y}) SET n:Group (adds Group label)
+        // 5. Another MERGE (n:Group {objectid: Y}) should find existing node
+        let mut graph = DirGraph::new();
+
+        // Steps 1-3: relationship ingest creates stubs + edge
+        let q1 = super::super::parser::parse_cypher(
+            "MERGE (s:Base {objectid: 'SRC'}) MERGE (e:Base {objectid: 'GRP'}) MERGE (s)-[:MemberOf]->(e)"
+        ).unwrap();
+        execute_mutable(&mut graph, &q1, HashMap::new(), None).unwrap();
+        assert_eq!(graph.graph.node_count(), 2);
+
+        // Step 4: node ingest adds Group label
+        let q2 = super::super::parser::parse_cypher(
+            "MERGE (n:Base {objectid: 'GRP'}) SET n:Group, n.name = 'TestGroup'"
+        ).unwrap();
+        execute_mutable(&mut graph, &q2, HashMap::new(), None).unwrap();
+        assert_eq!(graph.graph.node_count(), 2, "SET n:Group should not create a new node");
+
+        // Step 5: another MERGE by Group label should find the same node
+        let q3 = super::super::parser::parse_cypher(
+            "MERGE (n:Group {objectid: 'GRP'}) RETURN n.name"
+        ).unwrap();
+        let result = execute_mutable(&mut graph, &q3, HashMap::new(), None).unwrap();
+        assert_eq!(result.stats.as_ref().unwrap().nodes_created, 0);
+        assert_eq!(graph.graph.node_count(), 2);
+
+        // Verify MATCH (n:Group) finds the node
+        let params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &params, None);
+        let q4 = super::super::parser::parse_cypher("MATCH (n:Group) RETURN count(n)").unwrap();
+        let result = executor.execute(&q4).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0][0], Value::Int64(1));
     }
 
     // ========================================================================

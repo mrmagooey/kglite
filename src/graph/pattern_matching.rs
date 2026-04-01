@@ -24,7 +24,7 @@ const EXPANSION_RAYON_THRESHOLD: usize = 8192;
 /// 2. The `extra_labels` vec (populated by SET n:Label in Cypher).
 /// 3. A `__kinds` JSON-array property (used by BloodHound-style imports
 ///    where secondary kinds are stored as `"__kinds": '["Computer","Domain"]'`).
-fn node_matches_label(node: &NodeData, label: &str) -> bool {
+pub fn node_matches_label(node: &NodeData, label: &str) -> bool {
     if node.node_type == label {
         return true;
     }
