@@ -65,6 +65,13 @@ impl CypherParser {
         self.peek() == Some(token)
     }
 
+    /// Check if the current token is an identifier matching the given name (case-insensitive).
+    /// Used for contextual keywords like CONTAINS, STARTS, ENDS that are tokenized as
+    /// identifiers so they can also be used as relationship type / label names.
+    fn check_contextual_keyword(&self, name: &str) -> bool {
+        matches!(self.peek(), Some(CypherToken::Identifier(s)) if s.eq_ignore_ascii_case(name))
+    }
+
     /// Consume the next token as an alias name (after AS).
     /// Accepts identifiers and reserved keywords (e.g. `AS optional`, `AS type`).
     fn try_consume_alias_name(&mut self) -> Result<String, String> {
@@ -436,6 +443,7 @@ impl CypherParser {
                 CypherToken::Star => parts.push("*".to_string()),
                 CypherToken::DotDot => parts.push("..".to_string()),
                 CypherToken::Dot => parts.push(".".to_string()),
+                CypherToken::Pipe => parts.push("|".to_string()),
                 CypherToken::Identifier(s) => parts.push(s.clone()),
                 CypherToken::StringLit(s) => {
                     // Re-escape quotes so the pattern parser can re-tokenize correctly
@@ -446,8 +454,17 @@ impl CypherParser {
                 CypherToken::FloatLit(f) => parts.push(f.to_string()),
                 CypherToken::True => parts.push("true".to_string()),
                 CypherToken::False => parts.push("false".to_string()),
+                CypherToken::Parameter(name) => {
+                    parts.push(format!("${}", name));
+                }
                 _ => {
-                    return Err(format!("Unexpected token in EXISTS pattern: {:?}", token));
+                    // Allow keyword tokens as identifiers inside EXISTS patterns
+                    // (same rationale as extract_pattern_string).
+                    if let Some(name) = token_to_keyword_name(&token) {
+                        parts.push(name);
+                    } else {
+                        return Err(format!("Unexpected token in EXISTS pattern: {:?}", token));
+                    }
                 }
             }
         }
@@ -516,6 +533,7 @@ impl CypherParser {
                 CypherToken::Star => parts.push("*".to_string()),
                 CypherToken::DotDot => parts.push("..".to_string()),
                 CypherToken::Dot => parts.push(".".to_string()),
+                CypherToken::Pipe => parts.push("|".to_string()),
                 CypherToken::Identifier(s) => parts.push(s.clone()),
                 CypherToken::StringLit(s) => {
                     let escaped = s.replace('\\', "\\\\").replace('\'', "\\'");
@@ -529,7 +547,14 @@ impl CypherParser {
                     parts.push(format!("${}", name));
                 }
                 _ => {
-                    return Err(format!("Unexpected token in MATCH pattern: {:?}", token));
+                    // Allow keyword tokens (e.g. Contains, On, Set) as identifiers
+                    // inside patterns — they are valid as relationship type or node
+                    // label names in Cypher.
+                    if let Some(name) = token_to_keyword_name(&token) {
+                        parts.push(name);
+                    } else {
+                        return Err(format!("Unexpected token in MATCH pattern: {:?}", token));
+                    }
                 }
             }
         }
@@ -554,12 +579,25 @@ impl CypherParser {
 
     /// Parse OR expressions (lowest precedence)
     fn parse_or_predicate(&mut self) -> Result<Predicate, String> {
-        let mut left = self.parse_and_predicate()?;
+        let mut left = self.parse_xor_predicate()?;
 
         while self.check(&CypherToken::Or) {
             self.advance();
-            let right = self.parse_and_predicate()?;
+            let right = self.parse_xor_predicate()?;
             left = Predicate::Or(Box::new(left), Box::new(right));
+        }
+
+        Ok(left)
+    }
+
+    /// Parse XOR expressions (precedence between OR and AND)
+    fn parse_xor_predicate(&mut self) -> Result<Predicate, String> {
+        let mut left = self.parse_and_predicate()?;
+
+        while self.check(&CypherToken::Xor) {
+            self.advance();
+            let right = self.parse_and_predicate()?;
+            left = Predicate::Xor(Box::new(left), Box::new(right));
         }
 
         Ok(left)
@@ -649,6 +687,32 @@ impl CypherParser {
 
         let left = self.parse_expression()?;
 
+        // Check for label predicate: variable:Label (e.g. m:Computer in WHERE clause)
+        // Rewrite to: "Label" IN labels(variable)
+        if let Expression::Variable(ref var_name) = left {
+            if self.check(&CypherToken::Colon) {
+                self.advance(); // consume :
+                let label = match self.advance().cloned() {
+                    Some(CypherToken::Identifier(name)) => name,
+                    other => {
+                        return Err(format!(
+                            "Expected label name after '{}:', got {:?}",
+                            var_name, other
+                        ))
+                    }
+                };
+                let label_pred = Predicate::InExpression {
+                    expr: Expression::Literal(Value::String(label)),
+                    list_expr: Expression::FunctionCall {
+                        name: "labels".to_string(),
+                        args: vec![Expression::Variable(var_name.clone())],
+                        distinct: false,
+                    },
+                };
+                return Ok(label_pred);
+            }
+        }
+
         // parse_expression() may have already consumed IS NULL / IS NOT NULL
         // and returned Expression::IsNull/IsNotNull — convert to Predicate form
         if let Expression::IsNull(inner) = left {
@@ -674,12 +738,21 @@ impl CypherParser {
         // Check for IN
         if self.check(&CypherToken::In) {
             self.advance();
-            let list = self.parse_list_expression()?;
-            return Ok(Predicate::In { expr: left, list });
+            if self.check(&CypherToken::LBracket) {
+                let list = self.parse_list_expression()?;
+                return Ok(Predicate::In { expr: left, list });
+            } else {
+                // IN with a variable, parameter, or function call expression
+                let list_expr = self.parse_expression()?;
+                return Ok(Predicate::InExpression {
+                    expr: left,
+                    list_expr,
+                });
+            }
         }
 
-        // Check for STARTS WITH
-        if self.check(&CypherToken::StartsWith) {
+        // Check for STARTS WITH (contextual keyword)
+        if self.check_contextual_keyword("STARTS") {
             self.advance(); // consume STARTS
                             // Expect WITH keyword (we use With token)
             self.expect(&CypherToken::With)?;
@@ -690,8 +763,8 @@ impl CypherParser {
             });
         }
 
-        // Check for ENDS WITH
-        if self.check(&CypherToken::EndsWith) {
+        // Check for ENDS WITH (contextual keyword)
+        if self.check_contextual_keyword("ENDS") {
             self.advance(); // consume ENDS
             self.expect(&CypherToken::With)?;
             let pattern = self.parse_expression()?;
@@ -701,8 +774,8 @@ impl CypherParser {
             });
         }
 
-        // Check for CONTAINS
-        if self.check(&CypherToken::Contains) {
+        // Check for CONTAINS (contextual keyword)
+        if self.check_contextual_keyword("CONTAINS") {
             self.advance();
             let pattern = self.parse_expression()?;
             return Ok(Predicate::Contains {
@@ -794,6 +867,83 @@ impl CypherParser {
 
     /// Parse an expression with operator precedence:
     /// additive (+, -) < multiplicative (*, /) < unary (-) < primary
+    /// Parse an expression that may have trailing comparison/predicate operators.
+    /// Used in RETURN and WITH items where predicates like `STARTS WITH`, `=`, `<>`
+    /// should be valid as expressions (evaluating to boolean).
+    fn parse_expression_with_predicates(&mut self) -> Result<Expression, String> {
+        let expr = self.parse_expression()?;
+        // Check for trailing comparison/predicate operators
+        match self.peek() {
+            Some(CypherToken::Equals)
+            | Some(CypherToken::NotEquals)
+            | Some(CypherToken::LessThan)
+            | Some(CypherToken::GreaterThan)
+            | Some(CypherToken::LessThanEquals)
+            | Some(CypherToken::GreaterThanEquals)
+            | Some(CypherToken::RegexMatch) => {
+                let operator = match self.peek() {
+                    Some(CypherToken::Equals) => ComparisonOp::Equals,
+                    Some(CypherToken::NotEquals) => ComparisonOp::NotEquals,
+                    Some(CypherToken::LessThan) => ComparisonOp::LessThan,
+                    Some(CypherToken::GreaterThan) => ComparisonOp::GreaterThan,
+                    Some(CypherToken::LessThanEquals) => ComparisonOp::LessThanEq,
+                    Some(CypherToken::GreaterThanEquals) => ComparisonOp::GreaterThanEq,
+                    Some(CypherToken::RegexMatch) => ComparisonOp::RegexMatch,
+                    _ => unreachable!(),
+                };
+                self.advance(); // consume operator
+                let right = self.parse_expression()?;
+                Ok(Expression::PredicateExpr(Box::new(Predicate::Comparison {
+                    left: expr,
+                    operator,
+                    right,
+                })))
+            }
+            Some(CypherToken::Identifier(s)) if s.eq_ignore_ascii_case("STARTS") => {
+                self.advance(); // consume STARTS
+                self.expect(&CypherToken::With)?; // consume WITH
+                let pattern = self.parse_expression()?;
+                Ok(Expression::PredicateExpr(Box::new(Predicate::StartsWith {
+                    expr,
+                    pattern,
+                })))
+            }
+            Some(CypherToken::Identifier(s)) if s.eq_ignore_ascii_case("ENDS") => {
+                self.advance(); // consume ENDS
+                self.expect(&CypherToken::With)?; // consume WITH
+                let pattern = self.parse_expression()?;
+                Ok(Expression::PredicateExpr(Box::new(Predicate::EndsWith {
+                    expr,
+                    pattern,
+                })))
+            }
+            Some(CypherToken::Identifier(s)) if s.eq_ignore_ascii_case("CONTAINS") => {
+                self.advance(); // consume CONTAINS
+                let pattern = self.parse_expression()?;
+                Ok(Expression::PredicateExpr(Box::new(Predicate::Contains {
+                    expr,
+                    pattern,
+                })))
+            }
+            Some(CypherToken::In) => {
+                self.advance(); // consume IN
+                if self.check(&CypherToken::LBracket) {
+                    let list = self.parse_list_expression()?;
+                    Ok(Expression::PredicateExpr(Box::new(Predicate::In {
+                        expr,
+                        list,
+                    })))
+                } else {
+                    let list_expr = self.parse_expression()?;
+                    Ok(Expression::PredicateExpr(Box::new(
+                        Predicate::InExpression { expr, list_expr },
+                    )))
+                }
+            }
+            _ => Ok(expr),
+        }
+    }
+
     fn parse_expression(&mut self) -> Result<Expression, String> {
         let expr = self.parse_additive_expression()?;
         // Check for IS NULL / IS NOT NULL postfix
@@ -872,6 +1022,11 @@ impl CypherParser {
                     self.advance();
                     let right = self.parse_unary_expression()?;
                     left = Expression::Divide(Box::new(left), Box::new(right));
+                }
+                Some(CypherToken::Percent) => {
+                    self.advance();
+                    let right = self.parse_unary_expression()?;
+                    left = Expression::Modulo(Box::new(left), Box::new(right));
                 }
                 _ => break,
             }
@@ -1039,7 +1194,21 @@ impl CypherParser {
                             return self.parse_list_quantifier_expr(q);
                         }
                     }
-                    return self.parse_function_call(name);
+                    let func_expr = self.parse_function_call(name)?;
+                    // Check for property access on function result: func().property
+                    if self.check(&CypherToken::Dot) {
+                        self.advance(); // consume dot
+                        match self.advance().cloned() {
+                            Some(CypherToken::Identifier(prop)) => {
+                                return Ok(Expression::ExprPropertyAccess {
+                                    expr: Box::new(func_expr),
+                                    property: prop,
+                                });
+                            }
+                            _ => return Err("Expected property name after '.'".to_string()),
+                        }
+                    }
+                    return Ok(func_expr);
                 }
 
                 // Check for property access: identifier.property
@@ -1075,12 +1244,6 @@ impl CypherParser {
             {
                 self.advance(); // consume ALL
                 self.parse_list_quantifier_expr(ListQuantifier::All)
-            }
-
-            // Keywords that can also be function names when followed by (
-            Some(CypherToken::Contains) if self.peek_at(1) == Some(&CypherToken::LParen) => {
-                self.advance();
-                self.parse_function_call("contains".to_string())
             }
 
             Some(t) => Err(format!("Unexpected token in expression: {:?}", t)),
@@ -1182,14 +1345,21 @@ impl CypherParser {
                 self.expect(&CypherToken::Comma)?;
             }
 
-            // Check for .property shorthand
+            // Check for .property shorthand or .* all-properties
             if self.check(&CypherToken::Dot) {
                 self.advance(); // consume dot
                 match self.advance().cloned() {
                     Some(CypherToken::Identifier(prop)) => {
                         items.push(MapProjectionItem::Property(prop));
                     }
-                    _ => return Err("Expected property name after '.' in map projection".into()),
+                    Some(CypherToken::Star) => {
+                        items.push(MapProjectionItem::AllProperties);
+                    }
+                    _ => {
+                        return Err(
+                            "Expected property name or '*' after '.' in map projection".into()
+                        )
+                    }
                 }
             } else {
                 // alias: expression
@@ -1416,7 +1586,7 @@ impl CypherParser {
     }
 
     fn parse_return_item(&mut self) -> Result<ReturnItem, String> {
-        let expression = self.parse_expression()?;
+        let expression = self.parse_expression_with_predicates()?;
 
         let alias = if self.check(&CypherToken::As) {
             self.advance();
@@ -2324,6 +2494,37 @@ mod tests {
     }
 
     #[test]
+    fn test_contains_as_relationship_type() {
+        // Contains should work as a relationship type name (common in BloodHound)
+        let query = parse_cypher("MATCH (a)-[:Contains]->(b) RETURN a, b").unwrap();
+        assert!(matches!(&query.clauses[0], Clause::Match(_)));
+    }
+
+    #[test]
+    fn test_contains_rel_type_with_variable() {
+        let query = parse_cypher("MATCH (a)-[r:Contains]->(b) RETURN type(r)").unwrap();
+        assert!(matches!(&query.clauses[0], Clause::Match(_)));
+    }
+
+    #[test]
+    fn test_contains_rel_type_variable_length() {
+        let query = parse_cypher("MATCH (a)-[:Contains*1..3]->(b) RETURN a").unwrap();
+        assert!(matches!(&query.clauses[0], Clause::Match(_)));
+    }
+
+    #[test]
+    fn test_contains_both_rel_type_and_string_operator() {
+        // Contains as rel type AND CONTAINS as string operator in the same query
+        let query =
+            parse_cypher("MATCH (a)-[:Contains]->(b) WHERE b.name CONTAINS 'test' RETURN a, b")
+                .unwrap();
+        assert!(matches!(&query.clauses[0], Clause::Match(_)));
+        if let Clause::Where(w) = &query.clauses[1] {
+            assert!(matches!(&w.predicate, Predicate::Contains { .. }));
+        }
+    }
+
+    #[test]
     fn test_unwind() {
         let query = parse_cypher("UNWIND [1, 2, 3] AS x RETURN x").unwrap();
 
@@ -2729,6 +2930,227 @@ mod tests {
             assert_eq!(c.yield_items[1].alias.as_deref(), Some("limit"));
         } else {
             panic!("Expected CALL clause");
+        }
+    }
+
+    // ========================================================================
+    // Label Predicate in WHERE clause tests
+    // ========================================================================
+
+    #[test]
+    fn test_where_label_predicate_basic() {
+        let query = parse_cypher("MATCH (m) WHERE m:Person RETURN m").unwrap();
+        assert_eq!(query.clauses.len(), 3);
+        if let Clause::Where(w) = &query.clauses[1] {
+            if let Predicate::InExpression { expr, list_expr } = &w.predicate {
+                assert!(matches!(expr, Expression::Literal(Value::String(s)) if s == "Person"));
+                assert!(
+                    matches!(list_expr, Expression::FunctionCall { name, args, .. }
+                    if name == "labels" && matches!(&args[0], Expression::Variable(v) if v == "m"))
+                );
+            } else {
+                panic!(
+                    "Expected InExpression for label check, got {:?}",
+                    w.predicate
+                );
+            }
+        } else {
+            panic!("Expected WHERE clause");
+        }
+    }
+
+    #[test]
+    fn test_where_label_predicate_with_and() {
+        let query = parse_cypher("MATCH (m) WHERE m:Computer AND m.enabled RETURN m").unwrap();
+        if let Clause::Where(w) = &query.clauses[1] {
+            assert!(matches!(&w.predicate, Predicate::And(_, _)));
+        } else {
+            panic!("Expected WHERE clause");
+        }
+    }
+
+    #[test]
+    fn test_where_label_predicate_with_or() {
+        let query = parse_cypher("MATCH (m) WHERE m:User OR m:Computer RETURN m").unwrap();
+        if let Clause::Where(w) = &query.clauses[1] {
+            assert!(matches!(&w.predicate, Predicate::Or(_, _)));
+        } else {
+            panic!("Expected WHERE clause");
+        }
+    }
+
+    #[test]
+    fn test_where_label_predicate_negated() {
+        let query = parse_cypher("MATCH (m) WHERE NOT m:Admin RETURN m").unwrap();
+        if let Clause::Where(w) = &query.clauses[1] {
+            assert!(matches!(&w.predicate, Predicate::Not(_)));
+        } else {
+            panic!("Expected WHERE clause");
+        }
+    }
+
+    #[test]
+    fn test_where_label_predicate_multiple_variables() {
+        let query =
+            parse_cypher("MATCH (a)-[r]->(b) WHERE a:Person AND b:Company RETURN a, b").unwrap();
+        if let Clause::Where(w) = &query.clauses[1] {
+            assert!(matches!(&w.predicate, Predicate::And(_, _)));
+        } else {
+            panic!("Expected WHERE clause");
+        }
+    }
+
+    #[test]
+    fn test_where_label_predicate_with_pattern_label() {
+        let query =
+            parse_cypher("MATCH (o)-[:MemberOf*1..]->(g:Group) WHERE g:AdminGroup RETURN o")
+                .unwrap();
+        if let Clause::Where(w) = &query.clauses[1] {
+            if let Predicate::InExpression { expr, .. } = &w.predicate {
+                assert!(matches!(expr, Expression::Literal(Value::String(s)) if s == "AdminGroup"));
+            } else {
+                panic!(
+                    "Expected InExpression for label check, got {:?}",
+                    w.predicate
+                );
+            }
+        } else {
+            panic!("Expected WHERE clause");
+        }
+    }
+
+    // ========================================================================
+    // Multi-type relationship patterns (pipe-separated)
+    // ========================================================================
+
+    #[test]
+    fn test_parse_multi_type_relationship() {
+        // Basic multi-type: [:KNOWS|LIKES]
+        let query = parse_cypher("MATCH (a)-[:KNOWS|LIKES]->(b) RETURN a, b").unwrap();
+        if let Clause::Match(m) = &query.clauses[0] {
+            let edge = &m.patterns[0].elements[1];
+            if let pattern_matching::PatternElement::Edge(ep) = edge {
+                assert!(ep.connection_types.is_some());
+                let types = ep.connection_types.as_ref().unwrap();
+                assert_eq!(types, &vec!["KNOWS".to_string(), "LIKES".to_string()]);
+            } else {
+                panic!("Expected edge pattern");
+            }
+        } else {
+            panic!("Expected MATCH clause");
+        }
+    }
+
+    #[test]
+    fn test_parse_multi_type_with_variable() {
+        // With variable binding: [r:KNOWS|LIKES]
+        let query = parse_cypher("MATCH (a)-[r:KNOWS|LIKES]->(b) RETURN type(r)").unwrap();
+        if let Clause::Match(m) = &query.clauses[0] {
+            let edge = &m.patterns[0].elements[1];
+            if let pattern_matching::PatternElement::Edge(ep) = edge {
+                assert_eq!(ep.variable, Some("r".to_string()));
+                assert!(ep.connection_types.is_some());
+                let types = ep.connection_types.as_ref().unwrap();
+                assert_eq!(types, &vec!["KNOWS".to_string(), "LIKES".to_string()]);
+            } else {
+                panic!("Expected edge pattern");
+            }
+        } else {
+            panic!("Expected MATCH clause");
+        }
+    }
+
+    #[test]
+    fn test_parse_multi_type_with_var_length() {
+        // Multi-type with variable-length: [:KNOWS|LIKES*1..3]
+        let query = parse_cypher("MATCH (a)-[:KNOWS|LIKES*1..3]->(b) RETURN a, b").unwrap();
+        if let Clause::Match(m) = &query.clauses[0] {
+            let edge = &m.patterns[0].elements[1];
+            if let pattern_matching::PatternElement::Edge(ep) = edge {
+                assert!(ep.connection_types.is_some());
+                let types = ep.connection_types.as_ref().unwrap();
+                assert_eq!(types, &vec!["KNOWS".to_string(), "LIKES".to_string()]);
+                assert_eq!(ep.var_length, Some((1, 3)));
+            } else {
+                panic!("Expected edge pattern");
+            }
+        } else {
+            panic!("Expected MATCH clause");
+        }
+    }
+
+    #[test]
+    fn test_parse_three_type_relationship() {
+        // Three types: [:KNOWS|LIKES|FOLLOWS]
+        let query = parse_cypher("MATCH (a)-[r:KNOWS|LIKES|FOLLOWS]->(b) RETURN r").unwrap();
+        if let Clause::Match(m) = &query.clauses[0] {
+            let edge = &m.patterns[0].elements[1];
+            if let pattern_matching::PatternElement::Edge(ep) = edge {
+                assert!(ep.connection_types.is_some());
+                let types = ep.connection_types.as_ref().unwrap();
+                assert_eq!(
+                    types,
+                    &vec![
+                        "KNOWS".to_string(),
+                        "LIKES".to_string(),
+                        "FOLLOWS".to_string()
+                    ]
+                );
+            } else {
+                panic!("Expected edge pattern");
+            }
+        } else {
+            panic!("Expected MATCH clause");
+        }
+    }
+
+    #[test]
+    fn test_parse_multi_type_in_delete() {
+        // Multi-type in DELETE query (AD_Miner pattern)
+        let query = parse_cypher(
+            "MATCH (g)-[r:CanExtractDCSecrets|CanLoadCode|CanLogOnLocallyOnDC]->(c) DELETE r",
+        )
+        .unwrap();
+        if let Clause::Match(m) = &query.clauses[0] {
+            let edge = &m.patterns[0].elements[1];
+            if let pattern_matching::PatternElement::Edge(ep) = edge {
+                assert!(ep.connection_types.is_some());
+                let types = ep.connection_types.as_ref().unwrap();
+                assert_eq!(types.len(), 3);
+                assert_eq!(types[0], "CanExtractDCSecrets");
+                assert_eq!(types[1], "CanLoadCode");
+                assert_eq!(types[2], "CanLogOnLocallyOnDC");
+            } else {
+                panic!("Expected edge pattern");
+            }
+        } else {
+            panic!("Expected MATCH clause");
+        }
+    }
+
+    #[test]
+    fn test_parse_multi_type_var_length_unbounded() {
+        // Multi-type with unbounded var-length: [:MemberOf|HasSIDHistory*1..]
+        let query =
+            parse_cypher("MATCH p=(m:User)-[r:MemberOf|HasSIDHistory*1..]->(t:Group) RETURN p")
+                .unwrap();
+        if let Clause::Match(m) = &query.clauses[0] {
+            let edge = &m.patterns[0].elements[1];
+            if let pattern_matching::PatternElement::Edge(ep) = edge {
+                assert!(ep.connection_types.is_some());
+                let types = ep.connection_types.as_ref().unwrap();
+                assert_eq!(
+                    types,
+                    &vec!["MemberOf".to_string(), "HasSIDHistory".to_string()]
+                );
+                assert!(ep.var_length.is_some());
+                let (min, _max) = ep.var_length.unwrap();
+                assert_eq!(min, 1);
+            } else {
+                panic!("Expected edge pattern");
+            }
+        } else {
+            panic!("Expected MATCH clause");
         }
     }
 }

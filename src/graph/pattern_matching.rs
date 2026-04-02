@@ -79,6 +79,10 @@ pub struct NodePattern {
 pub struct EdgePattern {
     pub variable: Option<String>,
     pub connection_type: Option<String>,
+    /// Multiple allowed connection types from pipe syntax: `[:A|B|C]`.
+    /// When set, an edge matches if its type equals ANY of these types.
+    /// `connection_type` holds the first type for backward compatibility.
+    pub connection_types: Option<Vec<String>>,
     pub direction: EdgeDirection,
     pub properties: Option<HashMap<String, PropertyMatcher>>,
     /// Variable-length path configuration: (min_hops, max_hops)
@@ -195,6 +199,7 @@ pub enum Token {
     LessThan,    // <
     Star,        // * (for variable-length paths)
     DotDot,      // .. (for range in variable-length)
+    Pipe,        // | (for multi-type edges: [:A|B])
     Identifier(String),
     StringLit(String),
     IntLit(i64),
@@ -258,6 +263,10 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
             }
             '*' => {
                 tokens.push(Token::Star);
+                chars.next();
+            }
+            '|' => {
+                tokens.push(Token::Pipe);
                 chars.next();
             }
             '.' => {
@@ -453,6 +462,7 @@ impl Parser {
             Token::FloatLit(_) => "decimal",
             Token::BoolLit(_) => "boolean",
             Token::Parameter(_) => "parameter",
+            Token::Pipe => "|",
         }
     }
 
@@ -561,6 +571,7 @@ impl Parser {
 
         let mut variable = None;
         let mut connection_type = None;
+        let mut connection_types: Option<Vec<String>> = None;
         let mut properties = None;
         let mut var_length = None;
 
@@ -570,7 +581,7 @@ impl Parser {
                 // Empty edge pattern: []
             }
             Some(Token::Colon) => {
-                // No variable, just type: [:TYPE]
+                // No variable, just type: [:TYPE] or [:TYPE1|TYPE2]
                 self.advance(); // consume :
                 if let Some(Token::Identifier(name)) = self.advance().cloned() {
                     connection_type = Some(name);
@@ -602,6 +613,26 @@ impl Parser {
             _ => {}
         }
 
+        // Handle pipe-separated types: [:A|B|C]
+        // After parsing the first type, consume any |TYPE continuations
+        if connection_type.is_some() {
+            if let Some(Token::Pipe) = self.peek() {
+                let mut types = vec![connection_type.clone().unwrap()];
+                while let Some(Token::Pipe) = self.peek() {
+                    self.advance(); // consume |
+                    if let Some(Token::Identifier(name)) = self.advance().cloned() {
+                        types.push(name);
+                    } else {
+                        return Err(
+                            "Expected connection/edge type after '|'. Example: -[:KNOWS|LIKES]->"
+                                .to_string(),
+                        );
+                    }
+                }
+                connection_types = Some(types);
+            }
+        }
+
         // Check for variable-length marker: *
         if let Some(Token::Star) = self.peek() {
             var_length = Some(self.parse_var_length()?);
@@ -631,6 +662,7 @@ impl Parser {
         Ok(EdgePattern {
             variable,
             connection_type,
+            connection_types,
             direction,
             properties,
             var_length,
@@ -759,9 +791,59 @@ impl Parser {
 }
 
 pub fn parse_pattern(input: &str) -> Result<Pattern, String> {
-    let tokens = tokenize(input)?;
+    let mut tokens = tokenize(input)?;
+    // Strip optional outer grouping parentheses.
+    // Standard Cypher allows `p=((a)-[:REL]->(b))` where the outer parens are
+    // purely cosmetic.  Detect this by checking whether the token stream starts
+    // with `((` and the outermost `(` has its matching `)` as the very last
+    // token.  If so, remove those wrapper parens so the inner pattern parses
+    // normally.
+    tokens = strip_outer_grouping_parens(tokens);
     let mut parser = Parser::new(tokens);
     parser.parse_pattern()
+}
+
+/// If the token list is wrapped in redundant grouping parentheses —
+/// i.e. starts with `(` whose matching `)` is the last token, and the second
+/// token is also `(` (so this isn't just a single-node pattern) — strip them.
+/// Handles multiple layers of wrapping.
+fn strip_outer_grouping_parens(mut tokens: Vec<Token>) -> Vec<Token> {
+    loop {
+        if tokens.len() < 3 {
+            break;
+        }
+        if tokens.first() != Some(&Token::LParen) || tokens.last() != Some(&Token::RParen) {
+            break;
+        }
+        // The second token must also be `(` — otherwise this is a normal node
+        // pattern like `(a:Person)-[...]->(b)` and the outer `(` belongs to it.
+        if tokens.get(1) != Some(&Token::LParen) {
+            break;
+        }
+        // Verify the first `(` matches the last `)` by tracking paren depth.
+        let mut depth = 0i32;
+        let mut match_pos = None;
+        for (i, tok) in tokens.iter().enumerate() {
+            match tok {
+                Token::LParen => depth += 1,
+                Token::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        match_pos = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if match_pos != Some(tokens.len() - 1) {
+            break;
+        }
+        // Safe to strip: remove first and last tokens.
+        tokens.remove(0);
+        tokens.pop();
+    }
+    tokens
 }
 
 // ============================================================================
@@ -946,9 +1028,9 @@ impl<'a> PatternExecutor<'a> {
         // Process edge-node pairs
         let mut i = 1;
         while i < pattern.elements.len() {
-            if self.max_matches.is_some_and(|max| matches.len() >= max) {
-                break;
-            }
+            // max_matches is enforced DURING expansion (inner-loop checks below),
+            // not between hops, to avoid breaking before edges are expanded.
+            let is_last_hop = i + 2 >= pattern.elements.len();
             if let Some(dl) = self.deadline {
                 if Instant::now() > dl {
                     return Err("Query timed out".to_string());
@@ -1075,11 +1157,17 @@ impl<'a> PatternExecutor<'a> {
                 let mut new_matches_seq = Vec::new();
                 let mut new_indices_seq = Vec::new();
                 let mut expand_count: usize = 0;
+                // At the last hop, enforce exact max_matches.
+                // At intermediate hops, use a generous overcommit (50x) to avoid
+                // expanding far more intermediates than needed while ensuring
+                // enough survive to produce max_matches final results.
+                let hop_limit = if is_last_hop {
+                    self.max_matches
+                } else {
+                    self.max_matches.map(|m| m.saturating_mul(50).max(1000))
+                };
                 for (current_match, &source_idx) in matches.iter().zip(current_indices.iter()) {
-                    if self
-                        .max_matches
-                        .is_some_and(|max| new_matches_seq.len() >= max)
-                    {
+                    if hop_limit.is_some_and(|max| new_matches_seq.len() >= max) {
                         break;
                     }
                     let expansions =
@@ -1093,10 +1181,7 @@ impl<'a> PatternExecutor<'a> {
                                 }
                             }
                         }
-                        if self
-                            .max_matches
-                            .is_some_and(|max| new_matches_seq.len() >= max)
-                        {
+                        if hop_limit.is_some_and(|max| new_matches_seq.len() >= max) {
                             break;
                         }
                         if let Some(ref var) = node_pattern.variable {
@@ -1165,8 +1250,13 @@ impl<'a> PatternExecutor<'a> {
                 }
             }
 
-            // Apply max_matches truncation (for parallel path which can't early-exit)
-            if let Some(max) = self.max_matches {
+            // Apply hop limit truncation (for parallel path which can't early-exit)
+            let truncate_limit = if is_last_hop {
+                self.max_matches
+            } else {
+                self.max_matches.map(|m| m.saturating_mul(50).max(1000))
+            };
+            if let Some(max) = truncate_limit {
                 new_matches.truncate(max);
                 new_indices.truncate(max);
             }
@@ -1472,12 +1562,15 @@ impl<'a> PatternExecutor<'a> {
             for (key, matcher) in props {
                 // Resolve alias: original column name → canonical field
                 let resolved = self.graph.resolve_alias(&node.node_type, key);
-                // Check special fields first: name/title maps to title, id maps to id
+                // Check special fields first: name/title maps to title, id maps to id,
+                // type/node_type/label maps to the node's type string.
                 // Use Cow to avoid cloning when possible
                 let value: Option<Cow<'_, Value>> = if resolved == "name" || resolved == "title" {
                     Some(Cow::Borrowed(&node.title))
                 } else if resolved == "id" {
                     Some(Cow::Borrowed(&node.id))
+                } else if resolved == "type" || resolved == "node_type" || resolved == "label" {
+                    Some(Cow::Owned(Value::String(node.node_type.clone())))
                 } else {
                     node.get_property(resolved)
                 };
@@ -1563,7 +1656,12 @@ impl<'a> PatternExecutor<'a> {
         node_pattern: &NodePattern,
     ) -> Result<Vec<(NodeIndex, MatchBinding)>, String> {
         // Early exit: if the specified connection type doesn't exist in the graph, skip all iteration
-        if let Some(ref conn_type) = edge_pattern.connection_type {
+        if let Some(ref types) = edge_pattern.connection_types {
+            // Multi-type: at least one must exist
+            if !types.iter().any(|t| self.graph.has_connection_type(t)) {
+                return Ok(Vec::new());
+            }
+        } else if let Some(ref conn_type) = edge_pattern.connection_type {
             if !self.graph.has_connection_type(conn_type) {
                 return Ok(Vec::new());
             }
@@ -1583,11 +1681,19 @@ impl<'a> PatternExecutor<'a> {
             EdgeDirection::Both => &[Direction::Outgoing, Direction::Incoming],
         };
 
-        // Pre-intern connection type for fast u64 == u64 comparison in inner loop
-        let conn_key = edge_pattern
-            .connection_type
+        // Pre-intern connection type(s) for fast u64 == u64 comparison in inner loop
+        let conn_keys: Option<Vec<InternedKey>> = edge_pattern
+            .connection_types
             .as_ref()
-            .map(|ct| InternedKey::from_str(ct));
+            .map(|types| types.iter().map(|t| InternedKey::from_str(t)).collect());
+        let conn_key = if conn_keys.is_none() {
+            edge_pattern
+                .connection_type
+                .as_ref()
+                .map(|ct| InternedKey::from_str(ct))
+        } else {
+            None
+        };
 
         for &direction in directions {
             let edges = self.graph.graph.edges_directed(source, direction);
@@ -1596,7 +1702,11 @@ impl<'a> PatternExecutor<'a> {
                 let edge_data = edge.weight();
 
                 // Check connection type if specified (u64 == u64)
-                if let Some(key) = conn_key {
+                if let Some(ref keys) = conn_keys {
+                    if !keys.contains(&edge_data.connection_type) {
+                        continue;
+                    }
+                } else if let Some(key) = conn_key {
                     if edge_data.connection_type != key {
                         continue;
                     }
@@ -1643,19 +1753,24 @@ impl<'a> PatternExecutor<'a> {
 
                 // Create edge binding — skip expensive clones when the edge has
                 // no named variable (the caller will drop the binding unused).
+                // Always use the actual graph edge source/target (not traversal
+                // direction) so that EdgeRef reports correct src/dst even when
+                // the optimizer has reversed the pattern.
+                let actual_source = edge.source();
+                let actual_target = edge.target();
                 let edge_binding = if edge_pattern.variable.is_some() {
                     let edge_data = edge.weight();
                     MatchBinding::Edge {
-                        source,
-                        target,
+                        source: actual_source,
+                        target: actual_target,
                         edge_index: edge.id(),
                         connection_type: edge_data.connection_type,
                         properties: edge_data.properties_cloned(&self.graph.interner),
                     }
                 } else {
                     MatchBinding::Edge {
-                        source,
-                        target,
+                        source: actual_source,
+                        target: actual_target,
                         edge_index: edge.id(),
                         connection_type: InternedKey::default(),
                         properties: HashMap::new(),
@@ -1689,11 +1804,19 @@ impl<'a> PatternExecutor<'a> {
             EdgeDirection::Both => &[Direction::Outgoing, Direction::Incoming],
         };
 
-        // Pre-intern connection type for fast u64 == u64 comparison in inner loop
-        let conn_key = edge_pattern
-            .connection_type
+        // Pre-intern connection type(s) for fast u64 == u64 comparison in inner loop
+        let conn_keys: Option<Vec<InternedKey>> = edge_pattern
+            .connection_types
             .as_ref()
-            .map(|ct| InternedKey::from_str(ct));
+            .map(|types| types.iter().map(|t| InternedKey::from_str(t)).collect());
+        let conn_key = if conn_keys.is_none() {
+            edge_pattern
+                .connection_type
+                .as_ref()
+                .map(|ct| InternedKey::from_str(ct))
+        } else {
+            None
+        };
 
         // Global visited set — each node is explored at most once.
         // Vec<bool> is faster than HashSet for dense NodeIndex (no hashing, cache-friendly).
@@ -1756,8 +1879,12 @@ impl<'a> PatternExecutor<'a> {
                 for edge in edges {
                     let edge_data = edge.weight();
 
-                    // Check connection type (u64 == u64)
-                    if let Some(key) = conn_key {
+                    // Check connection type(s) (u64 == u64)
+                    if let Some(ref keys) = conn_keys {
+                        if !keys.contains(&edge_data.connection_type) {
+                            continue;
+                        }
+                    } else if let Some(key) = conn_key {
                         if edge_data.connection_type != key {
                             continue;
                         }
@@ -1864,11 +1991,19 @@ impl<'a> PatternExecutor<'a> {
             EdgeDirection::Both => &[Direction::Outgoing, Direction::Incoming],
         };
 
-        // Pre-intern connection type for fast u64 == u64 comparison in inner loop
-        let conn_key = edge_pattern
-            .connection_type
+        // Pre-intern connection type(s) for fast u64 == u64 comparison in inner loop
+        let conn_keys: Option<Vec<InternedKey>> = edge_pattern
+            .connection_types
             .as_ref()
-            .map(|ct| InternedKey::from_str(ct));
+            .map(|types| types.iter().map(|t| InternedKey::from_str(t)).collect());
+        let conn_key = if conn_keys.is_none() {
+            edge_pattern
+                .connection_type
+                .as_ref()
+                .map(|ct| InternedKey::from_str(ct))
+        } else {
+            None
+        };
 
         // BFS state: (current_node, depth, path_info)
         // path_info stores the path taken for creating variable-length edge binding
@@ -1932,8 +2067,12 @@ impl<'a> PatternExecutor<'a> {
                 for edge in edges {
                     let edge_data = edge.weight();
 
-                    // Check connection type if specified (u64 == u64)
-                    if let Some(key) = conn_key {
+                    // Check connection type(s) if specified (u64 == u64)
+                    if let Some(ref keys) = conn_keys {
+                        if !keys.contains(&edge_data.connection_type) {
+                            continue;
+                        }
+                    } else if let Some(key) = conn_key {
                         if edge_data.connection_type != key {
                             continue;
                         }
@@ -2271,6 +2410,59 @@ mod tests {
         let pattern = parse_pattern("(a:Person)-[:KNOWS]->(b:Person)").unwrap();
         if let PatternElement::Edge(ep) = &pattern.elements[1] {
             assert_eq!(ep.var_length, None);
+        } else {
+            panic!("Expected edge pattern");
+        }
+    }
+
+    #[test]
+    fn test_parse_double_paren_path_pattern() {
+        // Double-parenthesized path pattern: p=((a)-[:KNOWS]->(b))
+        let pattern = parse_pattern("((a)-[:KNOWS]->(b))").unwrap();
+        assert_eq!(pattern.elements.len(), 3);
+        if let PatternElement::Node(np) = &pattern.elements[0] {
+            assert_eq!(np.variable, Some("a".to_string()));
+        } else {
+            panic!("Expected node pattern");
+        }
+        if let PatternElement::Edge(ep) = &pattern.elements[1] {
+            assert_eq!(ep.connection_type, Some("KNOWS".to_string()));
+        } else {
+            panic!("Expected edge pattern");
+        }
+        if let PatternElement::Node(np) = &pattern.elements[2] {
+            assert_eq!(np.variable, Some("b".to_string()));
+        } else {
+            panic!("Expected node pattern");
+        }
+    }
+
+    #[test]
+    fn test_parse_single_paren_path_pattern_still_works() {
+        // Normal single-paren pattern must still parse correctly
+        let pattern = parse_pattern("(a)-[:KNOWS]->(b)").unwrap();
+        assert_eq!(pattern.elements.len(), 3);
+        if let PatternElement::Node(np) = &pattern.elements[0] {
+            assert_eq!(np.variable, Some("a".to_string()));
+        } else {
+            panic!("Expected node pattern");
+        }
+    }
+
+    #[test]
+    fn test_parse_double_paren_complex() {
+        // Mimics AD_Miner query: p=((o)-[:MemberOf*0..5]->()-[:ReadGMSAPassword]->(u:User))
+        let pattern =
+            parse_pattern("((o)-[:MemberOf*0..5]->()-[:ReadGMSAPassword]->(u:User))").unwrap();
+        assert_eq!(pattern.elements.len(), 5); // 3 nodes + 2 edges
+        if let PatternElement::Node(np) = &pattern.elements[0] {
+            assert_eq!(np.variable, Some("o".to_string()));
+        } else {
+            panic!("Expected node pattern");
+        }
+        if let PatternElement::Edge(ep) = &pattern.elements[1] {
+            assert_eq!(ep.connection_type, Some("MemberOf".to_string()));
+            assert_eq!(ep.var_length, Some((0, 5)));
         } else {
             panic!("Expected edge pattern");
         }

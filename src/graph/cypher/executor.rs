@@ -457,12 +457,7 @@ impl<'a> CypherExecutor<'a> {
                 })
             }
             Clause::FusedCountTypedNode { node_type, alias } => {
-                let count = self
-                    .graph
-                    .type_indices
-                    .get(node_type.as_str())
-                    .map(|v| v.len() as i64)
-                    .unwrap_or(0);
+                let count = self.graph.nodes_matching_label(node_type.as_str()).len() as i64;
                 let mut projected = Bindings::with_capacity(1);
                 projected.insert(alias.clone(), Value::Int64(count));
                 Ok(ResultSet {
@@ -471,13 +466,8 @@ impl<'a> CypherExecutor<'a> {
                 })
             }
             Clause::FusedCountTypedEdge { edge_type, alias } => {
-                let interned_et = InternedKey::from_str(edge_type);
-                let count = self
-                    .graph
-                    .graph
-                    .edge_weights()
-                    .filter(|e| e.connection_type == interned_et)
-                    .count() as i64;
+                let counts = self.graph.get_edge_type_counts();
+                let count = counts.get(edge_type.as_str()).copied().unwrap_or(0) as i64;
                 let mut projected = Bindings::with_capacity(1);
                 projected.insert(alias.clone(), Value::Int64(count));
                 Ok(ResultSet {
@@ -843,19 +833,23 @@ impl<'a> CypherExecutor<'a> {
             _ => return Err("shortestPath pattern must end with a node".to_string()),
         };
 
-        // Extract edge direction and connection type from the pattern
-        let (edge_direction, edge_connection_type) = elements
+        // Extract edge direction and connection types from the pattern
+        let (edge_direction, connection_types_vec) = elements
             .iter()
             .find_map(|elem| {
                 if let PatternElement::Edge(ep) = elem {
-                    Some((ep.direction, ep.connection_type.clone()))
+                    let types = if let Some(ref cts) = ep.connection_types {
+                        Some(cts.clone())
+                    } else {
+                        ep.connection_type.as_ref().map(|ct| vec![ct.clone()])
+                    };
+                    Some((ep.direction, types))
                 } else {
                     None
                 }
             })
             .unwrap_or((EdgeDirection::Both, None));
 
-        let connection_types_vec: Option<Vec<String>> = edge_connection_type.map(|ct| vec![ct]);
         let connection_types: Option<&[String]> = connection_types_vec.as_deref();
 
         // Find matching source and target nodes
@@ -982,9 +976,7 @@ impl<'a> CypherExecutor<'a> {
 
         let elements = &pattern.elements;
         if elements.len() < 3 {
-            return Err(
-                "allShortestPaths requires a pattern like (a)-[:REL*..N]->(b)".to_string(),
-            );
+            return Err("allShortestPaths requires a pattern like (a)-[:REL*..N]->(b)".to_string());
         }
 
         let source_pattern = match &elements[0] {
@@ -997,24 +989,62 @@ impl<'a> CypherExecutor<'a> {
             _ => return Err("allShortestPaths pattern must end with a node".to_string()),
         };
 
-        let (edge_direction, edge_connection_type) = elements
+        let (edge_direction, connection_types_vec) = elements
             .iter()
             .find_map(|elem| {
                 if let PatternElement::Edge(ep) = elem {
-                    Some((ep.direction, ep.connection_type.clone()))
+                    let types = if let Some(ref cts) = ep.connection_types {
+                        Some(cts.clone())
+                    } else {
+                        ep.connection_type.as_ref().map(|ct| vec![ct.clone()])
+                    };
+                    Some((ep.direction, types))
                 } else {
                     None
                 }
             })
             .unwrap_or((EdgeDirection::Both, None));
 
-        let connection_types_vec: Option<Vec<String>> = edge_connection_type.map(|ct| vec![ct]);
         let connection_types: Option<&[String]> = connection_types_vec.as_deref();
 
-        let executor = PatternExecutor::new_lightweight_with_params(self.graph, None, self.params)
-            .set_deadline(self.deadline);
-        let source_nodes = executor.find_matching_nodes_pub(source_pattern)?;
-        let target_nodes = executor.find_matching_nodes_pub(target_pattern)?;
+        // Optimization: if params contain p0/p1 (the standard id() constraint params
+        // from the WHERE clause), use them directly instead of scanning all nodes.
+        // This avoids 1500×1 BFS calls for queries like:
+        // allShortestPaths((s)-[r:...*]->(e)) WHERE id(s) = $p0 AND id(e) = $p1
+        let source_nodes = if let Some(val) = self.params.get("p0") {
+            match val {
+                Value::Int64(i) => vec![NodeIndex::new(*i as usize)],
+                Value::Float64(f) => vec![NodeIndex::new(*f as usize)],
+                _ => {
+                    let executor =
+                        PatternExecutor::new_lightweight_with_params(self.graph, None, self.params)
+                            .set_deadline(self.deadline);
+                    executor.find_matching_nodes_pub(source_pattern)?
+                }
+            }
+        } else {
+            let executor =
+                PatternExecutor::new_lightweight_with_params(self.graph, None, self.params)
+                    .set_deadline(self.deadline);
+            executor.find_matching_nodes_pub(source_pattern)?
+        };
+        let target_nodes = if let Some(val) = self.params.get("p1") {
+            match val {
+                Value::Int64(i) => vec![NodeIndex::new(*i as usize)],
+                Value::Float64(f) => vec![NodeIndex::new(*f as usize)],
+                _ => {
+                    let executor =
+                        PatternExecutor::new_lightweight_with_params(self.graph, None, self.params)
+                            .set_deadline(self.deadline);
+                    executor.find_matching_nodes_pub(target_pattern)?
+                }
+            }
+        } else {
+            let executor =
+                PatternExecutor::new_lightweight_with_params(self.graph, None, self.params)
+                    .set_deadline(self.deadline);
+            executor.find_matching_nodes_pub(target_pattern)?
+        };
 
         let mut all_rows = Vec::new();
 
@@ -2136,13 +2166,10 @@ impl<'a> CypherExecutor<'a> {
         let node_var = node_pattern.variable.as_deref().unwrap_or("_n");
         let node_type = node_pattern.node_type.as_deref();
 
-        // Get candidate node indices
+        // Get candidate node indices (including secondary label matches via
+        // extra_labels / __kinds so BloodHound-style multi-label nodes are counted)
         let node_indices: Vec<petgraph::graph::NodeIndex> = if let Some(nt) = node_type {
-            if let Some(indices) = self.graph.type_indices.get(nt) {
-                indices.to_vec()
-            } else {
-                Vec::new()
-            }
+            self.graph.nodes_matching_label(nt)
         } else {
             self.graph.graph.node_indices().collect()
         };
@@ -3701,9 +3728,41 @@ impl<'a> CypherExecutor<'a> {
                         dst_idx: edge.target.index() as u32,
                     });
                 }
-                // Path variable — return hops count
+                // Path variable — return structured path as JSON string
                 if let Some(path) = row.path_bindings.get(name) {
-                    return Ok(Value::Int64(path.hops as i64));
+                    let mut nodes = Vec::new();
+                    let mut edges = Vec::new();
+                    nodes.push(serde_json::json!(path.source.index()));
+                    let mut prev = path.source;
+                    for (next, edge_type) in &path.path {
+                        let et_key = crate::graph::schema::InternedKey::from_str(edge_type);
+                        let mut eidx: i64 = -1;
+                        let (mut si, mut di) = (prev.index() as i64, next.index() as i64);
+                        for edge in self.graph.graph.edges_connecting(prev, *next) {
+                            if edge.weight().connection_type == et_key {
+                                eidx = edge.id().index() as i64;
+                                si = edge.source().index() as i64;
+                                di = edge.target().index() as i64;
+                                break;
+                            }
+                        }
+                        if eidx < 0 {
+                            for edge in self.graph.graph.edges_connecting(*next, prev) {
+                                if edge.weight().connection_type == et_key {
+                                    eidx = edge.id().index() as i64;
+                                    si = edge.source().index() as i64;
+                                    di = edge.target().index() as i64;
+                                    break;
+                                }
+                            }
+                        }
+                        edges.push(serde_json::json!({"__edge_idx": eidx, "__src_idx": si, "__dst_idx": di, "__type": edge_type}));
+                        nodes.push(serde_json::json!(next.index()));
+                        prev = *next;
+                    }
+                    let path_json =
+                        serde_json::json!({"__path": true, "nodes": nodes, "edges": edges});
+                    return Ok(Value::String(path_json.to_string()));
                 }
                 // Variable might be unbound (OPTIONAL MATCH null)
                 Ok(Value::Null)
@@ -4759,10 +4818,7 @@ impl<'a> CypherExecutor<'a> {
                             let mut all_labels: Vec<String> = std::iter::once(&node.node_type)
                                 .chain(node.extra_labels.iter())
                                 .map(|l| {
-                                    format!(
-                                        "\"{}\"",
-                                        l.replace('\\', "\\\\").replace('"', "\\\"")
-                                    )
+                                    format!("\"{}\"", l.replace('\\', "\\\\").replace('"', "\\\""))
                                 })
                                 .collect();
                             all_labels.sort_unstable();
@@ -7863,6 +7919,23 @@ pub fn execute_mutable(
     let profiling = query.profile;
     let mut profile_stats: Vec<ClauseStats> = Vec::new();
 
+    // Pre-build property indexes for MERGE identity properties to avoid O(n) linear scans.
+    for clause in &query.clauses {
+        if let Clause::Merge(merge) = clause {
+            for elem in &merge.pattern.elements {
+                if let CreateElement::Node(np) = elem {
+                    if let Some(label) = np.labels.first() {
+                        for (key, _) in &np.properties {
+                            if !graph.has_index(label, key) {
+                                graph.create_index(label, key);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     for (i, clause) in query.clauses.iter().enumerate() {
         if let Some(dl) = deadline {
             if Instant::now() > dl {
@@ -8100,11 +8173,19 @@ fn create_node(
         .or_else(|| properties.get("title"))
         .cloned()
         .unwrap_or_else(|| {
-            let label = node_pat.labels.first().map(|s| s.as_str()).unwrap_or("Node");
+            let label = node_pat
+                .labels
+                .first()
+                .map(|s| s.as_str())
+                .unwrap_or("Node");
             Value::String(format!("{}_{}", label, graph.graph.node_bound()))
         });
 
-    let label = node_pat.labels.first().cloned().unwrap_or_else(|| "Node".to_string());
+    let label = node_pat
+        .labels
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "Node".to_string());
     let extra_labels: Vec<String> = node_pat.labels.iter().skip(1).cloned().collect();
 
     // Pre-intern all property keys (borrows only graph.interner)
@@ -8577,6 +8658,16 @@ fn execute_merge(
     stats: &mut MutationStats,
 ) -> Result<ResultSet, String> {
     let source_rows = if existing.rows.is_empty() {
+        // Relationship MERGE (3-element pattern) requires bound variables from
+        // prior clauses.  If the pipeline is empty (prior MATCH returned 0 rows),
+        // there is nothing to merge — return 0 rows, matching Neo4j semantics.
+        if merge.pattern.elements.len() >= 3 {
+            return Ok(ResultSet {
+                rows: Vec::new(),
+                columns: existing.columns,
+            });
+        }
+        // Node-only MERGE: execute once with an empty row (standalone usage).
         vec![ResultRow::new()]
     } else {
         existing.rows
@@ -8620,8 +8711,21 @@ fn execute_merge(
             };
             let created = execute_create(graph, &create_clause, temp_rs, params, stats)?;
 
-            // Merge newly created bindings into our row
+            // Merge newly created bindings into our row and update property indexes
             if let Some(created_row) = created.rows.into_iter().next() {
+                for (var, idx) in &created_row.node_bindings {
+                    // Update property indexes for the newly created node
+                    if let Some(node) = graph.graph.node_weight(*idx) {
+                        let label = node.node_type.clone();
+                        for (prop_key, prop_index) in graph.property_indices.iter_mut() {
+                            if prop_key.0 == label {
+                                if let Some(val) = node.get_property(&prop_key.1) {
+                                    prop_index.entry(val.into_owned()).or_default().push(*idx);
+                                }
+                            }
+                        }
+                    }
+                }
                 for (var, idx) in created_row.node_bindings {
                     new_row.node_bindings.insert(var, idx);
                 }
@@ -8679,7 +8783,11 @@ fn try_match_merge_pattern(
                     }
                 }
 
-                let label = node_pat.labels.first().map(|s| s.as_str()).unwrap_or("Node");
+                let label = node_pat
+                    .labels
+                    .first()
+                    .map(|s| s.as_str())
+                    .unwrap_or("Node");
 
                 // Evaluate expected properties
                 let expected_props: Vec<(&str, Value)> = node_pat
@@ -8729,7 +8837,9 @@ fn try_match_merge_pattern(
                     }
                     // Also check other primary types for secondary label match
                     for (other_type, _) in &graph.type_indices {
-                        if other_type.as_str() == label { continue; }
+                        if other_type.as_str() == label {
+                            continue;
+                        }
                         if let Some(idx) = graph.lookup_by_id_readonly(other_type, id_value) {
                             if let Some(node) = graph.graph.node_weight(idx) {
                                 if crate::graph::pattern_matching::node_matches_label(node, label)
@@ -8761,12 +8871,17 @@ fn try_match_merge_pattern(
                     }
                     // Secondary label: scan other type indexes
                     for (other_type, _) in &graph.type_indices {
-                        if other_type.as_str() == label { continue; }
-                        if let Some(candidates) = graph.lookup_by_index(other_type, index_key, value) {
+                        if other_type.as_str() == label {
+                            continue;
+                        }
+                        if let Some(candidates) =
+                            graph.lookup_by_index(other_type, index_key, value)
+                        {
                             for &idx in &candidates {
                                 if let Some(node) = graph.graph.node_weight(idx) {
-                                    if crate::graph::pattern_matching::node_matches_label(node, label)
-                                        && node_matches_all(idx, &expected_props)
+                                    if crate::graph::pattern_matching::node_matches_label(
+                                        node, label,
+                                    ) && node_matches_all(idx, &expected_props)
                                     {
                                         return Ok(Some(build_result(idx)));
                                     }
@@ -10514,26 +10629,34 @@ mod tests {
 
         // Step 1: Create node with primary type Base
         let q1 = super::super::parser::parse_cypher(
-            "CREATE (n:Base {objectid: 'TEST-1', name: 'TestGroup'})"
-        ).unwrap();
+            "CREATE (n:Base {objectid: 'TEST-1', name: 'TestGroup'})",
+        )
+        .unwrap();
         execute_mutable(&mut graph, &q1, HashMap::new(), None).unwrap();
 
         // Step 2: Add Group as extra label (simulates SET n:Group from upstream)
-        let q2 = super::super::parser::parse_cypher(
-            "MATCH (n:Base {objectid: 'TEST-1'}) SET n:Group"
-        ).unwrap();
+        let q2 =
+            super::super::parser::parse_cypher("MATCH (n:Base {objectid: 'TEST-1'}) SET n:Group")
+                .unwrap();
         execute_mutable(&mut graph, &q2, HashMap::new(), None).unwrap();
 
         // Step 3: MERGE as Group — should find existing node, NOT create a new one
         let q3 = super::super::parser::parse_cypher(
-            "MERGE (n:Group {objectid: 'TEST-1'}) SET n.updated = true"
-        ).unwrap();
+            "MERGE (n:Group {objectid: 'TEST-1'}) SET n.updated = true",
+        )
+        .unwrap();
         let result = execute_mutable(&mut graph, &q3, HashMap::new(), None).unwrap();
 
-        assert_eq!(result.stats.as_ref().unwrap().nodes_created, 0,
-            "MERGE should find existing node via extra_labels, not create a new one");
-        assert_eq!(graph.graph.node_count(), 1,
-            "Should still have exactly 1 node");
+        assert_eq!(
+            result.stats.as_ref().unwrap().nodes_created,
+            0,
+            "MERGE should find existing node via extra_labels, not create a new one"
+        );
+        assert_eq!(
+            graph.graph.node_count(),
+            1,
+            "Should still have exactly 1 node"
+        );
     }
 
     #[test]
@@ -10543,18 +10666,21 @@ mod tests {
 
         // Step 1: Create node as Base with __kinds containing Group
         let q1 = super::super::parser::parse_cypher(
-            r#"CREATE (n:Base {objectid: "TEST-2", __kinds: '["Base","Group"]'})"#
-        ).unwrap();
+            r#"CREATE (n:Base {objectid: "TEST-2", __kinds: '["Base","Group"]'})"#,
+        )
+        .unwrap();
         execute_mutable(&mut graph, &q1, HashMap::new(), None).unwrap();
 
         // Step 2: MERGE as Group — should find via __kinds check
-        let q2 = super::super::parser::parse_cypher(
-            r#"MERGE (n:Group {objectid: "TEST-2"})"#
-        ).unwrap();
+        let q2 =
+            super::super::parser::parse_cypher(r#"MERGE (n:Group {objectid: "TEST-2"})"#).unwrap();
         let result = execute_mutable(&mut graph, &q2, HashMap::new(), None).unwrap();
 
-        assert_eq!(result.stats.as_ref().unwrap().nodes_created, 0,
-            "MERGE should find existing node via __kinds property");
+        assert_eq!(
+            result.stats.as_ref().unwrap().nodes_created,
+            0,
+            "MERGE should find existing node via __kinds property"
+        );
         assert_eq!(graph.graph.node_count(), 1);
     }
 
@@ -10577,15 +10703,20 @@ mod tests {
 
         // Step 4: node ingest adds Group label
         let q2 = super::super::parser::parse_cypher(
-            "MERGE (n:Base {objectid: 'GRP'}) SET n:Group, n.name = 'TestGroup'"
-        ).unwrap();
+            "MERGE (n:Base {objectid: 'GRP'}) SET n:Group, n.name = 'TestGroup'",
+        )
+        .unwrap();
         execute_mutable(&mut graph, &q2, HashMap::new(), None).unwrap();
-        assert_eq!(graph.graph.node_count(), 2, "SET n:Group should not create a new node");
+        assert_eq!(
+            graph.graph.node_count(),
+            2,
+            "SET n:Group should not create a new node"
+        );
 
         // Step 5: another MERGE by Group label should find the same node
-        let q3 = super::super::parser::parse_cypher(
-            "MERGE (n:Group {objectid: 'GRP'}) RETURN n.name"
-        ).unwrap();
+        let q3 =
+            super::super::parser::parse_cypher("MERGE (n:Group {objectid: 'GRP'}) RETURN n.name")
+                .unwrap();
         let result = execute_mutable(&mut graph, &q3, HashMap::new(), None).unwrap();
         assert_eq!(result.stats.as_ref().unwrap().nodes_created, 0);
         assert_eq!(graph.graph.node_count(), 2);
@@ -10708,6 +10839,60 @@ mod tests {
         let new = graph.lookup_by_index("Person", "age", &Value::Int64(31));
         assert!(new.is_some());
         assert_eq!(new.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_merge_with_prior_separate_match_bindings() {
+        // Two separate MATCH clauses bind variables, then MERGE creates a relationship.
+        // This reproduces the AD_Miner query pattern:
+        //   MATCH (g:Group) WHERE ...
+        //   MATCH (c:Computer) WHERE ...
+        //   MERGE (g)-[:REL]->(c)
+        let mut graph = DirGraph::new();
+
+        // Create a Group and a Computer node
+        let q1 = super::super::parser::parse_cypher(
+            "CREATE (g:Group {objectid: 'S-1-5-21-551', domain: 'TESTLAB.LOCAL', name: 'TestGroup'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &q1, HashMap::new(), None).unwrap();
+
+        let q2 = super::super::parser::parse_cypher(
+            "CREATE (c:Computer {objectid: 'COMP-1', domain: 'TESTLAB.LOCAL', is_dc: true, name: 'DC01'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &q2, HashMap::new(), None).unwrap();
+
+        // Now run the query with two separate MATCHes + MERGE
+        let query = super::super::parser::parse_cypher(
+            "MATCH (g:Group) WHERE g.objectid ENDS WITH '-551' \
+             MATCH (c:Computer {is_dc: true}) WHERE g.domain = c.domain \
+             MERGE (g)-[:CanExtractDCSecrets]->(c)",
+        )
+        .unwrap();
+        let result = execute_mutable(&mut graph, &query, HashMap::new(), None).unwrap();
+
+        assert_eq!(result.stats.as_ref().unwrap().relationships_created, 1);
+        assert_eq!(graph.graph.edge_count(), 1);
+    }
+
+    #[test]
+    fn test_merge_relationship_no_match_rows() {
+        // When prior MATCH returns 0 rows, relationship MERGE should be a no-op
+        // (not an error). Reproduces the AD_Miner parse test on an empty graph.
+        let mut graph = DirGraph::new();
+
+        let query = super::super::parser::parse_cypher(
+            "MATCH (g:Group) WHERE g.objectid ENDS WITH '-551' \
+             MATCH (c:Computer {is_dc: true}) WHERE g.domain = c.domain \
+             MERGE (g)-[:CanExtractDCSecrets]->(c)",
+        )
+        .unwrap();
+        let result = execute_mutable(&mut graph, &query, HashMap::new(), None).unwrap();
+
+        // No rows matched, so no relationships should be created and no error
+        assert_eq!(result.stats.as_ref().unwrap().relationships_created, 0);
+        assert_eq!(graph.graph.edge_count(), 0);
     }
 
     #[test]
@@ -11589,5 +11774,364 @@ mod tests {
         let result2 = executor2.execute(&q2).unwrap();
         assert_eq!(result2.rows.len(), 1);
         assert_eq!(result2.rows[0].get(0), Some(&Value::Boolean(false)));
+    }
+
+    // ========================================================================
+    // Variable-Length Path + Multi-Type + Aggregation Integration Test
+    // ========================================================================
+
+    #[test]
+    fn test_vlp_multi_type_with_in_and_collect_grouped() {
+        // Simulates the user's query pattern:
+        // MATCH (role)<-[:HasRole|MemberOf*1..5]-(member)
+        // WHERE role.roletemplateid IN $ids
+        // RETURN role.roletemplateid, collect(id(member))
+        let mut graph = DirGraph::new();
+        // Use MERGE to create shared nodes so multi-hop paths work correctly.
+        // Graph structure:
+        //   Alice  --HasRole-->  admin
+        //   Bob    --HasRole-->  admin
+        //   Charlie--HasRole-->  reader
+        //   Engineering--HasRole-->  writer
+        //   Alice  --MemberOf--> Engineering
+        //   Bob    --MemberOf--> Engineering
+        // So writer is reachable from Alice/Bob via: MemberOf->Engineering->HasRole->writer (2 hops)
+        let stmts = [
+            "MERGE (u:User {name: 'Alice'}) MERGE (r:Role {roletemplateid: 'admin'}) MERGE (u)-[:HasRole]->(r)",
+            "MERGE (u:User {name: 'Bob'}) MERGE (r:Role {roletemplateid: 'admin'}) MERGE (u)-[:HasRole]->(r)",
+            "MERGE (u:User {name: 'Charlie'}) MERGE (r:Role {roletemplateid: 'reader'}) MERGE (u)-[:HasRole]->(r)",
+            "MERGE (g:Group {name: 'Engineering'}) MERGE (r:Role {roletemplateid: 'writer'}) MERGE (g)-[:HasRole]->(r)",
+            "MERGE (u:User {name: 'Alice'}) MERGE (g:Group {name: 'Engineering'}) MERGE (u)-[:MemberOf]->(g)",
+            "MERGE (u:User {name: 'Bob'}) MERGE (g:Group {name: 'Engineering'}) MERGE (u)-[:MemberOf]->(g)",
+        ];
+        for stmt in &stmts {
+            let q = super::super::parser::parse_cypher(stmt).unwrap();
+            execute_mutable(&mut graph, &q, HashMap::new(), None).unwrap();
+        }
+
+        // Verify graph structure
+        assert_eq!(graph.graph.node_count(), 7); // 3 users, 3 roles, 1 group
+        assert_eq!(graph.graph.edge_count(), 6); // 3 HasRole + 1 HasRole(group) + 2 MemberOf
+
+        // Multi-type VLP: should find more paths than single-type
+        let no_params = HashMap::new();
+        let q_multi = super::super::parser::parse_cypher(
+            "MATCH (role:Role)<-[:HasRole|MemberOf*1..3]-(member) \
+             RETURN role.roletemplateid, member.name",
+        )
+        .unwrap();
+        let exec_multi = CypherExecutor::with_params(&graph, &no_params, None);
+        let r_multi = exec_multi.execute(&q_multi).unwrap();
+        // 4 direct HasRole + 2 indirect via MemberOf->Group->HasRole = 6 rows
+        assert_eq!(r_multi.rows.len(), 6);
+
+        // Full query: VLP + multi-type + IN parameter + collect() + implicit GROUP BY
+        let q = super::super::parser::parse_cypher(
+            "MATCH (role:Role)<-[:HasRole|MemberOf*1..3]-(member) \
+             WHERE role.roletemplateid IN $ids \
+             RETURN role.roletemplateid AS role_id, collect(id(member)) AS members \
+             ORDER BY role_id",
+        )
+        .unwrap();
+        let mut params = HashMap::new();
+        params.insert(
+            "ids".to_string(),
+            Value::String("[\"admin\", \"writer\"]".to_string()),
+        );
+        let executor = CypherExecutor::with_params(&graph, &params, None);
+        let result = executor.execute(&q).unwrap();
+
+        // Should have 2 groups: admin and writer (reader excluded by IN filter)
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(
+            result.rows[0].get(0),
+            Some(&Value::String("admin".to_string()))
+        );
+        assert_eq!(
+            result.rows[1].get(0),
+            Some(&Value::String("writer".to_string()))
+        );
+        // Both groups should have non-empty member collections
+        for row in &result.rows {
+            match row.get(1) {
+                Some(Value::String(s)) => {
+                    assert!(
+                        s.starts_with('[') && s.len() > 2,
+                        "collect() should return non-empty list, got: {}",
+                        s
+                    );
+                }
+                other => panic!("Expected string collect result, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn test_fused_count_typed_edge_uses_cache() {
+        let mut graph = build_test_graph(); // has 1 KNOWS edge
+
+        let params = HashMap::new();
+
+        // Parse and optimize query so planner rewrites to FusedCountTypedEdge
+        let mut q =
+            super::super::parser::parse_cypher("MATCH ()-[r:KNOWS]->() RETURN count(r)").unwrap();
+        super::super::optimize(&mut q, &graph, &params);
+
+        // Verify the planner produced FusedCountTypedEdge
+        assert!(
+            matches!(
+                &q.clauses[0],
+                super::super::ast::Clause::FusedCountTypedEdge { .. }
+            ),
+            "expected FusedCountTypedEdge, got {:?}",
+            q.clauses[0]
+        );
+
+        // Query: count edges of type KNOWS — should return 1
+        let executor = CypherExecutor::with_params(&graph, &params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0][0], Value::Int64(1));
+
+        // Cache should now be populated
+        {
+            let cached = graph.edge_type_counts_cache.read().unwrap();
+            assert!(
+                cached.is_some(),
+                "cache should be populated after first query"
+            );
+            assert_eq!(cached.as_ref().unwrap().get("KNOWS").copied(), Some(1));
+        }
+
+        // Add another KNOWS edge (Alice->Bob again, different edge)
+        let alice_idx = graph.type_indices["Person"][0];
+        let bob_idx = graph.type_indices["Person"][1];
+        let edge = crate::graph::schema::EdgeData::new(
+            "KNOWS".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        graph.graph.add_edge(alice_idx, bob_idx, edge);
+        graph.invalidate_edge_type_counts_cache();
+
+        // Cache should be invalidated
+        {
+            let cached = graph.edge_type_counts_cache.read().unwrap();
+            assert!(cached.is_none(), "cache should be None after invalidation");
+        }
+
+        // Query again — should return 2
+        let executor2 = CypherExecutor::with_params(&graph, &params, None);
+        let result2 = executor2.execute(&q).unwrap();
+        assert_eq!(result2.rows.len(), 1);
+        assert_eq!(result2.rows[0][0], Value::Int64(2));
+
+        // Test count for non-existent type returns 0
+        let mut q_none =
+            super::super::parser::parse_cypher("MATCH ()-[r:NONEXISTENT]->() RETURN count(r)")
+                .unwrap();
+        super::super::optimize(&mut q_none, &graph, &params);
+        let executor3 = CypherExecutor::with_params(&graph, &params, None);
+        let result3 = executor3.execute(&q_none).unwrap();
+        assert_eq!(result3.rows.len(), 1);
+        assert_eq!(result3.rows[0][0], Value::Int64(0));
+
+        // Test deletion invalidates cache: use Cypher DELETE
+        let del_q = super::super::parser::parse_cypher("MATCH ()-[r:KNOWS]->() DELETE r").unwrap();
+        execute_mutable(&mut graph, &del_q, HashMap::new(), None).unwrap();
+
+        // After deleting all KNOWS edges, count should be 0
+        let executor4 = CypherExecutor::with_params(&graph, &params, None);
+        let result4 = executor4.execute(&q).unwrap();
+        assert_eq!(result4.rows.len(), 1);
+        assert_eq!(result4.rows[0][0], Value::Int64(0));
+    }
+
+    #[test]
+    fn test_contains_as_relationship_type_e2e() {
+        // Create a graph with OU -[:Contains]-> Computer relationship
+        let mut graph = DirGraph::new();
+        let params = HashMap::new();
+
+        // Create nodes and Contains relationship
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (o:OU {name: 'Engineering'})-[:Contains]->(c:Computer {name: 'WORKSTATION01'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        // Query using Contains as relationship type (unquoted)
+        let q = super::super::parser::parse_cypher(
+            "MATCH (o:OU)-[:Contains]->(c:Computer) RETURN o.name, c.name",
+        )
+        .unwrap();
+        let executor = CypherExecutor::with_params(&graph, &params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0][0], Value::String("Engineering".to_string()));
+        assert_eq!(
+            result.rows[0][1],
+            Value::String("WORKSTATION01".to_string())
+        );
+
+        // Use CONTAINS string operator in the same query
+        let q2 = super::super::parser::parse_cypher(
+            "MATCH (o:OU)-[:Contains]->(c:Computer) WHERE c.name CONTAINS 'WORK' RETURN c.name",
+        )
+        .unwrap();
+        let executor2 = CypherExecutor::with_params(&graph, &params, None);
+        let result2 = executor2.execute(&q2).unwrap();
+        assert_eq!(result2.rows.len(), 1);
+        assert_eq!(
+            result2.rows[0][0],
+            Value::String("WORKSTATION01".to_string())
+        );
+
+        // Variable-length Contains path
+        let create_q2 = super::super::parser::parse_cypher(
+            "CREATE (d:Domain {name: 'CORP'})-[:Contains]->(o2:OU {name: 'Engineering'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q2, HashMap::new(), None).unwrap();
+
+        // MATCH with variable binding
+        let q3 = super::super::parser::parse_cypher(
+            "MATCH (o:OU)-[r:Contains]->(c:Computer) RETURN type(r)",
+        )
+        .unwrap();
+        let executor3 = CypherExecutor::with_params(&graph, &params, None);
+        let result3 = executor3.execute(&q3).unwrap();
+        assert_eq!(result3.rows.len(), 1);
+        assert_eq!(result3.rows[0][0], Value::String("Contains".to_string()));
+    }
+
+    // ========================================================================
+    // IN operator with variable references and function calls
+    // ========================================================================
+
+    #[test]
+    fn test_in_with_variable_reference() {
+        // IN with a variable that holds a collected list
+        let mut graph = DirGraph::new();
+        let setup = super::super::parser::parse_cypher(
+            "CREATE (a:Person {name: 'Alice', domain: 'CORP'}), \
+             (b:Person {name: 'Bob', domain: 'CORP'}), \
+             (c:Person {name: 'Charlie', domain: 'OTHER'}), \
+             (d:Domain {name: 'CORP'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &setup, HashMap::new(), None).unwrap();
+
+        let q = super::super::parser::parse_cypher(
+            "MATCH (d:Domain) WITH collect(d.name) AS domains \
+             MATCH (o:Person) WHERE o.domain IN domains \
+             RETURN o.name ORDER BY o.name",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.rows[0][0], Value::String("Alice".to_string()));
+        assert_eq!(result.rows[1][0], Value::String("Bob".to_string()));
+    }
+
+    #[test]
+    fn test_in_with_variable_reference_negated() {
+        // NOT ... IN variable
+        let mut graph = DirGraph::new();
+        let setup = super::super::parser::parse_cypher(
+            "CREATE (a:Person {name: 'Alice', domain: 'CORP'}), \
+             (b:Person {name: 'Bob', domain: 'OTHER'}), \
+             (d:Domain {name: 'CORP'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &setup, HashMap::new(), None).unwrap();
+
+        let q = super::super::parser::parse_cypher(
+            "MATCH (d:Domain) WITH collect(d.name) AS domains \
+             MATCH (o:Person) WHERE NOT o.domain IN domains \
+             RETURN o.name",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0][0], Value::String("Bob".to_string()));
+    }
+
+    #[test]
+    fn test_in_with_function_call() {
+        // IN with a function call (split) on the RHS
+        let mut graph = DirGraph::new();
+        let setup = super::super::parser::parse_cypher(
+            "CREATE (a:Node {name: 'A', system_tags: 'admin_tier_0 ops'}), \
+             (b:Node {name: 'B', system_tags: 'ops monitoring'}), \
+             (c:Node {name: 'C', system_tags: 'admin_tier_0'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &setup, HashMap::new(), None).unwrap();
+
+        let q = super::super::parser::parse_cypher(
+            "MATCH (n:Node) WHERE 'admin_tier_0' IN split(n.system_tags, ' ') \
+             RETURN n.name ORDER BY n.name",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.rows[0][0], Value::String("A".to_string()));
+        assert_eq!(result.rows[1][0], Value::String("C".to_string()));
+    }
+
+    #[test]
+    fn test_in_with_literal_list_still_works() {
+        // Existing literal list behavior must still work
+        let mut graph = DirGraph::new();
+        let setup = super::super::parser::parse_cypher(
+            "CREATE (a:Person {name: 'Alice'}), \
+             (b:Person {name: 'Bob'}), \
+             (c:Person {name: 'Charlie'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &setup, HashMap::new(), None).unwrap();
+
+        let q = super::super::parser::parse_cypher(
+            "MATCH (n:Person) WHERE n.name IN ['Alice', 'Bob'] \
+             RETURN n.name ORDER BY n.name",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.rows[0][0], Value::String("Alice".to_string()));
+        assert_eq!(result.rows[1][0], Value::String("Bob".to_string()));
+    }
+
+    #[test]
+    fn test_in_with_inline_list_variable() {
+        // WITH ['x', 'y', 'z'] AS names ... WHERE n.tag IN names
+        let mut graph = DirGraph::new();
+        let setup = super::super::parser::parse_cypher(
+            "CREATE (a:Item {tag: 'x'}), (b:Item {tag: 'y'}), (c:Item {tag: 'w'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &setup, HashMap::new(), None).unwrap();
+
+        let q = super::super::parser::parse_cypher(
+            "WITH ['x', 'y', 'z'] AS names \
+             MATCH (n:Item) WHERE n.tag IN names \
+             RETURN n.tag ORDER BY n.tag",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.rows[0][0], Value::String("x".to_string()));
+        assert_eq!(result.rows[1][0], Value::String("y".to_string()));
     }
 }

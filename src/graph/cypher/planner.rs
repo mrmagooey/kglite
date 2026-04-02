@@ -565,21 +565,32 @@ fn push_where_into_match(query: &mut CypherQuery, params: &HashMap<String, Value
         };
 
         // Collect variables defined in the MATCH/OPTIONAL MATCH patterns
-        let match_vars: Vec<(String, Option<String>)> = match &query.clauses[i] {
-            Clause::Match(m) => collect_pattern_variables(&m.patterns),
-            Clause::OptionalMatch(m) => collect_pattern_variables(&m.patterns),
-            _ => {
-                i += 1;
-                continue;
-            }
-        };
+        let (match_vars, edge_vars): (Vec<(String, Option<String>)>, Vec<String>) =
+            match &query.clauses[i] {
+                Clause::Match(m) => (
+                    collect_pattern_variables(&m.patterns),
+                    collect_edge_variables(&m.patterns),
+                ),
+                Clause::OptionalMatch(m) => (
+                    collect_pattern_variables(&m.patterns),
+                    collect_edge_variables(&m.patterns),
+                ),
+                _ => {
+                    i += 1;
+                    continue;
+                }
+            };
 
         // Split predicate into pushable conditions and remainder
-        let (pushable, pushable_in, pushable_cmp, remaining) =
-            extract_pushable_equalities(&where_pred, &match_vars, params);
+        let (pushable, pushable_in, pushable_cmp, pushable_edge_types, remaining) =
+            extract_pushable_equalities(&where_pred, &match_vars, &edge_vars, params);
 
         // Apply pushable conditions to MATCH/OPTIONAL MATCH patterns
-        if !pushable.is_empty() || !pushable_in.is_empty() || !pushable_cmp.is_empty() {
+        if !pushable.is_empty()
+            || !pushable_in.is_empty()
+            || !pushable_cmp.is_empty()
+            || !pushable_edge_types.is_empty()
+        {
             let patterns = match &mut query.clauses[i] {
                 Clause::Match(ref mut m) => &mut m.patterns,
                 Clause::OptionalMatch(ref mut m) => &mut m.patterns,
@@ -596,6 +607,9 @@ fn push_where_into_match(query: &mut CypherQuery, params: &HashMap<String, Value
             }
             for (var_name, property, op, value) in pushable_cmp {
                 apply_comparison_to_patterns(patterns, &var_name, &property, op, value);
+            }
+            for (var_name, types) in pushable_edge_types {
+                apply_type_to_edge_patterns(patterns, &var_name, types);
             }
 
             // Update WHERE clause with remaining predicates.
@@ -1755,41 +1769,69 @@ fn collect_pattern_variables(
     vars
 }
 
-/// (equality_conditions, in_conditions, comparison_conditions, remaining_predicate)
+/// Collect edge variable names from MATCH patterns.
+fn collect_edge_variables(patterns: &[crate::graph::pattern_matching::Pattern]) -> Vec<String> {
+    let mut vars = Vec::new();
+    for pattern in patterns {
+        for element in &pattern.elements {
+            if let PatternElement::Edge(ep) = element {
+                if let Some(ref var) = ep.variable {
+                    vars.push(var.clone());
+                }
+            }
+        }
+    }
+    vars
+}
+
+/// (equality_conditions, in_conditions, comparison_conditions, edge_type_conditions, remaining_predicate)
 type PushableResult = (
     Vec<(String, String, Value)>,
     Vec<(String, String, Vec<Value>)>,
     Vec<(String, String, ComparisonOp, Value)>,
+    Vec<(String, Vec<String>)>,
     Option<Predicate>,
 );
 
 /// Extract pushable predicates from a WHERE clause into MATCH patterns.
-/// Returns (equality_conditions, in_conditions, comparison_conditions, remaining_predicate).
+/// Returns (equality_conditions, in_conditions, comparison_conditions, edge_type_conditions, remaining_predicate).
 ///
 /// Pushes conditions of the form:
 /// - `variable.property = literal_value` (equality)
 /// - `variable.property = $param` (equality with param)
 /// - `variable.property IN [literal, ...]` (IN list)
 /// - `variable.property > literal_value` (and >=, <, <=)
+/// - `type(r) = 'TypeA'` (edge type equality)
+/// - `type(r) IN ['TypeA', 'TypeB']` (edge type IN list)
 ///
 /// The variable must be defined in MATCH.
 fn extract_pushable_equalities(
     pred: &Predicate,
     match_vars: &[(String, Option<String>)],
+    edge_vars: &[String],
     params: &HashMap<String, Value>,
 ) -> PushableResult {
     let mut pushable = Vec::new();
     let mut pushable_in = Vec::new();
     let mut pushable_cmp = Vec::new();
+    let mut pushable_edge_types = Vec::new();
     let remaining = extract_from_predicate(
         pred,
         match_vars,
+        edge_vars,
         params,
         &mut pushable,
         &mut pushable_in,
         &mut pushable_cmp,
+        &mut pushable_edge_types,
     );
-    (pushable, pushable_in, pushable_cmp, remaining)
+    (
+        pushable,
+        pushable_in,
+        pushable_cmp,
+        pushable_edge_types,
+        remaining,
+    )
 }
 
 /// Recursively extract pushable predicates from a predicate tree.
@@ -1797,10 +1839,12 @@ fn extract_pushable_equalities(
 fn extract_from_predicate(
     pred: &Predicate,
     match_vars: &[(String, Option<String>)],
+    edge_vars: &[String],
     params: &HashMap<String, Value>,
     pushable: &mut Vec<(String, String, Value)>,
     pushable_in: &mut Vec<(String, String, Vec<Value>)>,
     pushable_cmp: &mut Vec<(String, String, ComparisonOp, Value)>,
+    pushable_edge_types: &mut Vec<(String, Vec<String>)>,
 ) -> Option<Predicate> {
     match pred {
         Predicate::Comparison {
@@ -1808,8 +1852,19 @@ fn extract_from_predicate(
             operator: ComparisonOp::Equals,
             right,
         } => {
+            // Check type(r) = 'TypeA' — push edge type constraint
+            if let Some((var, types)) = try_extract_type_equality(left, right, edge_vars) {
+                pushable_edge_types.push((var, types));
+                return None;
+            }
             // Check if this is variable.property = literal or variable.property = $param
             if let Some((var, prop, val)) = try_extract_equality(left, right, match_vars, params) {
+                pushable.push((var, prop, val));
+                None // Fully consumed
+                     // Check if this is id(var) = literal or id(var) = $param
+            } else if let Some((var, prop, val)) =
+                try_extract_id_equality(left, right, match_vars, params)
+            {
                 pushable.push((var, prop, val));
                 None // Fully consumed
             } else {
@@ -1835,6 +1890,11 @@ fn extract_from_predicate(
             }
         }
         Predicate::In { expr, list } => {
+            // Check type(r) IN ['TypeA', 'TypeB'] — push edge type constraint
+            if let Some((var, types)) = try_extract_type_in(expr, list, edge_vars) {
+                pushable_edge_types.push((var, types));
+                return None;
+            }
             // Push variable.property IN [literal, ...] into MATCH pattern
             if let Expression::PropertyAccess { variable, property } = expr {
                 if match_vars.iter().any(|(v, _)| v == variable) {
@@ -1854,24 +1914,47 @@ fn extract_from_predicate(
                     }
                 }
             }
+            // Push id(var) IN [literal, ...] into MATCH pattern as "id" IN [...]
+            if let Some(var) = extract_id_func_variable(expr) {
+                if match_vars.iter().any(|(v, _)| v == var) {
+                    let all_literals: Option<Vec<Value>> = list
+                        .iter()
+                        .map(|item| {
+                            if let Expression::Literal(val) = item {
+                                Some(val.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if let Some(values) = all_literals {
+                        pushable_in.push((var.to_string(), "id".to_string(), values));
+                        return None; // Fully consumed
+                    }
+                }
+            }
             Some(pred.clone())
         }
         Predicate::And(left, right) => {
             let left_remaining = extract_from_predicate(
                 left,
                 match_vars,
+                edge_vars,
                 params,
                 pushable,
                 pushable_in,
                 pushable_cmp,
+                pushable_edge_types,
             );
             let right_remaining = extract_from_predicate(
                 right,
                 match_vars,
+                edge_vars,
                 params,
                 pushable,
                 pushable_in,
                 pushable_cmp,
+                pushable_edge_types,
             );
 
             match (left_remaining, right_remaining) {
@@ -1884,6 +1967,124 @@ fn extract_from_predicate(
         // Other predicate types can't be pushed
         _ => Some(pred.clone()),
     }
+}
+
+/// Try to extract `type(r) = 'TypeA'` where r is an edge variable.
+/// Returns (edge_var_name, vec_of_types) on success.
+fn try_extract_type_equality(
+    left: &Expression,
+    right: &Expression,
+    edge_vars: &[String],
+) -> Option<(String, Vec<String>)> {
+    // type(r) = 'literal'
+    if let Some(var) = extract_type_function_var(left, edge_vars) {
+        if let Expression::Literal(Value::String(s)) = right {
+            return Some((var, vec![s.clone()]));
+        }
+    }
+    // 'literal' = type(r) (commutative)
+    if let Some(var) = extract_type_function_var(right, edge_vars) {
+        if let Expression::Literal(Value::String(s)) = left {
+            return Some((var, vec![s.clone()]));
+        }
+    }
+    None
+}
+
+/// Try to extract `type(r) IN ['TypeA', 'TypeB']` where r is an edge variable.
+/// Returns (edge_var_name, vec_of_types) on success.
+fn try_extract_type_in(
+    expr: &Expression,
+    list: &[Expression],
+    edge_vars: &[String],
+) -> Option<(String, Vec<String>)> {
+    let var = extract_type_function_var(expr, edge_vars)?;
+    let types: Option<Vec<String>> = list
+        .iter()
+        .map(|item| {
+            if let Expression::Literal(Value::String(s)) = item {
+                Some(s.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    types.map(|t| (var, t))
+}
+
+/// If `expr` is `FunctionCall { name: "type", args: [Variable(v)] }` and `v` is
+/// in `edge_vars`, return `Some(v)`. Otherwise return `None`.
+fn extract_type_function_var(expr: &Expression, edge_vars: &[String]) -> Option<String> {
+    if let Expression::FunctionCall {
+        name,
+        args,
+        distinct: false,
+    } = expr
+    {
+        if name.eq_ignore_ascii_case("type") && args.len() == 1 {
+            if let Expression::Variable(var) = &args[0] {
+                if edge_vars.iter().any(|ev| ev == var) {
+                    return Some(var.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract the variable name from an `id(var)` function call.
+/// Returns Some(variable_name) if the expression is `id(var)` (case-insensitive).
+fn extract_id_func_variable(expr: &Expression) -> Option<&str> {
+    if let Expression::FunctionCall {
+        name,
+        args,
+        distinct: false,
+    } = expr
+    {
+        if name.eq_ignore_ascii_case("id") && args.len() == 1 {
+            if let Expression::Variable(var) = &args[0] {
+                return Some(var.as_str());
+            }
+        }
+    }
+    None
+}
+
+/// Try to extract an id() equality: `id(var) = literal` or `id(var) = $param`
+/// Returns (variable, "id", value) if successful.
+fn try_extract_id_equality(
+    left: &Expression,
+    right: &Expression,
+    match_vars: &[(String, Option<String>)],
+    params: &HashMap<String, Value>,
+) -> Option<(String, String, Value)> {
+    // id(var) = literal
+    if let Some(var) = extract_id_func_variable(left) {
+        if match_vars.iter().any(|(v, _)| v == var) {
+            if let Expression::Literal(val) = right {
+                return Some((var.to_string(), "id".to_string(), val.clone()));
+            }
+            if let Expression::Parameter(name) = right {
+                if let Some(val) = params.get(name.as_str()) {
+                    return Some((var.to_string(), "id".to_string(), val.clone()));
+                }
+            }
+        }
+    }
+    // literal = id(var) (commutative)
+    if let Some(var) = extract_id_func_variable(right) {
+        if match_vars.iter().any(|(v, _)| v == var) {
+            if let Expression::Literal(val) = left {
+                return Some((var.to_string(), "id".to_string(), val.clone()));
+            }
+            if let Expression::Parameter(name) = left {
+                if let Some(val) = params.get(name.as_str()) {
+                    return Some((var.to_string(), "id".to_string(), val.clone()));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Try to extract a simple equality: variable.property = literal_or_param
@@ -2125,6 +2326,83 @@ fn apply_in_property_to_patterns(
                 if np.variable.as_deref() == Some(var_name) {
                     let props = np.properties.get_or_insert_with(Default::default);
                     props.insert(property.to_string(), PropertyMatcher::In(values));
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Apply edge type constraints pushed from WHERE `type(r) = 'T'` / `type(r) IN [...]`
+/// to the matching edge pattern in MATCH. If the edge already has type constraints,
+/// intersect with the new types.
+fn apply_type_to_edge_patterns(
+    patterns: &mut [crate::graph::pattern_matching::Pattern],
+    var_name: &str,
+    types: Vec<String>,
+) {
+    for pattern in patterns.iter_mut() {
+        for element in &mut pattern.elements {
+            if let PatternElement::Edge(ref mut ep) = element {
+                if ep.variable.as_deref() == Some(var_name) {
+                    if types.len() == 1 {
+                        // Single type: set connection_type (intersect if already set)
+                        let new_type = &types[0];
+                        if let Some(ref existing_types) = ep.connection_types {
+                            // Intersect: keep only if new_type is in existing list
+                            let intersected: Vec<String> = existing_types
+                                .iter()
+                                .filter(|t| t == &new_type)
+                                .cloned()
+                                .collect();
+                            if intersected.len() == 1 {
+                                ep.connection_type = Some(intersected[0].clone());
+                                ep.connection_types = None;
+                            } else {
+                                ep.connection_types = Some(intersected);
+                            }
+                        } else if let Some(ref existing) = ep.connection_type {
+                            // Only keep if they match
+                            if existing != new_type {
+                                // Contradiction — set to impossible match
+                                // Keep the existing type; the WHERE will filter
+                                return;
+                            }
+                        } else {
+                            ep.connection_type = Some(new_type.clone());
+                        }
+                    } else {
+                        // Multiple types: set connection_types (intersect if already set)
+                        if let Some(ref existing_types) = ep.connection_types {
+                            let intersected: Vec<String> = existing_types
+                                .iter()
+                                .filter(|t| types.contains(t))
+                                .cloned()
+                                .collect();
+                            if intersected.len() == 1 {
+                                ep.connection_type = Some(intersected[0].clone());
+                                ep.connection_types = None;
+                            } else {
+                                ep.connection_types = Some(intersected);
+                            }
+                        } else if let Some(ref existing) = ep.connection_type {
+                            // Single existing type: intersect with new list
+                            if types.contains(existing) {
+                                // Already constrained to a single type in the list — keep it
+                            } else {
+                                // Contradiction — keep existing; WHERE will filter
+                                return;
+                            }
+                        } else {
+                            // No existing constraint — set the new types
+                            if types.len() == 1 {
+                                ep.connection_type = Some(types[0].clone());
+                            } else {
+                                ep.connection_type = Some(types[0].clone());
+                                ep.connection_types = Some(types);
+                            }
+                        }
+                    }
                     return;
                 }
             }
@@ -3109,6 +3387,273 @@ mod tests {
                         upper_inclusive: true,
                     })
                 ));
+            }
+        }
+    }
+
+    #[test]
+    fn test_id_equality_pushdown() {
+        let mut query = parse_cypher("MATCH (s)-[r]->(e) WHERE id(e) = 123 RETURN r, s").unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        // id(e) = 123 should be pushed into the node pattern for `e`
+        if let Clause::Match(m) = &query.clauses[0] {
+            // `e` is the third element (index 2) in (s)-[r]->(e)
+            if let PatternElement::Node(np) = &m.patterns[0].elements[2] {
+                let props = np
+                    .properties
+                    .as_ref()
+                    .expect("e should have properties pushed");
+                assert!(
+                    matches!(
+                        props.get("id"),
+                        Some(PropertyMatcher::Equals(Value::Int64(123)))
+                    ),
+                    "Expected id = 123 pushed into node pattern, got: {:?}",
+                    props.get("id")
+                );
+            } else {
+                panic!("Expected node pattern at index 2");
+            }
+        } else {
+            panic!("Expected MATCH clause");
+        }
+    }
+
+    #[test]
+    fn test_id_equality_pushdown_commutative() {
+        // Test literal on the left: 123 = id(e)
+        let mut query = parse_cypher("MATCH (s)-[r]->(e) WHERE 456 = id(e) RETURN r, s").unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        if let Clause::Match(m) = &query.clauses[0] {
+            if let PatternElement::Node(np) = &m.patterns[0].elements[2] {
+                let props = np
+                    .properties
+                    .as_ref()
+                    .expect("e should have properties pushed");
+                assert!(
+                    matches!(
+                        props.get("id"),
+                        Some(PropertyMatcher::Equals(Value::Int64(456)))
+                    ),
+                    "Expected id = 456 pushed into node pattern, got: {:?}",
+                    props.get("id")
+                );
+            } else {
+                panic!("Expected node pattern at index 2");
+            }
+        } else {
+            panic!("Expected MATCH clause");
+        }
+    }
+
+    #[test]
+    fn test_id_in_list_pushdown() {
+        let mut query =
+            parse_cypher("MATCH (s)-[r]->(e) WHERE id(e) IN [123, 456, 789] RETURN r, s").unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        if let Clause::Match(m) = &query.clauses[0] {
+            if let PatternElement::Node(np) = &m.patterns[0].elements[2] {
+                let props = np
+                    .properties
+                    .as_ref()
+                    .expect("e should have properties pushed");
+                match props.get("id") {
+                    Some(PropertyMatcher::In(values)) => {
+                        assert_eq!(values.len(), 3);
+                        assert_eq!(values[0], Value::Int64(123));
+                        assert_eq!(values[1], Value::Int64(456));
+                        assert_eq!(values[2], Value::Int64(789));
+                    }
+                    other => panic!("Expected In matcher for id, got: {:?}", other),
+                }
+            } else {
+                panic!("Expected node pattern at index 2");
+            }
+        } else {
+            panic!("Expected MATCH clause");
+        }
+    }
+
+    #[test]
+    fn test_id_equality_pushdown_with_param() {
+        let mut query = parse_cypher("MATCH (n) WHERE id(n) = $node_id RETURN n").unwrap();
+
+        let graph = DirGraph::new();
+        let mut params = HashMap::new();
+        params.insert("node_id".to_string(), Value::Int64(42));
+        optimize(&mut query, &graph, &params);
+
+        if let Clause::Match(m) = &query.clauses[0] {
+            if let PatternElement::Node(np) = &m.patterns[0].elements[0] {
+                let props = np
+                    .properties
+                    .as_ref()
+                    .expect("n should have properties pushed");
+                assert!(
+                    matches!(
+                        props.get("id"),
+                        Some(PropertyMatcher::Equals(Value::Int64(42)))
+                    ),
+                    "Expected id = 42 pushed from param, got: {:?}",
+                    props.get("id")
+                );
+            } else {
+                panic!("Expected node pattern");
+            }
+        } else {
+            panic!("Expected MATCH clause");
+        }
+    }
+
+    #[test]
+    fn test_id_pushdown_combined_with_property() {
+        // id() pushdown should work alongside regular property pushdown
+        let mut query =
+            parse_cypher("MATCH (s)-[r]->(e) WHERE id(e) = 123 AND s.name = 'Alice' RETURN r")
+                .unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        if let Clause::Match(m) = &query.clauses[0] {
+            // Check s (index 0) has name pushed
+            if let PatternElement::Node(np) = &m.patterns[0].elements[0] {
+                let props = np.properties.as_ref().expect("s should have name pushed");
+                assert!(matches!(
+                    props.get("name"),
+                    Some(PropertyMatcher::Equals(Value::String(_)))
+                ));
+            }
+            // Check e (index 2) has id pushed
+            if let PatternElement::Node(np) = &m.patterns[0].elements[2] {
+                let props = np.properties.as_ref().expect("e should have id pushed");
+                assert!(matches!(
+                    props.get("id"),
+                    Some(PropertyMatcher::Equals(Value::Int64(123)))
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn test_type_equality_pushdown() {
+        let mut query =
+            parse_cypher("MATCH (s)-[r]->(e) WHERE type(r) = 'AZMemberOf' RETURN r").unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        // The edge pattern should now have connection_type = 'AZMemberOf'
+        if let Clause::Match(m) = &query.clauses[0] {
+            if let PatternElement::Edge(ep) = &m.patterns[0].elements[1] {
+                assert_eq!(ep.connection_type.as_deref(), Some("AZMemberOf"));
+            } else {
+                panic!("Expected edge pattern at index 1");
+            }
+        } else {
+            panic!("Expected Match clause");
+        }
+    }
+
+    #[test]
+    fn test_type_in_pushdown() {
+        let mut query = parse_cypher(
+            "MATCH (s)-[r]->(e) WHERE type(r) IN ['AZMemberOf', 'AZHasRole'] RETURN r, s",
+        )
+        .unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        // The edge pattern should now have connection_types
+        if let Clause::Match(m) = &query.clauses[0] {
+            if let PatternElement::Edge(ep) = &m.patterns[0].elements[1] {
+                assert_eq!(ep.connection_type.as_deref(), Some("AZMemberOf"));
+                let types = ep
+                    .connection_types
+                    .as_ref()
+                    .expect("should have connection_types");
+                assert_eq!(types.len(), 2);
+                assert!(types.contains(&"AZMemberOf".to_string()));
+                assert!(types.contains(&"AZHasRole".to_string()));
+            } else {
+                panic!("Expected edge pattern at index 1");
+            }
+        } else {
+            panic!("Expected Match clause");
+        }
+    }
+
+    #[test]
+    fn test_type_pushdown_with_other_predicates() {
+        let mut query = parse_cypher(
+            "MATCH (s:User)-[r]->(e) WHERE type(r) IN ['AZMemberOf'] AND s.name = 'Alice' RETURN r",
+        )
+        .unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        if let Clause::Match(m) = &query.clauses[0] {
+            // Edge should have type pushed (find edge in elements)
+            let edge_has_type = m.patterns[0].elements.iter().any(|el| {
+                if let PatternElement::Edge(ep) = el {
+                    ep.connection_type.as_deref() == Some("AZMemberOf")
+                } else {
+                    false
+                }
+            });
+            assert!(edge_has_type, "Edge should have AZMemberOf type pushed");
+
+            // Node s should have property pushed (may be reversed by optimizer)
+            let node_has_name = m.patterns[0].elements.iter().any(|el| {
+                if let PatternElement::Node(np) = el {
+                    np.variable.as_deref() == Some("s")
+                        && np
+                            .properties
+                            .as_ref()
+                            .is_some_and(|p| p.contains_key("name"))
+                } else {
+                    false
+                }
+            });
+            assert!(node_has_name, "Node s should have name property pushed");
+        } else {
+            panic!("Expected Match clause");
+        }
+    }
+
+    #[test]
+    fn test_type_equality_commutative() {
+        // 'AZMemberOf' = type(r)  (reversed order)
+        let mut query =
+            parse_cypher("MATCH (s)-[r]->(e) WHERE 'AZMemberOf' = type(r) RETURN r").unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        if let Clause::Match(m) = &query.clauses[0] {
+            if let PatternElement::Edge(ep) = &m.patterns[0].elements[1] {
+                assert_eq!(ep.connection_type.as_deref(), Some("AZMemberOf"));
+            } else {
+                panic!("Expected edge pattern");
             }
         }
     }

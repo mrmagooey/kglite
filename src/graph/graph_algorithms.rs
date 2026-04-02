@@ -650,10 +650,14 @@ pub fn all_shortest_paths_directed(
 
     let cost = level[target_idx] as usize;
 
+    // Reconstruct paths from parents. Limit to 1000 paths to prevent
+    // combinatorial explosion when many nodes share the same BFS level.
+    const MAX_PATHS: usize = 1000;
+
     let mut partial_paths: Vec<Vec<usize>> = vec![vec![target_idx]];
     let mut complete_paths: Vec<Vec<NodeIndex>> = Vec::new();
 
-    while !partial_paths.is_empty() {
+    while !partial_paths.is_empty() && complete_paths.len() < MAX_PATHS {
         let mut next_partial: Vec<Vec<usize>> = Vec::new();
         for path in partial_paths {
             let last = *path.last().unwrap();
@@ -661,12 +665,21 @@ pub fn all_shortest_paths_directed(
                 let full_path: Vec<NodeIndex> =
                     path.iter().rev().map(|&i| NodeIndex::new(i)).collect();
                 complete_paths.push(full_path);
+                if complete_paths.len() >= MAX_PATHS {
+                    break;
+                }
             } else {
                 for &parent_idx in &parents[last] {
                     let mut new_path = path.clone();
                     new_path.push(parent_idx as usize);
                     next_partial.push(new_path);
+                    if next_partial.len() > MAX_PATHS * 10 {
+                        break;
+                    }
                 }
+            }
+            if next_partial.len() > MAX_PATHS * 10 {
+                break;
             }
         }
         partial_paths = next_partial;

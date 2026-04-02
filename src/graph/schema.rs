@@ -1677,6 +1677,36 @@ impl DirGraph {
         self.type_indices.contains_key(node_type) || self.node_type_metadata.contains_key(node_type)
     }
 
+    /// Return all node indices matching a label, considering primary `node_type`,
+    /// `extra_labels`, and the `__kinds` JSON-array property (BloodHound secondary labels).
+    pub fn nodes_matching_label(&self, label: &str) -> Vec<NodeIndex> {
+        use crate::graph::pattern_matching::node_matches_label;
+
+        let primary: &[NodeIndex] = self
+            .type_indices
+            .get(label)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+
+        let secondary: Vec<NodeIndex> = self
+            .graph
+            .node_indices()
+            .filter(|&idx| {
+                if let Some(node) = self.graph.node_weight(idx) {
+                    node.node_type != *label && node_matches_label(node, label)
+                } else {
+                    false
+                }
+            })
+            .collect();
+
+        if secondary.is_empty() {
+            primary.to_vec()
+        } else {
+            primary.iter().copied().chain(secondary).collect()
+        }
+    }
+
     /// Get all node types that exist in the graph.
     pub fn get_node_types(&self) -> Vec<String> {
         let mut types: std::collections::HashSet<String> = std::collections::HashSet::new();

@@ -37,9 +37,9 @@ pub enum CypherToken {
     On,
     Asc,
     Desc,
-    StartsWith,
-    EndsWith,
-    Contains,
+    // Note: STARTS, ENDS, CONTAINS are handled as contextual keywords (identifiers)
+    // rather than reserved tokens, so they can also be used as relationship type
+    // and node label names (e.g. [:Contains] in BloodHound).
     Case,
     When,
     Then,
@@ -431,9 +431,8 @@ fn identifier_to_token(ident: String) -> CypherToken {
         "END" => CypherToken::End,
         "TRUE" => CypherToken::True,
         "FALSE" => CypherToken::False,
-        "STARTS" => CypherToken::StartsWith,
-        "ENDS" => CypherToken::EndsWith,
-        "CONTAINS" => CypherToken::Contains,
+        // STARTS, ENDS, CONTAINS are contextual keywords — kept as Identifier
+        // so they can be used as relationship/label names (e.g. [:Contains]).
         "EXISTS" => CypherToken::Exists,
         "EXPLAIN" => CypherToken::Explain,
         "PROFILE" => CypherToken::Profile,
@@ -480,9 +479,6 @@ pub fn token_to_keyword_name(token: &CypherToken) -> Option<String> {
         CypherToken::On => "on",
         CypherToken::Asc => "asc",
         CypherToken::Desc => "desc",
-        CypherToken::StartsWith => "starts",
-        CypherToken::EndsWith => "ends",
-        CypherToken::Contains => "contains",
         CypherToken::Case => "case",
         CypherToken::When => "when",
         CypherToken::Then => "then",

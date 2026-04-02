@@ -25,7 +25,12 @@ mod tracking_alloc {
                 let new_val = (prev + layout.size() as i64) as u64;
                 let mut peak = PEAK_BYTES.load(Ordering::Relaxed);
                 while new_val > peak {
-                    match PEAK_BYTES.compare_exchange_weak(peak, new_val, Ordering::Relaxed, Ordering::Relaxed) {
+                    match PEAK_BYTES.compare_exchange_weak(
+                        peak,
+                        new_val,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
                         Ok(_) => break,
                         Err(p) => peak = p,
                     }
@@ -47,7 +52,12 @@ mod tracking_alloc {
                 let new_val = (prev + layout.size() as i64) as u64;
                 let mut peak = PEAK_BYTES.load(Ordering::Relaxed);
                 while new_val > peak {
-                    match PEAK_BYTES.compare_exchange_weak(peak, new_val, Ordering::Relaxed, Ordering::Relaxed) {
+                    match PEAK_BYTES.compare_exchange_weak(
+                        peak,
+                        new_val,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
                         Ok(_) => break,
                         Err(p) => peak = p,
                     }
@@ -66,7 +76,12 @@ mod tracking_alloc {
                     let new_val = (prev + delta) as u64;
                     let mut peak = PEAK_BYTES.load(Ordering::Relaxed);
                     while new_val > peak {
-                        match PEAK_BYTES.compare_exchange_weak(peak, new_val, Ordering::Relaxed, Ordering::Relaxed) {
+                        match PEAK_BYTES.compare_exchange_weak(
+                            peak,
+                            new_val,
+                            Ordering::Relaxed,
+                            Ordering::Relaxed,
+                        ) {
                             Ok(_) => break,
                             Err(p) => peak = p,
                         }

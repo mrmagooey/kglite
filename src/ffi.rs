@@ -12,16 +12,18 @@
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use petgraph::graph::NodeIndex;
 
+use crate::datatypes::values::Value;
 use crate::graph::batch_operations::ConnectionBatchProcessor;
-use crate::graph::cypher::{execute_mutable, is_mutation_query, parse_cypher, CypherExecutor};
 use crate::graph::cypher::ast::CypherQuery;
+use crate::graph::cypher::{
+    execute_mutable, is_mutation_query, optimize, parse_cypher, CypherExecutor,
+};
 use crate::graph::io_operations::{load_file, prepare_save, write_graph_v3};
 use crate::graph::schema::{DirGraph, EdgeData};
-use crate::datatypes::values::Value;
 
 // ─── Cypher parse cache ─────────────────────────────────────────────────
 // Caches parsed ASTs keyed by query string to avoid re-parsing identical queries.
@@ -62,6 +64,78 @@ impl ParseCache {
 
 static PARSE_CACHE: std::sync::LazyLock<ParseCache> = std::sync::LazyLock::new(ParseCache::new);
 
+// ─── Cypher plan cache ──────────────────────────────────────────────────
+// Caches fully-optimized ASTs for parameter-free queries.  The optimizer is
+// deterministic and its output depends only on the query text and schema
+// (label / relationship-type metadata).  Schema is immutable at runtime in
+// kglite, so a simple `query_string → Arc<CypherQuery>` cache is safe.
+//
+// For queries **with** parameters we always re-optimize because the planner's
+// `push_where_into_match` resolves `$param` values and the resulting plan may
+// differ across invocations.
+
+struct PlanCache {
+    entries: RwLock<HashMap<String, Arc<CypherQuery>>>,
+}
+
+impl PlanCache {
+    fn new() -> Self {
+        Self {
+            entries: RwLock::new(HashMap::with_capacity(1024)),
+        }
+    }
+
+    fn get(&self, query: &str) -> Option<Arc<CypherQuery>> {
+        self.entries
+            .read()
+            .ok()
+            .and_then(|map| map.get(query).map(Arc::clone))
+    }
+
+    fn insert(&self, query: String, plan: Arc<CypherQuery>) {
+        if let Ok(mut map) = self.entries.write() {
+            if map.len() > 4096 {
+                map.clear();
+            }
+            map.insert(query, plan);
+        }
+    }
+}
+
+static PLAN_CACHE: std::sync::LazyLock<PlanCache> = std::sync::LazyLock::new(PlanCache::new);
+
+/// Parse, then optimize a query—using the plan cache for parameter-free queries.
+///
+/// Returns an `Arc<CypherQuery>` that is ready for execution.
+fn get_optimized_plan(
+    query_str: &str,
+    params: &HashMap<String, Value>,
+    graph: &DirGraph,
+) -> Result<Arc<CypherQuery>, String> {
+    // For parameter-free queries, try the plan cache first.
+    let no_params = params.is_empty();
+    if no_params {
+        if let Some(cached) = PLAN_CACHE.get(query_str) {
+            return Ok(cached);
+        }
+    }
+
+    // Parse (via parse cache)
+    let parsed_arc = PARSE_CACHE.get_or_parse(query_str)?;
+
+    // Clone out of the Arc so we can mutate during optimization
+    let mut query = (*parsed_arc).clone();
+    optimize(&mut query, graph, params);
+    let plan = Arc::new(query);
+
+    // Cache the optimized plan for parameter-free queries
+    if no_params {
+        PLAN_CACHE.insert(query_str.to_string(), Arc::clone(&plan));
+    }
+
+    Ok(plan)
+}
+
 // ─── Thread-local error storage ───────────────────────────────────────────
 
 thread_local! {
@@ -80,9 +154,11 @@ fn clear_error() {
 
 // ─── Opaque handle ────────────────────────────────────────────────────────
 
-/// Opaque graph handle. Owns an `Arc<DirGraph>` protected by a `Mutex`.
+/// Opaque graph handle. Owns an `Arc<DirGraph>` protected by an `RwLock`.
+/// Read-only queries acquire a shared read lock, allowing concurrent execution.
+/// Mutation queries acquire an exclusive write lock.
 pub struct KgHandle {
-    inner: Mutex<Arc<DirGraph>>,
+    inner: RwLock<Arc<DirGraph>>,
 }
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────
@@ -92,7 +168,7 @@ pub struct KgHandle {
 pub extern "C" fn kg_new() -> *mut KgHandle {
     clear_error();
     let handle = KgHandle {
-        inner: Mutex::new(Arc::new(DirGraph::new())),
+        inner: RwLock::new(Arc::new(DirGraph::new())),
     };
     Box::into_raw(Box::new(handle))
 }
@@ -115,12 +191,14 @@ pub extern "C" fn kg_load(path: *const c_char) -> *mut KgHandle {
         set_error("path is null");
         return std::ptr::null_mut();
     }
-    let path_str = unsafe { CStr::from_ptr(path) }.to_string_lossy().into_owned();
+    let path_str = unsafe { CStr::from_ptr(path) }
+        .to_string_lossy()
+        .into_owned();
     match load_file(&path_str) {
         Ok(kg) => {
             let arc = kg.inner.clone();
             Box::into_raw(Box::new(KgHandle {
-                inner: Mutex::new(arc),
+                inner: RwLock::new(arc),
             }))
         }
         Err(e) => {
@@ -138,12 +216,14 @@ pub extern "C" fn kg_save(handle: *const KgHandle, path: *const c_char) -> c_int
         set_error("null argument");
         return -1;
     }
-    let path_str = unsafe { CStr::from_ptr(path) }.to_string_lossy().into_owned();
+    let path_str = unsafe { CStr::from_ptr(path) }
+        .to_string_lossy()
+        .into_owned();
     let handle_ref = unsafe { &*handle };
-    let mut arc = match handle_ref.inner.lock() {
+    let mut arc = match handle_ref.inner.write() {
         Ok(g) => g,
         Err(e) => {
-            set_error(format!("mutex poisoned: {e}"));
+            set_error(format!("rwlock poisoned: {e}"));
             return -1;
         }
     };
@@ -186,7 +266,9 @@ pub extern "C" fn kg_cypher(
         return -1;
     }
 
-    let query_str = unsafe { CStr::from_ptr(query) }.to_string_lossy().into_owned();
+    let query_str = unsafe { CStr::from_ptr(query) }
+        .to_string_lossy()
+        .into_owned();
     let params = if params_json.is_null() {
         HashMap::new()
     } else {
@@ -200,6 +282,7 @@ pub extern "C" fn kg_cypher(
         }
     };
 
+    // Parse first (via parse cache) to determine mutation vs read-only
     let parsed = match PARSE_CACHE.get_or_parse(&query_str) {
         Ok(q) => q,
         Err(e) => {
@@ -209,39 +292,80 @@ pub extern "C" fn kg_cypher(
     };
 
     let handle_ref = unsafe { &mut *handle };
-    let mut arc = match handle_ref.inner.lock() {
-        Ok(g) => g,
-        Err(e) => {
-            set_error(format!("mutex poisoned: {e}"));
-            return -1;
-        }
-    };
 
-    let result = if is_mutation_query(&parsed) {
+    if is_mutation_query(&parsed) {
+        // Write path: exclusive lock for mutations
+        let mut arc = match handle_ref.inner.write() {
+            Ok(g) => g,
+            Err(e) => {
+                set_error(format!("rwlock poisoned: {e}"));
+                return -1;
+            }
+        };
+        // Optimize with graph context (mutations always re-optimize; params may vary)
+        let optimized = match get_optimized_plan(&query_str, &params, &*arc) {
+            Ok(p) => p,
+            Err(e) => {
+                set_error(format!("optimize error: {e}"));
+                return -1;
+            }
+        };
         let graph = Arc::make_mut(&mut *arc);
-        execute_mutable(graph, &parsed, params, None)
-    } else {
-        let executor = CypherExecutor::with_params(&*arc, &params, None);
-        executor.execute(&parsed)
-    };
-
-    match result {
-        Ok(r) => {
-            let json = result_to_json(&r.columns, &r.rows, Some(&*arc));
-            match CString::new(json) {
-                Ok(s) => {
-                    unsafe { *out = s.into_raw() };
-                    0
-                }
-                Err(e) => {
-                    set_error(format!("result contains null bytes: {e}"));
-                    -1
+        match execute_mutable(graph, &optimized, params, None) {
+            Ok(r) => {
+                let json = result_to_json(&r.columns, &r.rows, Some(&*arc));
+                match CString::new(json) {
+                    Ok(s) => {
+                        unsafe { *out = s.into_raw() };
+                        0
+                    }
+                    Err(e) => {
+                        set_error(format!("result contains null bytes: {e}"));
+                        -1
+                    }
                 }
             }
+            Err(e) => {
+                set_error(e);
+                -1
+            }
         }
-        Err(e) => {
-            set_error(e);
-            -1
+    } else {
+        // Read path: shared lock allows concurrent read queries
+        let arc = match handle_ref.inner.read() {
+            Ok(g) => g,
+            Err(e) => {
+                set_error(format!("rwlock poisoned: {e}"));
+                return -1;
+            }
+        };
+        // Optimize with graph context — plan cache handles no-param queries
+        let optimized = match get_optimized_plan(&query_str, &params, &*arc) {
+            Ok(p) => p,
+            Err(e) => {
+                set_error(format!("optimize error: {e}"));
+                return -1;
+            }
+        };
+        let executor = CypherExecutor::with_params(&*arc, &params, None);
+        match executor.execute(&optimized) {
+            Ok(r) => {
+                let json = result_to_json(&r.columns, &r.rows, Some(&*arc));
+                match CString::new(json) {
+                    Ok(s) => {
+                        unsafe { *out = s.into_raw() };
+                        0
+                    }
+                    Err(e) => {
+                        set_error(format!("result contains null bytes: {e}"));
+                        -1
+                    }
+                }
+            }
+            Err(e) => {
+                set_error(e);
+                -1
+            }
         }
     }
 }
@@ -280,7 +404,7 @@ pub extern "C" fn kg_memory_stats() -> KgMemStats {
     }
 }
 
-/// Execute multiple Cypher queries in a single Mutex lock acquisition.
+/// Execute multiple Cypher queries in a single lock acquisition.
 ///
 /// - `queries_json`: JSON array of objects `[{"query": "...", "params": {...}}, ...]`
 /// - `out`: receives JSON string with array of results (one per query)
@@ -308,17 +432,19 @@ pub extern "C" fn kg_cypher_batch(
         }
     };
 
-    // Acquire Mutex ONCE for the entire batch
+    // Pre-parse all queries and determine if any are mutations
     let handle_ref = unsafe { &mut *handle };
-    let mut arc = match handle_ref.inner.lock() {
-        Ok(g) => g,
-        Err(e) => {
-            set_error(format!("mutex poisoned: {e}"));
-            return -1;
-        }
-    };
 
-    let mut results = Vec::with_capacity(batch.len());
+    struct BatchEntry {
+        query_str: String,
+        #[allow(dead_code)]
+        parsed: Arc<CypherQuery>, // retained for is_mutation_query check above
+        params: HashMap<String, Value>,
+        is_mutation: bool,
+    }
+
+    let mut entries = Vec::with_capacity(batch.len());
+    let mut has_mutations = false;
 
     for (i, entry) in batch.iter().enumerate() {
         let query_str = match entry.get("query").and_then(|v| v.as_str()) {
@@ -331,7 +457,8 @@ pub extern "C" fn kg_cypher_batch(
 
         let params = if let Some(p) = entry.get("params") {
             if let Some(obj) = p.as_object() {
-                match obj.iter()
+                match obj
+                    .iter()
                     .map(|(k, v)| json_to_value(v.clone()).map(|val| (k.clone(), val)))
                     .collect::<Result<HashMap<String, Value>, String>>()
                 {
@@ -356,22 +483,91 @@ pub extern "C" fn kg_cypher_batch(
             }
         };
 
-        let result = if is_mutation_query(&parsed) {
-            let graph = Arc::make_mut(&mut *arc);
-            execute_mutable(graph, &parsed, params, None)
-        } else {
-            let executor = CypherExecutor::with_params(&*arc, &params, None);
-            executor.execute(&parsed)
+        let is_mutation = is_mutation_query(&parsed);
+        if is_mutation {
+            has_mutations = true;
+        }
+        entries.push(BatchEntry {
+            query_str,
+            parsed,
+            params,
+            is_mutation,
+        });
+    }
+
+    let mut results = Vec::with_capacity(entries.len());
+
+    if has_mutations {
+        // Mixed batch: acquire write lock, execute sequentially
+        let mut arc = match handle_ref.inner.write() {
+            Ok(g) => g,
+            Err(e) => {
+                set_error(format!("rwlock poisoned: {e}"));
+                return -1;
+            }
         };
 
-        match result {
-            Ok(r) => {
-                let json = result_to_json(&r.columns, &r.rows, Some(&*arc));
-                results.push(json);
+        for (i, entry) in entries.into_iter().enumerate() {
+            // Optimize with graph context (plan cache handles no-param queries)
+            let optimized = match get_optimized_plan(&entry.query_str, &entry.params, &*arc) {
+                Ok(p) => p,
+                Err(e) => {
+                    set_error(format!("batch[{i}]: optimize error: {e}"));
+                    return -1;
+                }
+            };
+            let result = if entry.is_mutation {
+                let graph = Arc::make_mut(&mut *arc);
+                execute_mutable(graph, &optimized, entry.params, None)
+            } else {
+                let executor = CypherExecutor::with_params(&*arc, &entry.params, None);
+                executor.execute(&optimized)
+            };
+
+            match result {
+                Ok(r) => {
+                    let json = result_to_json(&r.columns, &r.rows, Some(&*arc));
+                    results.push(json);
+                }
+                Err(e) => {
+                    set_error(format!("batch[{i}]: {e}"));
+                    return -1;
+                }
             }
+        }
+    } else {
+        // Read-only batch: acquire shared read lock, execute in parallel
+        let arc = match handle_ref.inner.read() {
+            Ok(g) => g,
             Err(e) => {
-                set_error(format!("batch[{i}]: {e}"));
+                set_error(format!("rwlock poisoned: {e}"));
                 return -1;
+            }
+        };
+
+        use rayon::prelude::*;
+        let parallel_results: Vec<Result<String, (usize, String)>> = entries
+            .into_par_iter()
+            .enumerate()
+            .map(|(i, entry)| {
+                // Optimize with graph context (plan cache handles no-param queries)
+                let optimized = get_optimized_plan(&entry.query_str, &entry.params, &*arc)
+                    .map_err(|e| (i, format!("optimize error: {e}")))?;
+                let executor = CypherExecutor::with_params(&*arc, &entry.params, None);
+                match executor.execute(&optimized) {
+                    Ok(r) => Ok(result_to_json(&r.columns, &r.rows, Some(&*arc))),
+                    Err(e) => Err((i, e)),
+                }
+            })
+            .collect();
+
+        for pr in parallel_results {
+            match pr {
+                Ok(json) => results.push(json),
+                Err((i, e)) => {
+                    set_error(format!("batch[{i}]: {e}"));
+                    return -1;
+                }
             }
         }
     }
@@ -470,15 +666,18 @@ pub extern "C" fn kg_create_edges_batch(
             HashMap::new()
         };
 
-        grouped.entry(edge_type).or_default().push((src, dst, props));
+        grouped
+            .entry(edge_type)
+            .or_default()
+            .push((src, dst, props));
     }
 
-    // Acquire mutex ONCE
+    // Acquire write lock ONCE — edge creation is always a mutation
     let handle_ref = unsafe { &mut *handle };
-    let mut arc = match handle_ref.inner.lock() {
+    let mut arc = match handle_ref.inner.write() {
         Ok(g) => g,
         Err(e) => {
-            set_error(format!("mutex poisoned: {e}"));
+            set_error(format!("rwlock poisoned: {e}"));
             return -1;
         }
     };
@@ -568,7 +767,8 @@ fn json_to_value(v: serde_json::Value) -> Result<Value, String> {
         // Falls back to JSON-encoded string for the Cypher executor's parse_list_value().
         serde_json::Value::Array(arr) => {
             // If all elements are strings, pass as JSON-encoded string for IN $param support
-            let s = serde_json::to_string(&serde_json::Value::Array(arr)).map_err(|e| e.to_string())?;
+            let s =
+                serde_json::to_string(&serde_json::Value::Array(arr)).map_err(|e| e.to_string())?;
             Ok(Value::String(s))
         }
         other => Err(format!("unsupported param type: {other}")),
@@ -579,7 +779,10 @@ fn value_to_json(v: &Value) -> serde_json::Value {
     value_to_json_with_graph(v, None)
 }
 
-fn value_to_json_with_graph(v: &Value, graph: Option<&crate::graph::schema::DirGraph>) -> serde_json::Value {
+fn value_to_json_with_graph(
+    v: &Value,
+    graph: Option<&crate::graph::schema::DirGraph>,
+) -> serde_json::Value {
     match v {
         Value::Null => serde_json::Value::Null,
         Value::Boolean(b) => serde_json::Value::Bool(*b),
@@ -608,7 +811,11 @@ fn value_to_json_with_graph(v: &Value, graph: Option<&crate::graph::schema::DirG
             }
             serde_json::json!({"__node_ref": idx})
         }
-        Value::EdgeRef { edge_idx, src_idx, dst_idx } => {
+        Value::EdgeRef {
+            edge_idx,
+            src_idx,
+            dst_idx,
+        } => {
             if let Some(g) = graph {
                 let ei = petgraph::graph::EdgeIndex::new(*edge_idx as usize);
                 if let Some(edge) = g.graph.edge_weight(ei) {
@@ -629,14 +836,127 @@ fn value_to_json_with_graph(v: &Value, graph: Option<&crate::graph::schema::DirG
     }
 }
 
-fn result_to_json(columns: &[String], rows: &[Vec<Value>], graph: Option<&crate::graph::schema::DirGraph>) -> String {
+fn result_to_json(
+    columns: &[String],
+    rows: &[Vec<Value>],
+    graph: Option<&crate::graph::schema::DirGraph>,
+) -> String {
     let json_rows: Vec<Vec<serde_json::Value>> = rows
         .iter()
-        .map(|row| row.iter().map(|v| value_to_json_with_graph(v, graph)).collect())
+        .map(|row| {
+            row.iter()
+                .map(|v| value_to_json_with_graph(v, graph))
+                .collect()
+        })
         .collect();
     let obj = serde_json::json!({
         "columns": columns,
         "rows": json_rows,
     });
     obj.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::schema::{DirGraph, NodeData};
+
+    /// Helper: build a small graph with typed nodes for testing.
+    fn build_test_graph() -> DirGraph {
+        let mut graph = DirGraph::new();
+        let n1 = NodeData::new(
+            Value::UniqueId(1),
+            Value::String("Alice".to_string()),
+            "User".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        let n2 = NodeData::new(
+            Value::UniqueId(2),
+            Value::String("Bob".to_string()),
+            "User".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        let idx1 = graph.graph.add_node(n1);
+        let idx2 = graph.graph.add_node(n2);
+        graph
+            .type_indices
+            .entry("User".to_string())
+            .or_default()
+            .push(idx1);
+        graph
+            .type_indices
+            .entry("User".to_string())
+            .or_default()
+            .push(idx2);
+        graph
+    }
+
+    #[test]
+    fn test_plan_cache_hit_for_no_param_query() {
+        let graph = build_test_graph();
+        let params: HashMap<String, Value> = HashMap::new();
+        let query = "MATCH (n:User) RETURN count(n)";
+
+        // First call: should miss plan cache, optimize, and insert
+        let plan1 = get_optimized_plan(query, &params, &graph).unwrap();
+
+        // Second call: should hit plan cache (same Arc pointer)
+        let plan2 = get_optimized_plan(query, &params, &graph).unwrap();
+
+        // Both should return the same Arc (pointer equality proves cache hit)
+        assert!(
+            Arc::ptr_eq(&plan1, &plan2),
+            "second call should return cached plan (same Arc)"
+        );
+    }
+
+    #[test]
+    fn test_plan_cache_miss_for_param_query() {
+        let graph = build_test_graph();
+
+        let query = "MATCH (n) WHERE n.name = $name RETURN n";
+
+        let mut params1 = HashMap::new();
+        params1.insert("name".to_string(), Value::String("Alice".to_string()));
+
+        let mut params2 = HashMap::new();
+        params2.insert("name".to_string(), Value::String("Bob".to_string()));
+
+        // With params: should NOT cache, so different calls produce different Arcs
+        let plan_a = get_optimized_plan(query, &params1, &graph).unwrap();
+        let plan_b = get_optimized_plan(query, &params2, &graph).unwrap();
+
+        assert!(
+            !Arc::ptr_eq(&plan_a, &plan_b),
+            "parameterized queries should not share cached plans"
+        );
+    }
+
+    #[test]
+    fn test_plan_cache_produces_optimized_query() {
+        use crate::graph::cypher::ast::Clause;
+
+        let graph = build_test_graph();
+        let params: HashMap<String, Value> = HashMap::new();
+
+        // This query should be fused into FusedCountTypedNode by the optimizer
+        let query = "MATCH (n:User) RETURN count(n)";
+        let plan = get_optimized_plan(query, &params, &graph).unwrap();
+
+        // Verify the optimizer actually ran: the plan should contain a fused clause
+        let has_fused = plan
+            .clauses
+            .iter()
+            .any(|c| matches!(c, Clause::FusedCountTypedNode { .. }));
+        assert!(
+            has_fused,
+            "optimized plan should contain FusedCountTypedNode, got: {:?}",
+            plan.clauses
+                .iter()
+                .map(|c| std::mem::discriminant(c))
+                .collect::<Vec<_>>()
+        );
+    }
 }
