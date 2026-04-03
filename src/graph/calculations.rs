@@ -10,6 +10,7 @@ use petgraph::graph::NodeIndex;
 use std::collections::HashMap;
 use std::time::Instant; // For timing operations
 
+#[derive(Debug)]
 pub enum EvaluationResult {
     Stored(CalculationOperationReport),
     Computed(Vec<StatResult>),
@@ -728,336 +729,185 @@ pub fn store_count_results(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::datatypes::values::Value;
+    use crate::graph::equation_parser::{AggregateType, Expr, Parser};
+    use crate::graph::schema::{CurrentSelection, DirGraph, EdgeData, NodeData, StringInterner};
+    use petgraph::graph::NodeIndex;
+    use std::collections::HashMap;
 
-    // ─── Tests for is_known_aggregate ───────────────────────────────────────
+    // ========================================================================
+    // Helper: build a DirGraph with nodes and optional edges
+    // ========================================================================
+
+    /// Create a simple DirGraph with some numbered nodes that have a "score" property.
+    fn make_graph_with_nodes(scores: &[f64]) -> (DirGraph, Vec<NodeIndex>) {
+        let mut g = DirGraph::new();
+        let mut indices = Vec::new();
+        for (i, &score) in scores.iter().enumerate() {
+            let mut props = HashMap::new();
+            props.insert("score".to_string(), Value::Float64(score));
+            let node = NodeData::new(
+                Value::Int64(i as i64),
+                Value::String(format!("node_{}", i)),
+                "TestNode".to_string(),
+                props,
+                &mut g.interner,
+            );
+            let idx = g.graph.add_node(node);
+            indices.push(idx);
+        }
+        (g, indices)
+    }
+
+    /// Build a two-level selection: level 0 has a parent, level 1 has children grouped under that parent.
+    fn make_parent_child_selection(parent: NodeIndex, children: &[NodeIndex]) -> CurrentSelection {
+        let mut sel = CurrentSelection::new();
+        // Level 0: the parent node (grouped under None since it has no parent)
+        sel.get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![parent]);
+
+        // Level 1: children grouped under the parent
+        sel.add_level();
+        sel.get_level_mut(1)
+            .unwrap()
+            .add_selection(Some(parent), children.to_vec());
+
+        sel
+    }
+
+    /// Build a flat (single-level) selection with nodes grouped under None.
+    fn make_flat_selection(nodes: &[NodeIndex]) -> CurrentSelection {
+        let mut sel = CurrentSelection::new();
+        sel.get_level_mut(0)
+            .unwrap()
+            .add_selection(None, nodes.to_vec());
+        sel
+    }
+
+    // ========================================================================
+    // extract_unknown_aggregate_function
+    // ========================================================================
+
     #[test]
-    fn test_is_known_aggregate_sum() {
+    fn test_extract_unknown_aggregate_known_functions() {
+        // Known aggregate functions should return None
+        assert!(extract_unknown_aggregate_function("sum(score)").is_none());
+        assert!(extract_unknown_aggregate_function("mean(score)").is_none());
+        assert!(extract_unknown_aggregate_function("avg(score)").is_none());
+        assert!(extract_unknown_aggregate_function("min(score)").is_none());
+        assert!(extract_unknown_aggregate_function("max(score)").is_none());
+        assert!(extract_unknown_aggregate_function("count(score)").is_none());
+        assert!(extract_unknown_aggregate_function("std(score)").is_none());
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_unknown_function() {
+        let result = extract_unknown_aggregate_function("median(score)");
+        assert_eq!(result, Some("median".to_string()));
+
+        let result = extract_unknown_aggregate_function("foobar(x)");
+        assert_eq!(result, Some("foobar".to_string()));
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_no_parens() {
+        // No parentheses at all - should return None
+        assert!(extract_unknown_aggregate_function("score + 1").is_none());
+        assert!(extract_unknown_aggregate_function("score").is_none());
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_expression_with_operator_before_paren() {
+        // "score + 1" split by '(' yields ["score + 1"] with len 1, so None
+        assert!(extract_unknown_aggregate_function("score + 1").is_none());
+        // "a * b(c)" -> parts[0] = "a * b" which has non-alphanumeric chars -> None
+        assert!(extract_unknown_aggregate_function("a * b(c)").is_none());
+    }
+
+    // ========================================================================
+    // is_known_aggregate
+    // ========================================================================
+
+    #[test]
+    fn test_is_known_aggregate() {
         assert!(is_known_aggregate("sum"));
-    }
-
-    #[test]
-    fn test_is_known_aggregate_count() {
-        assert!(is_known_aggregate("count"));
-    }
-
-    #[test]
-    fn test_is_known_aggregate_min() {
-        assert!(is_known_aggregate("min"));
-    }
-
-    #[test]
-    fn test_is_known_aggregate_max() {
-        assert!(is_known_aggregate("max"));
-    }
-
-    #[test]
-    fn test_is_known_aggregate_mean() {
         assert!(is_known_aggregate("mean"));
-    }
-
-    #[test]
-    fn test_is_known_aggregate_std() {
+        assert!(is_known_aggregate("avg"));
         assert!(is_known_aggregate("std"));
-    }
-
-    #[test]
-    fn test_is_known_aggregate_unknown() {
-        assert!(!is_known_aggregate("unknown_func"));
-    }
-
-    #[test]
-    fn test_is_known_aggregate_empty_string() {
+        assert!(is_known_aggregate("min"));
+        assert!(is_known_aggregate("max"));
+        assert!(is_known_aggregate("count"));
+        assert!(!is_known_aggregate("median"));
+        assert!(!is_known_aggregate("variance"));
+        assert!(!is_known_aggregate("foobar"));
         assert!(!is_known_aggregate(""));
     }
 
-    // ─── Tests for is_likely_aggregate_name ─────────────────────────────────
+    // ========================================================================
+    // is_likely_aggregate_name
+    // ========================================================================
+
     #[test]
-    fn test_is_likely_aggregate_name_sum() {
-        assert!(is_likely_aggregate_name("sum"));
+    fn test_is_likely_aggregate_name_known_names() {
+        for name in &[
+            "sum", "avg", "average", "mean", "median", "min", "max", "count", "std", "stdev",
+            "stddev", "var", "variance",
+        ] {
+            assert!(
+                is_likely_aggregate_name(name),
+                "'{}' should be considered a likely aggregate name",
+                name
+            );
+        }
     }
 
     #[test]
-    fn test_is_likely_aggregate_name_SUM_uppercase() {
+    fn test_is_likely_aggregate_name_case_insensitive() {
         assert!(is_likely_aggregate_name("SUM"));
-    }
-
-    #[test]
-    fn test_is_likely_aggregate_name_avg() {
-        assert!(is_likely_aggregate_name("avg"));
-    }
-
-    #[test]
-    fn test_is_likely_aggregate_name_average() {
-        assert!(is_likely_aggregate_name("average"));
-    }
-
-    #[test]
-    fn test_is_likely_aggregate_name_mean() {
-        assert!(is_likely_aggregate_name("mean"));
-    }
-
-    #[test]
-    fn test_is_likely_aggregate_name_median() {
-        assert!(is_likely_aggregate_name("median"));
-    }
-
-    #[test]
-    fn test_is_likely_aggregate_name_min() {
-        assert!(is_likely_aggregate_name("min"));
-    }
-
-    #[test]
-    fn test_is_likely_aggregate_name_max() {
-        assert!(is_likely_aggregate_name("max"));
-    }
-
-    #[test]
-    fn test_is_likely_aggregate_name_count() {
-        assert!(is_likely_aggregate_name("count"));
-    }
-
-    #[test]
-    fn test_is_likely_aggregate_name_std() {
-        assert!(is_likely_aggregate_name("std"));
-    }
-
-    #[test]
-    fn test_is_likely_aggregate_name_stdev() {
-        assert!(is_likely_aggregate_name("stdev"));
-    }
-
-    #[test]
-    fn test_is_likely_aggregate_name_stddev() {
-        assert!(is_likely_aggregate_name("stddev"));
-    }
-
-    #[test]
-    fn test_is_likely_aggregate_name_var() {
-        assert!(is_likely_aggregate_name("var"));
-    }
-
-    #[test]
-    fn test_is_likely_aggregate_name_variance() {
-        assert!(is_likely_aggregate_name("variance"));
-    }
-
-    #[test]
-    fn test_is_likely_aggregate_name_with_whitespace() {
-        assert!(is_likely_aggregate_name("  sum  "));
+        assert!(is_likely_aggregate_name("Avg"));
+        assert!(is_likely_aggregate_name("  Mean  "));
     }
 
     #[test]
     fn test_is_likely_aggregate_name_unknown() {
         assert!(!is_likely_aggregate_name("foobar"));
+        assert!(!is_likely_aggregate_name("product"));
+        assert!(!is_likely_aggregate_name("score"));
     }
 
-    #[test]
-    fn test_is_likely_aggregate_name_empty() {
-        assert!(!is_likely_aggregate_name(""));
-    }
+    // ========================================================================
+    // has_aggregation
+    // ========================================================================
 
     #[test]
-    fn test_is_likely_aggregate_name_empty_whitespace() {
-        assert!(!is_likely_aggregate_name("   "));
-    }
-
-    // ─── Tests for extract_unknown_aggregate_function ──────────────────────
-    #[test]
-    fn test_extract_unknown_aggregate_function_known() {
-        let result = extract_unknown_aggregate_function("sum(price)");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_unknown_aggregate_function_unknown() {
-        let result = extract_unknown_aggregate_function("unknown(price)");
-        assert!(result.is_some());
-        assert_eq!(result.unwrap(), "unknown");
-    }
-
-    #[test]
-    fn test_extract_unknown_aggregate_function_mixed_case() {
-        let result = extract_unknown_aggregate_function("Unknown(property)");
-        assert!(result.is_some());
-    }
-
-    #[test]
-    fn test_extract_unknown_aggregate_function_no_parens() {
-        let result = extract_unknown_aggregate_function("just_text");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_unknown_aggregate_function_multiple_parens() {
-        let result = extract_unknown_aggregate_function("something(a)");
-        assert!(result.is_some());
-    }
-
-    #[test]
-    fn test_extract_unknown_aggregate_function_with_spaces() {
-        let result = extract_unknown_aggregate_function("  sum  (price)");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_unknown_aggregate_function_special_chars() {
-        // Underscores should be allowed in function names
-        let result = extract_unknown_aggregate_function("custom_func(x)");
-        assert!(result.is_some());
-    }
-
-    #[test]
-    fn test_extract_unknown_aggregate_function_count() {
-        let result = extract_unknown_aggregate_function("count(items)");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_unknown_aggregate_function_mean() {
-        let result = extract_unknown_aggregate_function("mean(values)");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_unknown_aggregate_function_min() {
-        let result = extract_unknown_aggregate_function("min(data)");
-        assert_eq!(result, None);
-    }
-
-    // ─── Tests for has_aggregation ──────────────────────────────────────────
-    #[test]
-    fn test_has_aggregation_simple_number() {
-        // Expr::Number doesn't contain aggregation
-        let expr = Expr::Number(5.0);
+    fn test_has_aggregation_simple_variable() {
+        let expr = Expr::Variable("score".to_string());
         assert!(!has_aggregation(&expr));
     }
 
     #[test]
-    fn test_has_aggregation_variable() {
-        let expr = Expr::Variable("price".to_string());
+    fn test_has_aggregation_number() {
+        let expr = Expr::Number(42.0);
         assert!(!has_aggregation(&expr));
     }
 
     #[test]
-    fn test_has_aggregation_with_add() {
-        let expr = Expr::Add(
-            Box::new(Expr::Variable("a".to_string())),
-            Box::new(Expr::Variable("b".to_string())),
-        );
-        assert!(!has_aggregation(&expr));
-    }
-
-    #[test]
-    fn test_has_aggregation_with_subtract() {
-        let expr = Expr::Subtract(
-            Box::new(Expr::Variable("a".to_string())),
-            Box::new(Expr::Variable("b".to_string())),
-        );
-        assert!(!has_aggregation(&expr));
-    }
-
-    #[test]
-    fn test_has_aggregation_with_multiply() {
-        let expr = Expr::Multiply(
-            Box::new(Expr::Variable("a".to_string())),
-            Box::new(Expr::Variable("b".to_string())),
-        );
-        assert!(!has_aggregation(&expr));
-    }
-
-    #[test]
-    fn test_has_aggregation_with_divide() {
-        let expr = Expr::Divide(
-            Box::new(Expr::Variable("a".to_string())),
-            Box::new(Expr::Variable("b".to_string())),
-        );
-        assert!(!has_aggregation(&expr));
-    }
-
-    #[test]
-    fn test_has_aggregation_aggregate_type() {
+    fn test_has_aggregation_aggregate_expr() {
         let expr = Expr::Aggregate(
             AggregateType::Sum,
-            Box::new(Expr::Variable("price".to_string())),
+            Box::new(Expr::Variable("score".to_string())),
         );
         assert!(has_aggregation(&expr));
     }
 
     #[test]
-    fn test_has_aggregation_aggregate_mean() {
-        let expr = Expr::Aggregate(
-            AggregateType::Mean,
-            Box::new(Expr::Variable("value".to_string())),
-        );
-        assert!(has_aggregation(&expr));
-    }
-
-    #[test]
-    fn test_has_aggregation_aggregate_std() {
-        let expr = Expr::Aggregate(
-            AggregateType::Std,
-            Box::new(Expr::Variable("data".to_string())),
-        );
-        assert!(has_aggregation(&expr));
-    }
-
-    #[test]
-    fn test_has_aggregation_aggregate_min() {
-        let expr = Expr::Aggregate(
-            AggregateType::Min,
-            Box::new(Expr::Variable("price".to_string())),
-        );
-        assert!(has_aggregation(&expr));
-    }
-
-    #[test]
-    fn test_has_aggregation_aggregate_max() {
-        let expr = Expr::Aggregate(
-            AggregateType::Max,
-            Box::new(Expr::Variable("value".to_string())),
-        );
-        assert!(has_aggregation(&expr));
-    }
-
-    #[test]
-    fn test_has_aggregation_aggregate_count() {
-        let expr = Expr::Aggregate(
-            AggregateType::Count,
-            Box::new(Expr::Variable("id".to_string())),
-        );
-        assert!(has_aggregation(&expr));
-    }
-
-    #[test]
-    fn test_has_aggregation_nested_aggregate_in_add() {
+    fn test_has_aggregation_nested_in_add() {
+        // sum(score) + 1
         let expr = Expr::Add(
             Box::new(Expr::Aggregate(
                 AggregateType::Sum,
-                Box::new(Expr::Variable("a".to_string())),
-            )),
-            Box::new(Expr::Variable("b".to_string())),
-        );
-        assert!(has_aggregation(&expr));
-    }
-
-    #[test]
-    fn test_has_aggregation_nested_aggregate_in_multiply() {
-        let expr = Expr::Multiply(
-            Box::new(Expr::Variable("x".to_string())),
-            Box::new(Expr::Aggregate(
-                AggregateType::Mean,
-                Box::new(Expr::Variable("price".to_string())),
-            )),
-        );
-        assert!(has_aggregation(&expr));
-    }
-
-    #[test]
-    fn test_has_aggregation_nested_aggregate_in_subtract() {
-        let expr = Expr::Subtract(
-            Box::new(Expr::Aggregate(
-                AggregateType::Max,
-                Box::new(Expr::Variable("value".to_string())),
+                Box::new(Expr::Variable("score".to_string())),
             )),
             Box::new(Expr::Number(1.0)),
         );
@@ -1065,11 +915,23 @@ mod tests {
     }
 
     #[test]
-    fn test_has_aggregation_nested_aggregate_in_divide() {
-        let expr = Expr::Divide(
+    fn test_has_aggregation_nested_in_subtract() {
+        let expr = Expr::Subtract(
+            Box::new(Expr::Number(100.0)),
             Box::new(Expr::Aggregate(
-                AggregateType::Sum,
-                Box::new(Expr::Variable("total".to_string())),
+                AggregateType::Min,
+                Box::new(Expr::Variable("score".to_string())),
+            )),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_nested_in_multiply() {
+        let expr = Expr::Multiply(
+            Box::new(Expr::Aggregate(
+                AggregateType::Mean,
+                Box::new(Expr::Variable("x".to_string())),
             )),
             Box::new(Expr::Number(2.0)),
         );
@@ -1077,80 +939,584 @@ mod tests {
     }
 
     #[test]
-    fn test_has_aggregation_deep_nesting() {
-        let expr = Expr::Add(
-            Box::new(Expr::Subtract(
-                Box::new(Expr::Aggregate(
-                    AggregateType::Max,
-                    Box::new(Expr::Variable("value".to_string())),
-                )),
-                Box::new(Expr::Number(1.0)),
+    fn test_has_aggregation_nested_in_divide() {
+        let expr = Expr::Divide(
+            Box::new(Expr::Number(1.0)),
+            Box::new(Expr::Aggregate(
+                AggregateType::Count,
+                Box::new(Expr::Variable("x".to_string())),
             )),
-            Box::new(Expr::Variable("y".to_string())),
         );
         assert!(has_aggregation(&expr));
     }
 
-    // ─── Tests for StatResult ───────────────────────────────────────────────
     #[test]
-    fn test_stat_result_creation() {
-        let result = StatResult {
-            node_idx: Some(NodeIndex::new(0)),
-            parent_idx: None,
-            parent_title: Some("Parent".to_string()),
-            value: Value::Int64(42),
-            error_msg: None,
-        };
+    fn test_has_aggregation_arithmetic_no_aggregate() {
+        // score + 1
+        let expr = Expr::Add(
+            Box::new(Expr::Variable("score".to_string())),
+            Box::new(Expr::Number(1.0)),
+        );
+        assert!(!has_aggregation(&expr));
+    }
 
-        assert_eq!(result.node_idx, Some(NodeIndex::new(0)));
-        assert_eq!(result.parent_idx, None);
-        assert_eq!(result.parent_title, Some("Parent".to_string()));
-        assert!(!matches!(result.value, Value::Null));
-        assert!(result.error_msg.is_none());
+    // ========================================================================
+    // convert_node_to_object
+    // ========================================================================
+
+    #[test]
+    fn test_convert_node_to_object_numeric_properties() {
+        let mut interner = StringInterner::new();
+        let mut props = HashMap::new();
+        props.insert("score".to_string(), Value::Float64(3.14));
+        props.insert("count".to_string(), Value::Int64(42));
+        let node = NodeData::new(
+            Value::Int64(1),
+            Value::String("test".to_string()),
+            "TestNode".to_string(),
+            props,
+            &mut interner,
+        );
+
+        let obj = convert_node_to_object(&node, &interner);
+        assert_eq!(obj.get("score"), Some(&Value::Float64(3.14)));
+        assert_eq!(obj.get("count"), Some(&Value::Int64(42)));
     }
 
     #[test]
-    fn test_stat_result_with_error() {
-        let result = StatResult {
-            node_idx: Some(NodeIndex::new(5)),
-            parent_idx: Some(NodeIndex::new(1)),
-            parent_title: None,
-            value: Value::Null,
-            error_msg: Some("Evaluation failed".to_string()),
-        };
+    fn test_convert_node_to_object_string_parsed_as_number() {
+        let mut interner = StringInterner::new();
+        let mut props = HashMap::new();
+        props.insert("value".to_string(), Value::String("123.45".to_string()));
+        let node = NodeData::new(
+            Value::Int64(1),
+            Value::String("test".to_string()),
+            "TestNode".to_string(),
+            props,
+            &mut interner,
+        );
 
-        assert!(result.error_msg.is_some());
-        assert_eq!(result.error_msg.as_ref().unwrap(), "Evaluation failed");
+        let obj = convert_node_to_object(&node, &interner);
+        // Numeric strings should be parsed to Float64
+        assert_eq!(obj.get("value"), Some(&Value::Float64(123.45)));
     }
 
     #[test]
-    fn test_stat_result_no_indices() {
-        let result = StatResult {
-            node_idx: None,
-            parent_idx: None,
-            parent_title: Some("Root".to_string()),
-            value: Value::Float64(3.14),
-            error_msg: None,
-        };
+    fn test_convert_node_to_object_non_numeric_string_kept() {
+        let mut interner = StringInterner::new();
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), Value::String("hello".to_string()));
+        let node = NodeData::new(
+            Value::Int64(1),
+            Value::String("test".to_string()),
+            "TestNode".to_string(),
+            props,
+            &mut interner,
+        );
 
-        assert!(result.node_idx.is_none());
-        assert!(result.parent_idx.is_none());
+        let obj = convert_node_to_object(&node, &interner);
+        assert_eq!(obj.get("name"), Some(&Value::String("hello".to_string())));
     }
 
     #[test]
-    fn test_stat_result_null_value() {
-        let result = StatResult {
-            node_idx: Some(NodeIndex::new(10)),
-            parent_idx: Some(NodeIndex::new(2)),
-            parent_title: Some("Parent".to_string()),
-            value: Value::Null,
-            error_msg: None,
-        };
+    fn test_convert_node_to_object_null_and_bool() {
+        let mut interner = StringInterner::new();
+        let mut props = HashMap::new();
+        props.insert("empty".to_string(), Value::Null);
+        props.insert("flag".to_string(), Value::Boolean(true));
+        let node = NodeData::new(
+            Value::Int64(1),
+            Value::String("test".to_string()),
+            "TestNode".to_string(),
+            props,
+            &mut interner,
+        );
 
-        assert!(matches!(result.value, Value::Null));
+        let obj = convert_node_to_object(&node, &interner);
+        assert_eq!(obj.get("empty"), Some(&Value::Null));
+        assert_eq!(obj.get("flag"), Some(&Value::Boolean(true)));
     }
 
-    // ─── Tests for EvaluationResult ──────────────────────────────────────────
+    // ========================================================================
+    // cache_parent_titles
+    // ========================================================================
+
+    #[test]
+    fn test_cache_parent_titles_with_parents() {
+        let (graph, indices) = make_graph_with_nodes(&[10.0, 20.0, 30.0]);
+        let pairs = vec![ParentChildPair {
+            parent: Some(indices[0]),
+            children: vec![indices[1], indices[2]],
+        }];
+
+        let titles = cache_parent_titles(&pairs, &graph);
+        assert_eq!(titles.len(), 1);
+        assert_eq!(
+            titles.get(&indices[0]).cloned().flatten(),
+            Some("node_0".to_string())
+        );
+    }
+
+    #[test]
+    fn test_cache_parent_titles_no_parent() {
+        let (graph, indices) = make_graph_with_nodes(&[10.0]);
+        let pairs = vec![ParentChildPair {
+            parent: None,
+            children: vec![indices[0]],
+        }];
+
+        let titles = cache_parent_titles(&pairs, &graph);
+        assert!(titles.is_empty());
+    }
+
+    // ========================================================================
+    // count_nodes_in_level
+    // ========================================================================
+
+    #[test]
+    fn test_count_nodes_in_level_default() {
+        let (_graph, indices) = make_graph_with_nodes(&[1.0, 2.0, 3.0]);
+        let sel = make_flat_selection(&indices);
+
+        let count = count_nodes_in_level(&sel, None);
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn test_count_nodes_in_level_explicit_index() {
+        let (_graph, indices) = make_graph_with_nodes(&[1.0, 2.0]);
+        let sel = make_flat_selection(&indices);
+
+        let count = count_nodes_in_level(&sel, Some(0));
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_count_nodes_in_level_empty() {
+        let sel = make_flat_selection(&[]);
+        let count = count_nodes_in_level(&sel, None);
+        assert_eq!(count, 0);
+    }
+
+    // ========================================================================
+    // count_nodes_by_parent
+    // ========================================================================
+
+    #[test]
+    fn test_count_nodes_by_parent_single_parent() {
+        let (graph, indices) = make_graph_with_nodes(&[10.0, 20.0, 30.0]);
+        let sel = make_parent_child_selection(indices[0], &[indices[1], indices[2]]);
+
+        let results = count_nodes_by_parent(&graph, &sel, None);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].value, Value::Int64(2));
+        assert_eq!(results[0].parent_idx, Some(indices[0]));
+        assert_eq!(results[0].parent_title, Some("node_0".to_string()));
+        assert!(results[0].error_msg.is_none());
+    }
+
+    #[test]
+    fn test_count_nodes_by_parent_no_parent() {
+        let (graph, indices) = make_graph_with_nodes(&[10.0, 20.0]);
+        let sel = make_flat_selection(&indices);
+
+        let results = count_nodes_by_parent(&graph, &sel, None);
+        // Flat selection has one group with parent=None
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].value, Value::Int64(2));
+        assert_eq!(results[0].parent_idx, None);
+        assert_eq!(results[0].parent_title, None);
+    }
+
+    // ========================================================================
+    // evaluate_equation — non-aggregation (per-node evaluation)
+    // ========================================================================
+
+    #[test]
+    fn test_evaluate_equation_simple_variable() {
+        let (graph, indices) = make_graph_with_nodes(&[10.0, 20.0, 30.0]);
+        let sel = make_flat_selection(&indices);
+        let expr = Parser::parse_expression("score").unwrap();
+
+        let results = evaluate_equation(&graph, &sel, &expr, None);
+        assert_eq!(results.len(), 3);
+
+        // Collect values (order may vary due to HashMap iteration in SelectionLevel)
+        let mut values: Vec<f64> = results
+            .iter()
+            .filter_map(|r| match &r.value {
+                Value::Float64(f) => Some(*f),
+                _ => None,
+            })
+            .collect();
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(values, vec![10.0, 20.0, 30.0]);
+    }
+
+    #[test]
+    fn test_evaluate_equation_arithmetic() {
+        let (graph, indices) = make_graph_with_nodes(&[10.0]);
+        let sel = make_flat_selection(&indices);
+        let expr = Parser::parse_expression("score + 5").unwrap();
+
+        let results = evaluate_equation(&graph, &sel, &expr, None);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].value, Value::Float64(15.0));
+        assert!(results[0].error_msg.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_equation_multiply() {
+        let (graph, indices) = make_graph_with_nodes(&[4.0]);
+        let sel = make_flat_selection(&indices);
+        let expr = Parser::parse_expression("score * 2").unwrap();
+
+        let results = evaluate_equation(&graph, &sel, &expr, None);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].value, Value::Float64(8.0));
+    }
+
+    #[test]
+    fn test_evaluate_equation_empty_level() {
+        let (_graph, _indices) = make_graph_with_nodes(&[]);
+        let graph = DirGraph::new();
+        let sel = make_flat_selection(&[]);
+        let expr = Parser::parse_expression("score").unwrap();
+
+        let results = evaluate_equation(&graph, &sel, &expr, None);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_evaluate_equation_invalid_level_index() {
+        let (graph, indices) = make_graph_with_nodes(&[10.0]);
+        let sel = make_flat_selection(&indices);
+        let expr = Parser::parse_expression("score").unwrap();
+
+        // Level 5 doesn't exist
+        let results = evaluate_equation(&graph, &sel, &expr, Some(5));
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_evaluate_equation_node_not_in_graph() {
+        // Create a selection with a node index that doesn't exist in the graph
+        let graph = DirGraph::new();
+        let fake_idx = NodeIndex::new(999);
+        let sel = make_flat_selection(&[fake_idx]);
+        let expr = Parser::parse_expression("score").unwrap();
+
+        let results = evaluate_equation(&graph, &sel, &expr, None);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].value, Value::Null);
+        assert_eq!(results[0].error_msg, Some("Node not found".to_string()));
+    }
+
+    // ========================================================================
+    // evaluate_equation — aggregation (sum, mean, etc.)
+    // ========================================================================
+
+    #[test]
+    fn test_evaluate_equation_sum_aggregation() {
+        let (graph, indices) = make_graph_with_nodes(&[10.0, 20.0, 30.0]);
+        let sel = make_parent_child_selection(indices[0], &[indices[1], indices[2]]);
+        let expr = Parser::parse_expression("sum(score)").unwrap();
+
+        let results = evaluate_equation(&graph, &sel, &expr, None);
+        assert_eq!(results.len(), 1);
+        // sum of children scores: 20 + 30 = 50
+        assert_eq!(results[0].value, Value::Float64(50.0));
+        assert!(results[0].error_msg.is_none());
+        assert_eq!(results[0].parent_idx, Some(indices[0]));
+    }
+
+    #[test]
+    fn test_evaluate_equation_mean_aggregation() {
+        let (graph, indices) = make_graph_with_nodes(&[0.0, 10.0, 20.0]);
+        let sel = make_parent_child_selection(indices[0], &[indices[1], indices[2]]);
+        let expr = Parser::parse_expression("mean(score)").unwrap();
+
+        let results = evaluate_equation(&graph, &sel, &expr, None);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].value, Value::Float64(15.0));
+    }
+
+    #[test]
+    fn test_evaluate_equation_aggregation_no_valid_children() {
+        // Parent exists but children point to non-existent nodes
+        let (graph, indices) = make_graph_with_nodes(&[10.0]);
+        let fake_child = NodeIndex::new(999);
+        let sel = make_parent_child_selection(indices[0], &[fake_child]);
+        let expr = Parser::parse_expression("sum(score)").unwrap();
+
+        let results = evaluate_equation(&graph, &sel, &expr, None);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].value, Value::Null);
+        assert!(results[0].error_msg.is_some());
+    }
+
+    // ========================================================================
+    // evaluate_connection_equation
+    // ========================================================================
+
+    #[test]
+    fn test_evaluate_connection_equation_requires_two_levels() {
+        let (graph, indices) = make_graph_with_nodes(&[10.0]);
+        let sel = make_flat_selection(&indices);
+        let expr = Parser::parse_expression("sum(weight)").unwrap();
+
+        let results = evaluate_connection_equation(&graph, &sel, &expr, None);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].error_msg.is_some());
+        assert!(results[0]
+            .error_msg
+            .as_ref()
+            .unwrap()
+            .contains("at least 2 selection levels"));
+    }
+
+    #[test]
+    fn test_evaluate_connection_equation_with_edge_properties() {
+        let (mut graph, indices) = make_graph_with_nodes(&[0.0, 1.0, 2.0]);
+
+        // Add edges with "weight" property from parent to children
+        let mut edge_props1 = HashMap::new();
+        edge_props1.insert("weight".to_string(), Value::Float64(5.0));
+        let edge1 = EdgeData::new("has_child".to_string(), edge_props1, &mut graph.interner);
+        graph.graph.add_edge(indices[0], indices[1], edge1);
+
+        let mut edge_props2 = HashMap::new();
+        edge_props2.insert("weight".to_string(), Value::Float64(3.0));
+        let edge2 = EdgeData::new("has_child".to_string(), edge_props2, &mut graph.interner);
+        graph.graph.add_edge(indices[0], indices[2], edge2);
+
+        let sel = make_parent_child_selection(indices[0], &[indices[1], indices[2]]);
+        let expr = Parser::parse_expression("sum(weight)").unwrap();
+
+        let results = evaluate_connection_equation(&graph, &sel, &expr, None);
+        assert_eq!(results.len(), 1);
+        // sum of edge weights: 5.0 + 3.0 = 8.0
+        assert_eq!(results[0].value, Value::Float64(8.0));
+        assert!(results[0].error_msg.is_none());
+        assert_eq!(results[0].parent_idx, Some(indices[0]));
+    }
+
+    #[test]
+    fn test_evaluate_connection_equation_no_edges() {
+        let (graph, indices) = make_graph_with_nodes(&[0.0, 1.0, 2.0]);
+        // No edges between parent and children
+        let sel = make_parent_child_selection(indices[0], &[indices[1], indices[2]]);
+        let expr = Parser::parse_expression("sum(weight)").unwrap();
+
+        let results = evaluate_connection_equation(&graph, &sel, &expr, None);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].error_msg.is_some());
+        assert!(results[0]
+            .error_msg
+            .as_ref()
+            .unwrap()
+            .contains("No connections found"));
+    }
+
+    #[test]
+    fn test_evaluate_connection_equation_no_parent() {
+        let (graph, indices) = make_graph_with_nodes(&[10.0, 20.0]);
+        // Create a two-level selection but with None as parent
+        let mut sel = CurrentSelection::new();
+        sel.get_level_mut(0).unwrap().add_selection(None, vec![]);
+        sel.add_level();
+        sel.get_level_mut(1)
+            .unwrap()
+            .add_selection(None, vec![indices[0], indices[1]]);
+
+        let expr = Parser::parse_expression("sum(weight)").unwrap();
+        let results = evaluate_connection_equation(&graph, &sel, &expr, None);
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].error_msg.is_some());
+        assert!(results[0]
+            .error_msg
+            .as_ref()
+            .unwrap()
+            .contains("No parent node"));
+    }
+
+    // ========================================================================
+    // process_equation — error paths (these don't need PyO3)
+    // ========================================================================
+
+    #[test]
+    fn test_process_equation_empty_expression() {
+        let (mut graph, indices) = make_graph_with_nodes(&[10.0]);
+        let sel = make_flat_selection(&indices);
+
+        let result = process_equation(&mut graph, &sel, "", None, None, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty"));
+    }
+
+    #[test]
+    fn test_process_equation_unknown_aggregate() {
+        let (mut graph, indices) = make_graph_with_nodes(&[10.0]);
+        let sel = make_flat_selection(&indices);
+
+        let result = process_equation(&mut graph, &sel, "median(score)", None, None, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unknown aggregate function"));
+    }
+
+    #[test]
+    fn test_process_equation_missing_closing_paren() {
+        let (mut graph, indices) = make_graph_with_nodes(&[10.0]);
+        let sel = make_flat_selection(&indices);
+
+        let result = process_equation(&mut graph, &sel, "sum(score", None, None, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("parenthesis"));
+    }
+
+    #[test]
+    fn test_process_equation_empty_selection() {
+        let mut graph = DirGraph::new();
+        let sel = CurrentSelection::new();
+        // New selection has 1 level but 0 nodes
+
+        let result = process_equation(&mut graph, &sel, "score", None, None, None);
+        assert!(result.is_err());
+        // Should mention no nodes
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("No nodes") || err.contains("no nodes"),
+            "Expected error about no nodes, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_process_equation_computed_result() {
+        let (mut graph, indices) = make_graph_with_nodes(&[10.0, 20.0]);
+        let sel = make_flat_selection(&indices);
+
+        // No store_as -> should return Computed variant
+        let result = process_equation(&mut graph, &sel, "score + 1", None, None, None);
+        assert!(result.is_ok());
+        match result.unwrap() {
+            EvaluationResult::Computed(results) => {
+                assert_eq!(results.len(), 2);
+                let mut values: Vec<f64> = results
+                    .iter()
+                    .filter_map(|r| match &r.value {
+                        Value::Float64(f) => Some(*f),
+                        _ => None,
+                    })
+                    .collect();
+                values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                assert_eq!(values, vec![11.0, 21.0]);
+            }
+            EvaluationResult::Stored(_) => panic!("Expected Computed variant"),
+        }
+    }
+
+    #[test]
+    fn test_process_equation_stored_result() {
+        let (mut graph, indices) = make_graph_with_nodes(&[10.0, 20.0]);
+        let sel = make_flat_selection(&indices);
+
+        // With store_as -> should return Stored variant
+        let result = process_equation(
+            &mut graph,
+            &sel,
+            "score * 2",
+            None,
+            Some("doubled_score"),
+            None,
+        );
+        assert!(result.is_ok());
+        match result.unwrap() {
+            EvaluationResult::Stored(report) => {
+                assert_eq!(report.operation_type, "process_equation");
+            }
+            EvaluationResult::Computed(_) => panic!("Expected Stored variant"),
+        }
+
+        // Verify the property was actually stored on the nodes
+        for &idx in &indices {
+            let node = graph.get_node(idx).unwrap();
+            assert!(node.has_property("doubled_score"));
+        }
+    }
+
+    #[test]
+    fn test_process_equation_likely_aggregate_without_parens() {
+        let (mut graph, indices) = make_graph_with_nodes(&[10.0]);
+        let sel = make_flat_selection(&indices);
+
+        let result = process_equation(&mut graph, &sel, "sum", None, None, None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("requires parentheses"), "Got: {}", err);
+    }
+
+    #[test]
+    fn test_process_equation_invalid_level_index() {
+        let (mut graph, indices) = make_graph_with_nodes(&[10.0]);
+        let sel = make_flat_selection(&indices);
+
+        let result = process_equation(&mut graph, &sel, "score", Some(99), None, None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("Invalid level index") || err.contains("No nodes found"),
+            "Got: {}",
+            err
+        );
+    }
+
+    // ========================================================================
+    // store_count_results
+    // ========================================================================
+
+    #[test]
+    fn test_store_count_results_flat() {
+        let (mut graph, indices) = make_graph_with_nodes(&[10.0, 20.0, 30.0]);
+        let sel = make_flat_selection(&indices);
+
+        let result = store_count_results(&mut graph, &sel, None, false, "node_count");
+        assert!(result.is_ok());
+
+        let report = result.unwrap();
+        assert_eq!(report.operation_type, "count");
+
+        // Each node should now have node_count = 3
+        for &idx in &indices {
+            let node = graph.get_node(idx).unwrap();
+            assert!(node.has_property("node_count"));
+        }
+    }
+
+    #[test]
+    fn test_store_count_results_grouped() {
+        let (mut graph, indices) = make_graph_with_nodes(&[0.0, 1.0, 2.0]);
+        let sel = make_parent_child_selection(indices[0], &[indices[1], indices[2]]);
+
+        let result = store_count_results(&mut graph, &sel, None, true, "child_count");
+        assert!(result.is_ok());
+
+        // The parent node should have child_count = 2
+        let parent = graph.get_node(indices[0]).unwrap();
+        assert!(parent.has_property("child_count"));
+    }
+
+    #[test]
+    fn test_store_count_results_empty_selection() {
+        let mut graph = DirGraph::new();
+        let sel = make_flat_selection(&[]);
+
+        let result = store_count_results(&mut graph, &sel, None, false, "count");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("No valid nodes"));
+    }
+
     #[test]
     fn test_evaluation_result_computed() {
         let results = vec![StatResult {
@@ -1213,5 +1579,416 @@ mod tests {
             EvaluationResult::Computed(r) => assert_eq!(r.len(), 3),
             _ => panic!("Expected Computed variant"),
         }
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_function_count() {
+        let result = extract_unknown_aggregate_function("count(items)");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_function_known() {
+        let result = extract_unknown_aggregate_function("sum(price)");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_function_mean() {
+        let result = extract_unknown_aggregate_function("mean(values)");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_function_min() {
+        let result = extract_unknown_aggregate_function("min(data)");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_function_mixed_case() {
+        let result = extract_unknown_aggregate_function("Unknown(property)");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_function_multiple_parens() {
+        let result = extract_unknown_aggregate_function("something(a)");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_function_no_parens() {
+        let result = extract_unknown_aggregate_function("just_text");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_function_special_chars() {
+        // Underscores should be allowed in function names
+        let result = extract_unknown_aggregate_function("custom_func(x)");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_function_unknown() {
+        let result = extract_unknown_aggregate_function("unknown(price)");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "unknown");
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_function_with_spaces() {
+        let result = extract_unknown_aggregate_function("  sum  (price)");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_has_aggregation_aggregate_count() {
+        let expr = Expr::Aggregate(
+            AggregateType::Count,
+            Box::new(Expr::Variable("id".to_string())),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_aggregate_max() {
+        let expr = Expr::Aggregate(
+            AggregateType::Max,
+            Box::new(Expr::Variable("value".to_string())),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_aggregate_mean() {
+        let expr = Expr::Aggregate(
+            AggregateType::Mean,
+            Box::new(Expr::Variable("value".to_string())),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_aggregate_min() {
+        let expr = Expr::Aggregate(
+            AggregateType::Min,
+            Box::new(Expr::Variable("price".to_string())),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_aggregate_std() {
+        let expr = Expr::Aggregate(
+            AggregateType::Std,
+            Box::new(Expr::Variable("data".to_string())),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_aggregate_type() {
+        let expr = Expr::Aggregate(
+            AggregateType::Sum,
+            Box::new(Expr::Variable("price".to_string())),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_deep_nesting() {
+        let expr = Expr::Add(
+            Box::new(Expr::Subtract(
+                Box::new(Expr::Aggregate(
+                    AggregateType::Max,
+                    Box::new(Expr::Variable("value".to_string())),
+                )),
+                Box::new(Expr::Number(1.0)),
+            )),
+            Box::new(Expr::Variable("y".to_string())),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_nested_aggregate_in_add() {
+        let expr = Expr::Add(
+            Box::new(Expr::Aggregate(
+                AggregateType::Sum,
+                Box::new(Expr::Variable("a".to_string())),
+            )),
+            Box::new(Expr::Variable("b".to_string())),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_nested_aggregate_in_divide() {
+        let expr = Expr::Divide(
+            Box::new(Expr::Aggregate(
+                AggregateType::Sum,
+                Box::new(Expr::Variable("total".to_string())),
+            )),
+            Box::new(Expr::Number(2.0)),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_nested_aggregate_in_multiply() {
+        let expr = Expr::Multiply(
+            Box::new(Expr::Variable("x".to_string())),
+            Box::new(Expr::Aggregate(
+                AggregateType::Mean,
+                Box::new(Expr::Variable("price".to_string())),
+            )),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_nested_aggregate_in_subtract() {
+        let expr = Expr::Subtract(
+            Box::new(Expr::Aggregate(
+                AggregateType::Max,
+                Box::new(Expr::Variable("value".to_string())),
+            )),
+            Box::new(Expr::Number(1.0)),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_simple_number() {
+        // Expr::Number doesn't contain aggregation
+        let expr = Expr::Number(5.0);
+        assert!(!has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_variable() {
+        let expr = Expr::Variable("price".to_string());
+        assert!(!has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_with_add() {
+        let expr = Expr::Add(
+            Box::new(Expr::Variable("a".to_string())),
+            Box::new(Expr::Variable("b".to_string())),
+        );
+        assert!(!has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_with_divide() {
+        let expr = Expr::Divide(
+            Box::new(Expr::Variable("a".to_string())),
+            Box::new(Expr::Variable("b".to_string())),
+        );
+        assert!(!has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_with_multiply() {
+        let expr = Expr::Multiply(
+            Box::new(Expr::Variable("a".to_string())),
+            Box::new(Expr::Variable("b".to_string())),
+        );
+        assert!(!has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_with_subtract() {
+        let expr = Expr::Subtract(
+            Box::new(Expr::Variable("a".to_string())),
+            Box::new(Expr::Variable("b".to_string())),
+        );
+        assert!(!has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_is_known_aggregate_count() {
+        assert!(is_known_aggregate("count"));
+    }
+
+    #[test]
+    fn test_is_known_aggregate_empty_string() {
+        assert!(!is_known_aggregate(""));
+    }
+
+    #[test]
+    fn test_is_known_aggregate_max() {
+        assert!(is_known_aggregate("max"));
+    }
+
+    #[test]
+    fn test_is_known_aggregate_mean() {
+        assert!(is_known_aggregate("mean"));
+    }
+
+    #[test]
+    fn test_is_known_aggregate_min() {
+        assert!(is_known_aggregate("min"));
+    }
+
+    #[test]
+    fn test_is_known_aggregate_std() {
+        assert!(is_known_aggregate("std"));
+    }
+
+    #[test]
+    fn test_is_known_aggregate_sum() {
+        assert!(is_known_aggregate("sum"));
+    }
+
+    #[test]
+    fn test_is_known_aggregate_unknown() {
+        assert!(!is_known_aggregate("unknown_func"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_SUM_uppercase() {
+        assert!(is_likely_aggregate_name("SUM"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_average() {
+        assert!(is_likely_aggregate_name("average"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_avg() {
+        assert!(is_likely_aggregate_name("avg"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_count() {
+        assert!(is_likely_aggregate_name("count"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_empty() {
+        assert!(!is_likely_aggregate_name(""));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_empty_whitespace() {
+        assert!(!is_likely_aggregate_name("   "));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_max() {
+        assert!(is_likely_aggregate_name("max"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_mean() {
+        assert!(is_likely_aggregate_name("mean"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_median() {
+        assert!(is_likely_aggregate_name("median"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_min() {
+        assert!(is_likely_aggregate_name("min"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_std() {
+        assert!(is_likely_aggregate_name("std"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_stddev() {
+        assert!(is_likely_aggregate_name("stddev"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_stdev() {
+        assert!(is_likely_aggregate_name("stdev"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_sum() {
+        assert!(is_likely_aggregate_name("sum"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_var() {
+        assert!(is_likely_aggregate_name("var"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_variance() {
+        assert!(is_likely_aggregate_name("variance"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_with_whitespace() {
+        assert!(is_likely_aggregate_name("  sum  "));
+    }
+
+    #[test]
+    fn test_stat_result_creation() {
+        let result = StatResult {
+            node_idx: Some(NodeIndex::new(0)),
+            parent_idx: None,
+            parent_title: Some("Parent".to_string()),
+            value: Value::Int64(42),
+            error_msg: None,
+        };
+
+        assert_eq!(result.node_idx, Some(NodeIndex::new(0)));
+        assert_eq!(result.parent_idx, None);
+        assert_eq!(result.parent_title, Some("Parent".to_string()));
+        assert!(!matches!(result.value, Value::Null));
+        assert!(result.error_msg.is_none());
+    }
+
+    #[test]
+    fn test_stat_result_no_indices() {
+        let result = StatResult {
+            node_idx: None,
+            parent_idx: None,
+            parent_title: Some("Root".to_string()),
+            value: Value::Float64(3.14),
+            error_msg: None,
+        };
+
+        assert!(result.node_idx.is_none());
+        assert!(result.parent_idx.is_none());
+    }
+
+    #[test]
+    fn test_stat_result_null_value() {
+        let result = StatResult {
+            node_idx: Some(NodeIndex::new(10)),
+            parent_idx: Some(NodeIndex::new(2)),
+            parent_title: Some("Parent".to_string()),
+            value: Value::Null,
+            error_msg: None,
+        };
+
+        assert!(matches!(result.value, Value::Null));
+    }
+
+    #[test]
+    fn test_stat_result_with_error() {
+        let result = StatResult {
+            node_idx: Some(NodeIndex::new(5)),
+            parent_idx: Some(NodeIndex::new(1)),
+            parent_title: None,
+            value: Value::Null,
+            error_msg: Some("Evaluation failed".to_string()),
+        };
+
+        assert!(result.error_msg.is_some());
+        assert_eq!(result.error_msg.as_ref().unwrap(), "Evaluation failed");
     }
 }

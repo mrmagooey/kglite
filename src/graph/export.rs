@@ -907,60 +907,160 @@ fn properties_to_json<'a>(properties: impl Iterator<Item = (&'a str, &'a Value)>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::datatypes::values::Value;
+    use crate::graph::schema::{DirGraph, EdgeData, NodeData};
 
-    // Tests for escape_xml
+    use std::collections::HashMap;
+
+    // ========================================================================
+    // Test helpers
+    // ========================================================================
+
+    /// Build an empty graph.
+    fn empty_graph() -> DirGraph {
+        DirGraph::new()
+    }
+
+    /// Build a simple graph with two Person nodes and a KNOWS edge.
+    fn simple_graph() -> DirGraph {
+        let mut g = DirGraph::new();
+        let n1 = NodeData::new(
+            Value::String("alice".to_string()),
+            Value::String("Alice".to_string()),
+            "Person".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        let n2 = NodeData::new(
+            Value::String("bob".to_string()),
+            Value::String("Bob".to_string()),
+            "Person".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        let idx1 = g.graph.add_node(n1);
+        let idx2 = g.graph.add_node(n2);
+        g.type_indices
+            .entry("Person".to_string())
+            .or_default()
+            .extend([idx1, idx2]);
+        g.graph.add_edge(
+            idx1,
+            idx2,
+            EdgeData::new("KNOWS".to_string(), HashMap::new(), &mut g.interner),
+        );
+        g
+    }
+
+    /// Build a graph with properties on nodes and edges.
+    fn graph_with_properties() -> DirGraph {
+        let mut g = DirGraph::new();
+        let mut props1 = HashMap::new();
+        props1.insert("age".to_string(), Value::Int64(30));
+        props1.insert("active".to_string(), Value::Boolean(true));
+        let n1 = NodeData::new(
+            Value::Int64(1),
+            Value::String("Alice".to_string()),
+            "Person".to_string(),
+            props1,
+            &mut g.interner,
+        );
+
+        let mut props2 = HashMap::new();
+        props2.insert("age".to_string(), Value::Int64(25));
+        let n2 = NodeData::new(
+            Value::Int64(2),
+            Value::String("Bob".to_string()),
+            "Person".to_string(),
+            props2,
+            &mut g.interner,
+        );
+
+        let idx1 = g.graph.add_node(n1);
+        let idx2 = g.graph.add_node(n2);
+        g.type_indices
+            .entry("Person".to_string())
+            .or_default()
+            .extend([idx1, idx2]);
+
+        let mut edge_props = HashMap::new();
+        edge_props.insert("since".to_string(), Value::Int64(2020));
+        g.graph.add_edge(
+            idx1,
+            idx2,
+            EdgeData::new("KNOWS".to_string(), edge_props, &mut g.interner),
+        );
+        g
+    }
+
+    /// Build a graph with multiple node types for CSV dir export tests.
+    fn multi_type_graph() -> DirGraph {
+        let mut g = DirGraph::new();
+        let n1 = NodeData::new(
+            Value::String("alice".to_string()),
+            Value::String("Alice".to_string()),
+            "Person".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        let n2 = NodeData::new(
+            Value::String("acme".to_string()),
+            Value::String("Acme Corp".to_string()),
+            "Company".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        let idx1 = g.graph.add_node(n1);
+        let idx2 = g.graph.add_node(n2);
+        g.type_indices
+            .entry("Person".to_string())
+            .or_default()
+            .push(idx1);
+        g.type_indices
+            .entry("Company".to_string())
+            .or_default()
+            .push(idx2);
+        g.graph.add_edge(
+            idx1,
+            idx2,
+            EdgeData::new("WORKS_AT".to_string(), HashMap::new(), &mut g.interner),
+        );
+        g
+    }
+
+    // ========================================================================
+    // escape_xml
+    // ========================================================================
+
     #[test]
-    fn test_escape_xml_empty_string() {
-        assert_eq!(escape_xml(""), "");
+    fn test_escape_xml_no_special_chars() {
+        assert_eq!(escape_xml("hello world"), "hello world");
     }
 
     #[test]
     fn test_escape_xml_ampersand() {
-        assert_eq!(escape_xml("&"), "&amp;");
-        assert_eq!(escape_xml("a&b"), "a&amp;b");
+        assert_eq!(escape_xml("A&B"), "A&amp;B");
     }
 
     #[test]
-    fn test_escape_xml_less_than() {
-        assert_eq!(escape_xml("<"), "&lt;");
-    }
-
-    #[test]
-    fn test_escape_xml_greater_than() {
-        assert_eq!(escape_xml(">"), "&gt;");
-    }
-
-    #[test]
-    fn test_escape_xml_double_quote() {
-        assert_eq!(escape_xml("\""), "&quot;");
-    }
-
-    #[test]
-    fn test_escape_xml_single_quote() {
-        assert_eq!(escape_xml("'"), "&apos;");
-    }
-
-    #[test]
-    fn test_escape_xml_multiple_special_chars() {
+    fn test_escape_xml_all_special() {
         assert_eq!(
-            escape_xml("<tag>text&</tag>"),
-            "&lt;tag&gt;text&amp;&lt;/tag&gt;"
+            escape_xml("<tag attr=\"val\" & 'q'>"),
+            "&lt;tag attr=&quot;val&quot; &amp; &apos;q&apos;&gt;"
         );
     }
 
     #[test]
-    fn test_escape_xml_combined_chars() {
-        assert_eq!(escape_xml("&<>\"'"), "&amp;&lt;&gt;&quot;&apos;");
+    fn test_escape_xml_empty() {
+        assert_eq!(escape_xml(""), "");
     }
 
-    // Tests for escape_csv
-    #[test]
-    fn test_escape_csv_empty_string() {
-        assert_eq!(escape_csv(""), "");
-    }
+    // ========================================================================
+    // escape_csv
+    // ========================================================================
 
     #[test]
-    fn test_escape_csv_no_special_chars() {
+    fn test_escape_csv_plain() {
         assert_eq!(escape_csv("hello"), "hello");
     }
 
@@ -970,8 +1070,8 @@ mod tests {
     }
 
     #[test]
-    fn test_escape_csv_with_quote() {
-        assert_eq!(escape_csv("a\"b"), "\"a\"\"b\"");
+    fn test_escape_csv_with_quotes() {
+        assert_eq!(escape_csv("say \"hi\""), "\"say \"\"hi\"\"\"");
     }
 
     #[test]
@@ -980,41 +1080,34 @@ mod tests {
     }
 
     #[test]
-    fn test_escape_csv_comma_and_quote() {
-        assert_eq!(escape_csv("a,\"b\",c"), "\"a,\"\"b\"\",c\"");
+    fn test_escape_csv_empty() {
+        assert_eq!(escape_csv(""), "");
     }
 
-    #[test]
-    fn test_escape_csv_comma_and_newline() {
-        assert_eq!(escape_csv("a,b\nc"), "\"a,b\nc\"");
-    }
+    // ========================================================================
+    // value_to_string
+    // ========================================================================
 
-    #[test]
-    fn test_escape_csv_tab_no_quote() {
-        assert_eq!(escape_csv("a\tb"), "a\tb");
-    }
-
-    // Tests for value_to_string
     #[test]
     fn test_value_to_string_string() {
-        assert_eq!(value_to_string(&Value::String("hello".to_string())), "hello");
+        assert_eq!(
+            value_to_string(&Value::String("hello".to_string())),
+            "hello"
+        );
     }
 
     #[test]
-    fn test_value_to_string_int64() {
+    fn test_value_to_string_int() {
         assert_eq!(value_to_string(&Value::Int64(42)), "42");
-        assert_eq!(value_to_string(&Value::Int64(-100)), "-100");
-        assert_eq!(value_to_string(&Value::Int64(0)), "0");
     }
 
     #[test]
-    fn test_value_to_string_float64() {
+    fn test_value_to_string_float() {
         assert_eq!(value_to_string(&Value::Float64(3.14)), "3.14");
-        assert_eq!(value_to_string(&Value::Float64(0.0)), "0");
     }
 
     #[test]
-    fn test_value_to_string_boolean() {
+    fn test_value_to_string_bool() {
         assert_eq!(value_to_string(&Value::Boolean(true)), "true");
         assert_eq!(value_to_string(&Value::Boolean(false)), "false");
     }
@@ -1026,58 +1119,1551 @@ mod tests {
 
     #[test]
     fn test_value_to_string_unique_id() {
-        assert_eq!(value_to_string(&Value::UniqueId(42)), "42");
+        assert_eq!(value_to_string(&Value::UniqueId(99)), "99");
     }
 
     #[test]
     fn test_value_to_string_point() {
-        let result = value_to_string(&Value::Point { lat: 40.7128, lon: -74.0060 });
-        assert!(result.contains("40.7128"));
-        assert!(result.contains("-74.006"));
-    }
-
-    #[test]
-    fn test_value_to_string_node_ref() {
-        assert_eq!(value_to_string(&Value::NodeRef(5)), "node#5");
-    }
-
-    #[test]
-    fn test_value_to_string_edge_ref() {
         assert_eq!(
-            value_to_string(&Value::EdgeRef { edge_idx: 10, src_idx: 0, dst_idx: 1 }),
-            "edge#10"
+            value_to_string(&Value::Point { lat: 1.5, lon: 2.5 }),
+            "point(1.5, 2.5)"
         );
     }
 
     #[test]
-    fn test_value_to_string_large_int() {
-        assert_eq!(value_to_string(&Value::Int64(i64::MAX)), "9223372036854775807");
+    fn test_value_to_string_noderef() {
+        assert_eq!(value_to_string(&Value::NodeRef(7)), "node#7");
     }
 
-    // Tests for json_string
+    #[test]
+    fn test_value_to_string_edgeref() {
+        assert_eq!(
+            value_to_string(&Value::EdgeRef {
+                edge_idx: 3,
+                src_idx: 1,
+                dst_idx: 2
+            }),
+            "edge#3"
+        );
+    }
+
+    // ========================================================================
+    // json_string
+    // ========================================================================
+
+    #[test]
+    fn test_json_string_plain() {
+        assert_eq!(json_string("hello"), "\"hello\"");
+    }
+
+    #[test]
+    fn test_json_string_with_quotes() {
+        assert_eq!(json_string("say \"hi\""), "\"say \\\"hi\\\"\"");
+    }
+
+    #[test]
+    fn test_json_string_with_backslash() {
+        assert_eq!(json_string("a\\b"), "\"a\\\\b\"");
+    }
+
+    #[test]
+    fn test_json_string_with_newline() {
+        assert_eq!(json_string("a\nb"), "\"a\\nb\"");
+    }
+
     #[test]
     fn test_json_string_empty() {
         assert_eq!(json_string(""), "\"\"");
     }
 
+    // ========================================================================
+    // json_value
+    // ========================================================================
+
     #[test]
-    fn test_json_string_simple() {
-        assert_eq!(json_string("hello"), "\"hello\"");
+    fn test_json_value_string() {
+        assert_eq!(json_value(&Value::String("hi".to_string())), "\"hi\"");
     }
 
     #[test]
-    fn test_json_string_with_double_quote() {
-        assert_eq!(json_string("say \"hello\""), "\"say \\\"hello\\\"\"");
+    fn test_json_value_int() {
+        assert_eq!(json_value(&Value::Int64(42)), "42");
     }
 
     #[test]
-    fn test_json_string_with_backslash() {
-        assert_eq!(json_string("path\\to\\file"), "\"path\\\\to\\\\file\"");
+    fn test_json_value_float() {
+        assert_eq!(json_value(&Value::Float64(2.5)), "2.5");
     }
 
     #[test]
-    fn test_json_string_with_newline() {
-        assert_eq!(json_string("line1\nline2"), "\"line1\\nline2\"");
+    fn test_json_value_float_nan() {
+        assert_eq!(json_value(&Value::Float64(f64::NAN)), "null");
+    }
+
+    #[test]
+    fn test_json_value_float_infinity() {
+        assert_eq!(json_value(&Value::Float64(f64::INFINITY)), "null");
+    }
+
+    #[test]
+    fn test_json_value_bool() {
+        assert_eq!(json_value(&Value::Boolean(true)), "true");
+    }
+
+    #[test]
+    fn test_json_value_null() {
+        assert_eq!(json_value(&Value::Null), "null");
+    }
+
+    #[test]
+    fn test_json_value_unique_id() {
+        assert_eq!(json_value(&Value::UniqueId(5)), "5");
+    }
+
+    #[test]
+    fn test_json_value_point() {
+        assert_eq!(
+            json_value(&Value::Point {
+                lat: 10.0,
+                lon: 20.0
+            }),
+            "{\"lat\":10,\"lon\":20}"
+        );
+    }
+
+    #[test]
+    fn test_json_value_noderef() {
+        assert_eq!(json_value(&Value::NodeRef(3)), "3");
+    }
+
+    #[test]
+    fn test_json_value_edgeref() {
+        assert_eq!(
+            json_value(&Value::EdgeRef {
+                edge_idx: 5,
+                src_idx: 1,
+                dst_idx: 2
+            }),
+            "5"
+        );
+    }
+
+    // ========================================================================
+    // properties_to_json
+    // ========================================================================
+
+    #[test]
+    fn test_properties_to_json_empty() {
+        let props: Vec<(&str, &Value)> = vec![];
+        assert_eq!(properties_to_json(props.into_iter()), "{}");
+    }
+
+    #[test]
+    fn test_properties_to_json_single() {
+        let val = Value::Int64(42);
+        let props = vec![("age", &val)];
+        assert_eq!(properties_to_json(props.into_iter()), "{\"age\":42}");
+    }
+
+    #[test]
+    fn test_properties_to_json_multiple() {
+        let v1 = Value::String("hello".to_string());
+        let v2 = Value::Boolean(true);
+        let props = vec![("name", &v1), ("active", &v2)];
+        let result = properties_to_json(props.into_iter());
+        assert!(result.starts_with('{'));
+        assert!(result.ends_with('}'));
+        assert!(result.contains("\"name\":\"hello\""));
+        assert!(result.contains("\"active\":true"));
+    }
+
+    // ========================================================================
+    // value_type_name
+    // ========================================================================
+
+    #[test]
+    fn test_value_type_name_string() {
+        assert_eq!(value_type_name(&Value::String("x".into())), "string");
+    }
+
+    #[test]
+    fn test_value_type_name_int() {
+        assert_eq!(value_type_name(&Value::Int64(1)), "int");
+    }
+
+    #[test]
+    fn test_value_type_name_float() {
+        assert_eq!(value_type_name(&Value::Float64(1.0)), "float");
+    }
+
+    #[test]
+    fn test_value_type_name_bool() {
+        assert_eq!(value_type_name(&Value::Boolean(true)), "bool");
+    }
+
+    #[test]
+    fn test_value_type_name_null() {
+        assert_eq!(value_type_name(&Value::Null), "string");
+    }
+
+    #[test]
+    fn test_value_type_name_unique_id() {
+        assert_eq!(value_type_name(&Value::UniqueId(1)), "int");
+    }
+
+    #[test]
+    fn test_value_type_name_point() {
+        assert_eq!(
+            value_type_name(&Value::Point { lat: 0.0, lon: 0.0 }),
+            "string"
+        );
+    }
+
+    #[test]
+    fn test_value_type_name_noderef() {
+        assert_eq!(value_type_name(&Value::NodeRef(0)), "int");
+    }
+
+    #[test]
+    fn test_value_type_name_edgeref() {
+        assert_eq!(
+            value_type_name(&Value::EdgeRef {
+                edge_idx: 0,
+                src_idx: 0,
+                dst_idx: 0
+            }),
+            "int"
+        );
+    }
+
+    // ========================================================================
+    // to_graphml — empty graph
+    // ========================================================================
+
+    #[test]
+    fn test_graphml_empty_graph() {
+        let g = empty_graph();
+        let result = to_graphml(&g, None).unwrap();
+        assert!(result.contains("<?xml version=\"1.0\""));
+        assert!(result.contains("<graphml"));
+        assert!(result.contains("<graph id=\"G\" edgedefault=\"directed\">"));
+        assert!(result.contains("</graphml>"));
+        // No node/edge elements
+        assert!(!result.contains("<node"));
+        assert!(!result.contains("<edge"));
+    }
+
+    // ========================================================================
+    // to_graphml — simple graph
+    // ========================================================================
+
+    #[test]
+    fn test_graphml_simple_graph() {
+        let g = simple_graph();
+        let result = to_graphml(&g, None).unwrap();
+        // Should have two nodes
+        assert!(result.contains("<node id=\"n0\">"));
+        assert!(result.contains("<node id=\"n1\">"));
+        // Node types
+        assert!(result.contains("<data key=\"node_type\">Person</data>"));
+        // Titles
+        assert!(result.contains("<data key=\"node_title\">Alice</data>"));
+        assert!(result.contains("<data key=\"node_title\">Bob</data>"));
+        // Edge
+        assert!(result.contains("<edge id=\"e0\""));
+        assert!(result.contains("<data key=\"edge_type\">KNOWS</data>"));
+    }
+
+    // ========================================================================
+    // to_graphml — xml escaping
+    // ========================================================================
+
+    #[test]
+    fn test_graphml_xml_escaping() {
+        let mut g = DirGraph::new();
+        let n = NodeData::new(
+            Value::String("a&b".to_string()),
+            Value::String("Title <with> \"special\" chars".to_string()),
+            "Type&Co".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        g.graph.add_node(n);
+        let result = to_graphml(&g, None).unwrap();
+        assert!(result.contains("Type&amp;Co"));
+        assert!(result.contains("a&amp;b"));
+        assert!(result.contains("Title &lt;with&gt; &quot;special&quot; chars"));
+    }
+
+    // ========================================================================
+    // to_graphml — with properties
+    // ========================================================================
+
+    #[test]
+    fn test_graphml_with_properties() {
+        let g = graph_with_properties();
+        let result = to_graphml(&g, None).unwrap();
+        assert!(result.contains("<data key=\"node_properties\">"));
+        assert!(result.contains("<data key=\"edge_properties\">"));
+        // Edge property "since"
+        assert!(result.contains("&quot;since&quot;"));
+    }
+
+    // ========================================================================
+    // to_d3_json — empty graph
+    // ========================================================================
+
+    #[test]
+    fn test_d3_json_empty_graph() {
+        let g = empty_graph();
+        let result = to_d3_json(&g, None).unwrap();
+        // Should parse as valid-ish JSON structure
+        assert!(result.contains("\"nodes\""));
+        assert!(result.contains("\"links\""));
+        // No actual node objects
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["nodes"].as_array().unwrap().len(), 0);
+        assert_eq!(parsed["links"].as_array().unwrap().len(), 0);
+    }
+
+    // ========================================================================
+    // to_d3_json — simple graph
+    // ========================================================================
+
+    #[test]
+    fn test_d3_json_simple_graph() {
+        let g = simple_graph();
+        let result = to_d3_json(&g, None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let nodes = parsed["nodes"].as_array().unwrap();
+        let links = parsed["links"].as_array().unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(links.len(), 1);
+        // Check node fields
+        assert_eq!(nodes[0]["id"], "alice");
+        assert_eq!(nodes[0]["type"], "Person");
+        assert_eq!(nodes[0]["title"], "Alice");
+        // Check link fields
+        assert_eq!(links[0]["source"], 0);
+        assert_eq!(links[0]["target"], 1);
+        assert_eq!(links[0]["type"], "KNOWS");
+    }
+
+    // ========================================================================
+    // to_d3_json — with properties on nodes and edges
+    // ========================================================================
+
+    #[test]
+    fn test_d3_json_with_properties() {
+        let g = graph_with_properties();
+        let result = to_d3_json(&g, None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let nodes = parsed["nodes"].as_array().unwrap();
+        let links = parsed["links"].as_array().unwrap();
+        // Node 0 should have age property
+        assert!(nodes[0].get("age").is_some() || nodes[1].get("age").is_some());
+        // Link should have "since" property
+        assert_eq!(links[0]["since"], 2020);
+    }
+
+    // ========================================================================
+    // to_gexf — empty graph
+    // ========================================================================
+
+    #[test]
+    fn test_gexf_empty_graph() {
+        let g = empty_graph();
+        let result = to_gexf(&g, None).unwrap();
+        assert!(result.contains("<?xml version=\"1.0\""));
+        assert!(result.contains("<gexf"));
+        assert!(result.contains("<creator>kglite</creator>"));
+        assert!(result.contains("<nodes>"));
+        assert!(result.contains("</nodes>"));
+        assert!(result.contains("<edges>"));
+        assert!(result.contains("</edges>"));
+        // No actual node elements between tags
+        assert!(!result.contains("<node id="));
+    }
+
+    // ========================================================================
+    // to_gexf — simple graph
+    // ========================================================================
+
+    #[test]
+    fn test_gexf_simple_graph() {
+        let g = simple_graph();
+        let result = to_gexf(&g, None).unwrap();
+        // Two nodes
+        assert!(result.contains("<node id=\"0\" label=\"Alice\">"));
+        assert!(result.contains("<node id=\"1\" label=\"Bob\">"));
+        // Node attributes
+        assert!(result.contains("<attvalue for=\"0\" value=\"Person\"/>"));
+        // Edge
+        assert!(result.contains("<edge id=\"0\" source=\"0\" target=\"1\">"));
+        assert!(result.contains("<attvalue for=\"0\" value=\"KNOWS\"/>"));
+    }
+
+    // ========================================================================
+    // to_gexf — xml escaping in labels
+    // ========================================================================
+
+    #[test]
+    fn test_gexf_xml_escaping() {
+        let mut g = DirGraph::new();
+        let n = NodeData::new(
+            Value::String("id1".to_string()),
+            Value::String("Title <b>bold</b>".to_string()),
+            "Type&Co".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        g.graph.add_node(n);
+        let result = to_gexf(&g, None).unwrap();
+        assert!(result.contains("label=\"Title &lt;b&gt;bold&lt;/b&gt;\""));
+        assert!(result.contains("value=\"Type&amp;Co\""));
+    }
+
+    // ========================================================================
+    // to_csv — empty graph
+    // ========================================================================
+
+    #[test]
+    fn test_csv_empty_graph() {
+        let g = empty_graph();
+        let (nodes_csv, edges_csv) = to_csv(&g, None).unwrap();
+        assert_eq!(nodes_csv, "id,type,title\n");
+        assert_eq!(edges_csv, "source,target,type\n");
+    }
+
+    // ========================================================================
+    // to_csv — simple graph
+    // ========================================================================
+
+    #[test]
+    fn test_csv_simple_graph() {
+        let g = simple_graph();
+        let (nodes_csv, edges_csv) = to_csv(&g, None).unwrap();
+        // Header + 2 data rows
+        let node_lines: Vec<&str> = nodes_csv.lines().collect();
+        assert_eq!(node_lines.len(), 3);
+        assert_eq!(node_lines[0], "id,type,title");
+        assert!(node_lines[1].contains("Person"));
+        assert!(node_lines[1].contains("Alice"));
+
+        // Edge CSV
+        let edge_lines: Vec<&str> = edges_csv.lines().collect();
+        assert_eq!(edge_lines.len(), 2);
+        assert_eq!(edge_lines[0], "source,target,type");
+        assert!(edge_lines[1].contains("KNOWS"));
+    }
+
+    // ========================================================================
+    // to_csv — CSV escaping of commas in values
+    // ========================================================================
+
+    #[test]
+    fn test_csv_escaping_commas() {
+        let mut g = DirGraph::new();
+        let n = NodeData::new(
+            Value::String("id,1".to_string()),
+            Value::String("Title, with comma".to_string()),
+            "Type".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        g.graph.add_node(n);
+        let (nodes_csv, _) = to_csv(&g, None).unwrap();
+        // Values with commas should be quoted
+        assert!(nodes_csv.contains("\"id,1\""));
+        assert!(nodes_csv.contains("\"Title, with comma\""));
+    }
+
+    // ========================================================================
+    // to_csv_dir — basic filesystem export
+    // ========================================================================
+
+    #[test]
+    fn test_csv_dir_basic() {
+        let g = multi_type_graph();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+
+        let summary = to_csv_dir(&g, dir, None, &HashMap::new()).unwrap();
+
+        // Check summary counts
+        assert_eq!(summary.nodes.get("Person"), Some(&1));
+        assert_eq!(summary.nodes.get("Company"), Some(&1));
+        assert_eq!(summary.connections.get("WORKS_AT"), Some(&1));
+        assert!(summary.files_written >= 3); // 2 node CSVs + 1 edge CSV + blueprint
+
+        // Check files exist
+        assert!(Path::new(dir).join("nodes/Person.csv").exists());
+        assert!(Path::new(dir).join("nodes/Company.csv").exists());
+        assert!(Path::new(dir).join("connections/WORKS_AT.csv").exists());
+        assert!(Path::new(dir).join("blueprint.json").exists());
+    }
+
+    // ========================================================================
+    // to_csv_dir — empty graph
+    // ========================================================================
+
+    #[test]
+    fn test_csv_dir_empty_graph() {
+        let g = empty_graph();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+
+        let summary = to_csv_dir(&g, dir, None, &HashMap::new()).unwrap();
+
+        assert!(summary.nodes.is_empty());
+        assert!(summary.connections.is_empty());
+        // Should still write blueprint.json
+        assert!(Path::new(dir).join("blueprint.json").exists());
+    }
+
+    // ========================================================================
+    // to_csv_dir — with parent types (sub-node nesting)
+    // ========================================================================
+
+    #[test]
+    fn test_csv_dir_parent_types() {
+        let mut g = DirGraph::new();
+        let n1 = NodeData::new(
+            Value::String("dept1".to_string()),
+            Value::String("Engineering".to_string()),
+            "Department".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        let n2 = NodeData::new(
+            Value::String("team1".to_string()),
+            Value::String("Backend".to_string()),
+            "Team".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        let idx1 = g.graph.add_node(n1);
+        let idx2 = g.graph.add_node(n2);
+        g.type_indices
+            .entry("Department".to_string())
+            .or_default()
+            .push(idx1);
+        g.type_indices
+            .entry("Team".to_string())
+            .or_default()
+            .push(idx2);
+
+        let mut parent_types = HashMap::new();
+        parent_types.insert("Team".to_string(), "Department".to_string());
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+
+        let _summary = to_csv_dir(&g, dir, None, &parent_types).unwrap();
+
+        // Team CSV should be nested under Department
+        assert!(Path::new(dir).join("nodes/Department/Team.csv").exists());
+        assert!(Path::new(dir).join("nodes/Department.csv").exists());
+    }
+
+    // ========================================================================
+    // to_csv_dir — node properties in CSV
+    // ========================================================================
+
+    #[test]
+    fn test_csv_dir_node_properties() {
+        let g = graph_with_properties();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+
+        let _summary = to_csv_dir(&g, dir, None, &HashMap::new()).unwrap();
+
+        let person_csv = std::fs::read_to_string(Path::new(dir).join("nodes/Person.csv")).unwrap();
+        let lines: Vec<&str> = person_csv.lines().collect();
+        // Header should include property columns
+        assert!(lines[0].contains("age"));
+    }
+
+    // ========================================================================
+    // to_csv_dir — edge properties in connection CSV
+    // ========================================================================
+
+    #[test]
+    fn test_csv_dir_edge_properties() {
+        let g = graph_with_properties();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+
+        let _summary = to_csv_dir(&g, dir, None, &HashMap::new()).unwrap();
+
+        let conn_csv =
+            std::fs::read_to_string(Path::new(dir).join("connections/KNOWS.csv")).unwrap();
+        let lines: Vec<&str> = conn_csv.lines().collect();
+        // Header should include "since" property
+        assert!(lines[0].contains("since"));
+        // Data row should include the value
+        assert!(lines[1].contains("2020"));
+    }
+
+    // ========================================================================
+    // to_csv_dir — blueprint.json is valid JSON
+    // ========================================================================
+
+    #[test]
+    fn test_csv_dir_blueprint_valid_json() {
+        let g = multi_type_graph();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+
+        let _summary = to_csv_dir(&g, dir, None, &HashMap::new()).unwrap();
+
+        let bp = std::fs::read_to_string(Path::new(dir).join("blueprint.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&bp).unwrap();
+        // Should have settings and nodes
+        assert!(parsed.get("settings").is_some());
+        assert!(parsed.get("nodes").is_some());
+        // Should have Person and Company node types
+        assert!(parsed["nodes"].get("Person").is_some());
+        assert!(parsed["nodes"].get("Company").is_some());
+    }
+
+    // ========================================================================
+    // to_csv_dir — blueprint contains connection definitions
+    // ========================================================================
+
+    #[test]
+    fn test_csv_dir_blueprint_connections() {
+        let g = multi_type_graph();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+
+        let _summary = to_csv_dir(&g, dir, None, &HashMap::new()).unwrap();
+
+        let bp = std::fs::read_to_string(Path::new(dir).join("blueprint.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&bp).unwrap();
+
+        // Person node should have connections
+        let person = &parsed["nodes"]["Person"];
+        assert!(person.get("connections").is_some());
+        let junctions = &person["connections"]["junction_edges"];
+        assert!(junctions.get("WORKS_AT").is_some());
+        assert_eq!(junctions["WORKS_AT"]["target"], "Company");
+    }
+
+    // ========================================================================
+    // selected_node_indices — no selection returns all
+    // ========================================================================
+
+    #[test]
+    fn test_selected_node_indices_no_selection() {
+        let g = simple_graph();
+        let indices = selected_node_indices(&g, None);
+        assert_eq!(indices.len(), 2);
+    }
+
+    #[test]
+    fn test_selected_node_indices_empty_graph() {
+        let g = empty_graph();
+        let indices = selected_node_indices(&g, None);
+        assert!(indices.is_empty());
+    }
+
+    // ========================================================================
+    // Integration: round-trip content checks
+    // ========================================================================
+
+    #[test]
+    fn test_graphml_d3_gexf_csv_same_graph() {
+        // Ensure all four export formats succeed on the same graph
+        let g = graph_with_properties();
+        assert!(to_graphml(&g, None).is_ok());
+        assert!(to_d3_json(&g, None).is_ok());
+        assert!(to_gexf(&g, None).is_ok());
+        assert!(to_csv(&g, None).is_ok());
+    }
+
+    // ========================================================================
+    // Single-node graph (no edges)
+    // ========================================================================
+
+    #[test]
+    fn test_exports_single_node_no_edges() {
+        let mut g = DirGraph::new();
+        let n = NodeData::new(
+            Value::String("solo".to_string()),
+            Value::String("Solo Node".to_string()),
+            "Singleton".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        g.graph.add_node(n);
+
+        // GraphML
+        let gml = to_graphml(&g, None).unwrap();
+        assert!(gml.contains("<node id=\"n0\">"));
+        assert!(!gml.contains("<edge"));
+
+        // D3 JSON
+        let d3 = to_d3_json(&g, None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&d3).unwrap();
+        assert_eq!(parsed["nodes"].as_array().unwrap().len(), 1);
+        assert_eq!(parsed["links"].as_array().unwrap().len(), 0);
+
+        // GEXF
+        let gexf = to_gexf(&g, None).unwrap();
+        assert!(gexf.contains("<node id=\"0\""));
+        assert!(!gexf.contains("<edge id="));
+
+        // CSV
+        let (nc, ec) = to_csv(&g, None).unwrap();
+        assert_eq!(nc.lines().count(), 2); // header + 1 row
+        assert_eq!(ec.lines().count(), 1); // header only
+    }
+
+    // ========================================================================
+    // D3 JSON special characters in string values
+    // ========================================================================
+
+    #[test]
+    fn test_d3_json_special_chars_in_values() {
+        let mut g = DirGraph::new();
+        let n = NodeData::new(
+            Value::String("id\"with\\quotes".to_string()),
+            Value::String("Title\nwith\nnewlines".to_string()),
+            "Type".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        g.graph.add_node(n);
+        let result = to_d3_json(&g, None).unwrap();
+        // Should be valid JSON despite special chars
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let nodes = parsed["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0]["id"], "id\"with\\quotes");
+    }
+
+    // ========================================================================
+    // to_csv_dir — summary log_lines populated
+    // ========================================================================
+
+    #[test]
+    fn test_csv_dir_summary_log_lines() {
+        let g = simple_graph();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+
+        let summary = to_csv_dir(&g, dir, None, &HashMap::new()).unwrap();
+        assert!(!summary.log_lines.is_empty());
+        // Should contain a "Done:" summary line
+        assert!(summary.log_lines.last().unwrap().starts_with("Done:"));
+        assert_eq!(summary.output_dir, dir);
+    }
+
+    // ========================================================================
+    // DateTime variant coverage
+    // ========================================================================
+
+    #[test]
+    fn test_value_to_string_datetime() {
+        use chrono::NaiveDate;
+        let dt = NaiveDate::from_ymd_opt(2024, 6, 15).unwrap();
+        let result = value_to_string(&Value::DateTime(dt));
+        assert_eq!(result, "2024-06-15");
+    }
+
+    #[test]
+    fn test_json_value_datetime() {
+        use chrono::NaiveDate;
+        let dt = NaiveDate::from_ymd_opt(2024, 6, 15).unwrap();
+        let result = json_value(&Value::DateTime(dt));
+        assert_eq!(result, "\"2024-06-15\"");
+    }
+
+    #[test]
+    fn test_value_type_name_datetime() {
+        use chrono::NaiveDate;
+        let dt = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        assert_eq!(value_type_name(&Value::DateTime(dt)), "date");
+    }
+
+    // ========================================================================
+    // Float edge cases in json_value
+    // ========================================================================
+
+    #[test]
+    fn test_json_value_float_neg_infinity() {
+        assert_eq!(json_value(&Value::Float64(f64::NEG_INFINITY)), "null");
+    }
+
+    #[test]
+    fn test_json_value_float_zero() {
+        assert_eq!(json_value(&Value::Float64(0.0)), "0");
+    }
+
+    #[test]
+    fn test_json_value_float_negative() {
+        assert_eq!(json_value(&Value::Float64(-1.5)), "-1.5");
+    }
+
+    // ========================================================================
+    // Graphs with numeric (Int64) IDs
+    // ========================================================================
+
+    #[test]
+    fn test_d3_json_numeric_ids() {
+        let g = graph_with_properties(); // uses Int64 IDs
+        let result = to_d3_json(&g, None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let nodes = parsed["nodes"].as_array().unwrap();
+        // Int64 IDs should appear as numbers
+        assert_eq!(nodes[0]["id"], 1);
+        assert_eq!(nodes[1]["id"], 2);
+    }
+
+    #[test]
+    fn test_graphml_numeric_ids() {
+        let g = graph_with_properties();
+        let result = to_graphml(&g, None).unwrap();
+        assert!(result.contains("<data key=\"node_id\">1</data>"));
+        assert!(result.contains("<data key=\"node_id\">2</data>"));
+    }
+
+    #[test]
+    fn test_csv_numeric_ids() {
+        let g = graph_with_properties();
+        let (nodes_csv, _) = to_csv(&g, None).unwrap();
+        let lines: Vec<&str> = nodes_csv.lines().collect();
+        // Rows should contain the integer IDs
+        assert!(lines[1].starts_with("0,") || lines[1].starts_with("1,"));
+    }
+
+    // ========================================================================
+    // Self-loop edges
+    // ========================================================================
+
+    #[test]
+    fn test_exports_self_loop() {
+        let mut g = DirGraph::new();
+        let n = NodeData::new(
+            Value::String("self".to_string()),
+            Value::String("Self Node".to_string()),
+            "Thing".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        let idx = g.graph.add_node(n);
+        g.graph.add_edge(
+            idx,
+            idx,
+            EdgeData::new("SELF_REF".to_string(), HashMap::new(), &mut g.interner),
+        );
+
+        // GraphML should have edge from n0 to n0
+        let gml = to_graphml(&g, None).unwrap();
+        assert!(gml.contains("source=\"n0\" target=\"n0\""));
+        assert!(gml.contains("SELF_REF"));
+
+        // D3 JSON should have a link with source==target
+        let d3 = to_d3_json(&g, None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&d3).unwrap();
+        let links = parsed["links"].as_array().unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0]["source"], links[0]["target"]);
+
+        // GEXF
+        let gexf = to_gexf(&g, None).unwrap();
+        assert!(gexf.contains("source=\"0\" target=\"0\""));
+
+        // CSV
+        let (_, edges_csv) = to_csv(&g, None).unwrap();
+        let lines: Vec<&str> = edges_csv.lines().collect();
+        assert_eq!(lines.len(), 2); // header + 1 edge
+    }
+
+    // ========================================================================
+    // Multiple edges between same pair
+    // ========================================================================
+
+    #[test]
+    fn test_exports_multiple_edges_same_pair() {
+        let mut g = DirGraph::new();
+        let n1 = NodeData::new(
+            Value::String("a".to_string()),
+            Value::String("A".to_string()),
+            "Node".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        let n2 = NodeData::new(
+            Value::String("b".to_string()),
+            Value::String("B".to_string()),
+            "Node".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        let idx1 = g.graph.add_node(n1);
+        let idx2 = g.graph.add_node(n2);
+        g.graph.add_edge(
+            idx1,
+            idx2,
+            EdgeData::new("LIKES".to_string(), HashMap::new(), &mut g.interner),
+        );
+        g.graph.add_edge(
+            idx1,
+            idx2,
+            EdgeData::new("KNOWS".to_string(), HashMap::new(), &mut g.interner),
+        );
+
+        // D3 JSON should have 2 links
+        let d3 = to_d3_json(&g, None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&d3).unwrap();
+        assert_eq!(parsed["links"].as_array().unwrap().len(), 2);
+
+        // GraphML should have e0 and e1
+        let gml = to_graphml(&g, None).unwrap();
+        assert!(gml.contains("id=\"e0\""));
+        assert!(gml.contains("id=\"e1\""));
+
+        // CSV edges
+        let (_, edges_csv) = to_csv(&g, None).unwrap();
+        assert_eq!(edges_csv.lines().count(), 3); // header + 2 edges
+    }
+
+    // ========================================================================
+    // Sparse node properties (some nodes have props, others don't)
+    // ========================================================================
+
+    #[test]
+    fn test_csv_dir_sparse_properties() {
+        let mut g = DirGraph::new();
+        let mut props1 = HashMap::new();
+        props1.insert("color".to_string(), Value::String("red".to_string()));
+        props1.insert("size".to_string(), Value::Int64(10));
+        let n1 = NodeData::new(
+            Value::String("a".to_string()),
+            Value::String("A".to_string()),
+            "Item".to_string(),
+            props1,
+            &mut g.interner,
+        );
+        // Second node of same type but only one property
+        let mut props2 = HashMap::new();
+        props2.insert("color".to_string(), Value::String("blue".to_string()));
+        let n2 = NodeData::new(
+            Value::String("b".to_string()),
+            Value::String("B".to_string()),
+            "Item".to_string(),
+            props2,
+            &mut g.interner,
+        );
+        let idx1 = g.graph.add_node(n1);
+        let idx2 = g.graph.add_node(n2);
+        g.type_indices
+            .entry("Item".to_string())
+            .or_default()
+            .extend([idx1, idx2]);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        let _summary = to_csv_dir(&g, dir, None, &HashMap::new()).unwrap();
+
+        let csv = std::fs::read_to_string(Path::new(dir).join("nodes/Item.csv")).unwrap();
+        let lines: Vec<&str> = csv.lines().collect();
+        // Header should have both color and size columns
+        assert!(lines[0].contains("color"));
+        assert!(lines[0].contains("size"));
+        // 3 lines total: header + 2 data rows
+        assert_eq!(lines.len(), 3);
+    }
+
+    // ========================================================================
+    // build_blueprint with parent types and edge properties
+    // ========================================================================
+
+    #[test]
+    fn test_csv_dir_blueprint_with_parent_and_edge_props() {
+        let mut g = DirGraph::new();
+        let n1 = NodeData::new(
+            Value::String("dept1".to_string()),
+            Value::String("Engineering".to_string()),
+            "Department".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        let n2 = NodeData::new(
+            Value::String("team1".to_string()),
+            Value::String("Backend".to_string()),
+            "Team".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        let idx1 = g.graph.add_node(n1);
+        let idx2 = g.graph.add_node(n2);
+        g.type_indices
+            .entry("Department".to_string())
+            .or_default()
+            .push(idx1);
+        g.type_indices
+            .entry("Team".to_string())
+            .or_default()
+            .push(idx2);
+
+        let mut edge_props = HashMap::new();
+        edge_props.insert("weight".to_string(), Value::Float64(0.75));
+        g.graph.add_edge(
+            idx1,
+            idx2,
+            EdgeData::new("HAS_TEAM".to_string(), edge_props, &mut g.interner),
+        );
+
+        let mut parent_types = HashMap::new();
+        parent_types.insert("Team".to_string(), "Department".to_string());
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        let _summary = to_csv_dir(&g, dir, None, &parent_types).unwrap();
+
+        let bp = std::fs::read_to_string(Path::new(dir).join("blueprint.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&bp).unwrap();
+
+        // Team should have parent reference
+        assert_eq!(parsed["nodes"]["Team"]["parent"], "Department");
+
+        // Department should have HAS_TEAM connection with properties
+        let junctions = &parsed["nodes"]["Department"]["connections"]["junction_edges"];
+        assert!(junctions.get("HAS_TEAM").is_some());
+        let has_team = &junctions["HAS_TEAM"];
+        assert_eq!(has_team["target"], "Team");
+        // Edge properties should be listed
+        let props = has_team["properties"].as_array().unwrap();
+        assert!(props.iter().any(|p| p == "weight"));
+    }
+
+    // ========================================================================
+    // GraphML with node properties but no edge properties
+    // ========================================================================
+
+    #[test]
+    fn test_graphml_node_props_no_edge_props() {
+        let mut g = DirGraph::new();
+        let mut props = HashMap::new();
+        props.insert("role".to_string(), Value::String("admin".to_string()));
+        let n1 = NodeData::new(
+            Value::String("u1".to_string()),
+            Value::String("User 1".to_string()),
+            "User".to_string(),
+            props,
+            &mut g.interner,
+        );
+        let n2 = NodeData::new(
+            Value::String("u2".to_string()),
+            Value::String("User 2".to_string()),
+            "User".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        let idx1 = g.graph.add_node(n1);
+        let idx2 = g.graph.add_node(n2);
+        g.graph.add_edge(
+            idx1,
+            idx2,
+            EdgeData::new("FOLLOWS".to_string(), HashMap::new(), &mut g.interner),
+        );
+        let result = to_graphml(&g, None).unwrap();
+        // Node should have properties
+        assert!(result.contains("<data key=\"node_properties\">"));
+        // Edge should NOT have properties data element
+        // (the edge element exists but no edge_properties data)
+        assert!(result.contains("<data key=\"edge_type\">FOLLOWS</data>"));
+        // Count edge_properties occurrences - should be 0 in this graph
+        assert!(!result.contains("<data key=\"edge_properties\">"));
+    }
+
+    // ========================================================================
+    // GEXF with special characters in node titles
+    // ========================================================================
+
+    #[test]
+    fn test_gexf_node_with_ampersand_in_type() {
+        let mut g = DirGraph::new();
+        let n = NodeData::new(
+            Value::String("id1".to_string()),
+            Value::String("R&D".to_string()),
+            "Dept".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        g.graph.add_node(n);
+        let result = to_gexf(&g, None).unwrap();
+        assert!(result.contains("label=\"R&amp;D\""));
+    }
+
+    // ========================================================================
+    // CSV with quotes in values
+    // ========================================================================
+
+    #[test]
+    fn test_csv_quotes_in_node_values() {
+        let mut g = DirGraph::new();
+        let n = NodeData::new(
+            Value::String("id1".to_string()),
+            Value::String("She said \"hello\"".to_string()),
+            "Note".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        g.graph.add_node(n);
+        let (nodes_csv, _) = to_csv(&g, None).unwrap();
+        // The title with quotes should be properly escaped
+        assert!(nodes_csv.contains("\"She said \"\"hello\"\"\""));
+    }
+
+    // ========================================================================
+    // D3 JSON with all Value types in properties
+    // ========================================================================
+
+    #[test]
+    fn test_d3_json_varied_property_types() {
+        use chrono::NaiveDate;
+        let mut g = DirGraph::new();
+        let mut props = HashMap::new();
+        props.insert("count".to_string(), Value::Int64(42));
+        props.insert("score".to_string(), Value::Float64(9.5));
+        props.insert("active".to_string(), Value::Boolean(true));
+        props.insert("note".to_string(), Value::Null);
+        props.insert(
+            "created".to_string(),
+            Value::DateTime(NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()),
+        );
+        props.insert(
+            "location".to_string(),
+            Value::Point {
+                lat: 40.7,
+                lon: -74.0,
+            },
+        );
+        let n = NodeData::new(
+            Value::String("item1".to_string()),
+            Value::String("Item".to_string()),
+            "Thing".to_string(),
+            props,
+            &mut g.interner,
+        );
+        g.graph.add_node(n);
+
+        let result = to_d3_json(&g, None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let node = &parsed["nodes"][0];
+        assert_eq!(node["count"], 42);
+        assert_eq!(node["score"], 9.5);
+        assert_eq!(node["active"], true);
+        assert_eq!(node["note"], serde_json::Value::Null);
+    }
+
+    // ========================================================================
+    // properties_to_json with special characters in keys
+    // ========================================================================
+
+    #[test]
+    fn test_properties_to_json_special_key() {
+        let val = Value::String("value".to_string());
+        let props = vec![("key\"with\"quotes", &val)];
+        let result = properties_to_json(props.into_iter());
+        assert!(result.contains("\"key\\\"with\\\"quotes\""));
+    }
+
+    // ========================================================================
+    // to_csv_dir — connection CSV content format
+    // ========================================================================
+
+    #[test]
+    fn test_csv_dir_connection_csv_format() {
+        let g = multi_type_graph();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        let _summary = to_csv_dir(&g, dir, None, &HashMap::new()).unwrap();
+
+        let csv = std::fs::read_to_string(Path::new(dir).join("connections/WORKS_AT.csv")).unwrap();
+        let lines: Vec<&str> = csv.lines().collect();
+        // Header should have standard columns
+        assert_eq!(lines[0], "source_id,source_type,target_id,target_type");
+        // Data row
+        assert!(lines[1].contains("alice"));
+        assert!(lines[1].contains("Person"));
+        assert!(lines[1].contains("acme"));
+        assert!(lines[1].contains("Company"));
+    }
+
+    // ========================================================================
+    // Multiple node types in same export (coverage for type grouping)
+    // ========================================================================
+
+    #[test]
+    fn test_csv_dir_node_csv_per_type() {
+        let g = multi_type_graph();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        let summary = to_csv_dir(&g, dir, None, &HashMap::new()).unwrap();
+
+        // Verify separate CSVs per type
+        let person_csv = std::fs::read_to_string(Path::new(dir).join("nodes/Person.csv")).unwrap();
+        let company_csv =
+            std::fs::read_to_string(Path::new(dir).join("nodes/Company.csv")).unwrap();
+
+        // Person CSV should have Alice but not Acme
+        assert!(person_csv.contains("alice"));
+        assert!(!person_csv.contains("acme"));
+
+        // Company CSV should have Acme but not Alice
+        assert!(company_csv.contains("acme"));
+        assert!(!company_csv.contains("alice"));
+
+        // Summary should account for all files
+        assert!(summary.files_written >= 4); // 2 node + 1 edge + blueprint
+    }
+
+    // ========================================================================
+    // json_string with combined special characters
+    // ========================================================================
+
+    #[test]
+    fn test_json_string_all_specials_combined() {
+        let result = json_string("line1\nhas \"quotes\" and \\backslash");
+        assert_eq!(result, "\"line1\\nhas \\\"quotes\\\" and \\\\backslash\"");
+    }
+
+    // ========================================================================
+    // escape_csv combined specials
+    // ========================================================================
+
+    #[test]
+    fn test_escape_csv_comma_and_quotes() {
+        // Value with both comma and quote should be quoted with escaped quotes
+        assert_eq!(escape_csv("a,\"b\""), "\"a,\"\"b\"\"\"");
+    }
+
+    #[test]
+    fn test_escape_csv_newline_and_comma() {
+        assert_eq!(escape_csv("a\nb,c"), "\"a\nb,c\"");
+    }
+
+    // ========================================================================
+    // escape_xml with multiple occurrences
+    // ========================================================================
+
+    #[test]
+    fn test_escape_xml_multiple_ampersands() {
+        assert_eq!(escape_xml("a&b&c"), "a&amp;b&amp;c");
+    }
+
+    // ========================================================================
+    // Large graph (coverage for iteration paths)
+    // ========================================================================
+
+    #[test]
+    fn test_exports_many_nodes() {
+        let mut g = DirGraph::new();
+        for i in 0..50 {
+            let n = NodeData::new(
+                Value::Int64(i),
+                Value::String(format!("Node {}", i)),
+                "Bulk".to_string(),
+                HashMap::new(),
+                &mut g.interner,
+            );
+            g.graph.add_node(n);
+        }
+        // Add some edges
+        let indices: Vec<_> = g.graph.node_indices().collect();
+        for i in 0..49 {
+            g.graph.add_edge(
+                indices[i],
+                indices[i + 1],
+                EdgeData::new("NEXT".to_string(), HashMap::new(), &mut g.interner),
+            );
+        }
+
+        let gml = to_graphml(&g, None).unwrap();
+        assert!(gml.contains("n49")); // last node present
+        assert!(gml.contains("e48")); // last edge present
+
+        let d3 = to_d3_json(&g, None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&d3).unwrap();
+        assert_eq!(parsed["nodes"].as_array().unwrap().len(), 50);
+        assert_eq!(parsed["links"].as_array().unwrap().len(), 49);
+
+        let (nc, ec) = to_csv(&g, None).unwrap();
+        assert_eq!(nc.lines().count(), 51); // header + 50
+        assert_eq!(ec.lines().count(), 50); // header + 49
+    }
+
+    // ========================================================================
+    // to_csv_dir on graph with no edges (no connections dir needed)
+    // ========================================================================
+
+    #[test]
+    fn test_csv_dir_no_edges() {
+        let mut g = DirGraph::new();
+        let n = NodeData::new(
+            Value::String("x".to_string()),
+            Value::String("X".to_string()),
+            "Solo".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        g.graph.add_node(n);
+        g.type_indices
+            .entry("Solo".to_string())
+            .or_default()
+            .push(petgraph::graph::NodeIndex::new(0));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        let summary = to_csv_dir(&g, dir, None, &HashMap::new()).unwrap();
+
+        assert!(summary.connections.is_empty());
+        assert_eq!(summary.nodes.get("Solo"), Some(&1));
+        // nodes dir exists, connections dir should NOT exist
+        assert!(Path::new(dir).join("nodes/Solo.csv").exists());
+        assert!(!Path::new(dir).join("connections").exists());
+    }
+
+    // ========================================================================
+    // build_blueprint — node property types in blueprint
+    // ========================================================================
+
+    #[test]
+    fn test_csv_dir_blueprint_property_types() {
+        let g = graph_with_properties();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap();
+        let _summary = to_csv_dir(&g, dir, None, &HashMap::new()).unwrap();
+
+        let bp = std::fs::read_to_string(Path::new(dir).join("blueprint.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&bp).unwrap();
+        let person = &parsed["nodes"]["Person"];
+        let props = &person["properties"];
+        assert_eq!(props["age"], "int");
+        assert_eq!(props["active"], "bool");
+    }
+
+    // ========================================================================
+    // Bidirectional edges
+    // ========================================================================
+
+    #[test]
+    fn test_exports_bidirectional_edges() {
+        let mut g = DirGraph::new();
+        let n1 = NodeData::new(
+            Value::String("a".to_string()),
+            Value::String("A".to_string()),
+            "Node".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        let n2 = NodeData::new(
+            Value::String("b".to_string()),
+            Value::String("B".to_string()),
+            "Node".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        let idx1 = g.graph.add_node(n1);
+        let idx2 = g.graph.add_node(n2);
+        g.graph.add_edge(
+            idx1,
+            idx2,
+            EdgeData::new("LINK".to_string(), HashMap::new(), &mut g.interner),
+        );
+        g.graph.add_edge(
+            idx2,
+            idx1,
+            EdgeData::new("LINK".to_string(), HashMap::new(), &mut g.interner),
+        );
+
+        let d3 = to_d3_json(&g, None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&d3).unwrap();
+        let links = parsed["links"].as_array().unwrap();
+        assert_eq!(links.len(), 2);
+        // One goes 0->1, the other 1->0
+        let sources: Vec<i64> = links
+            .iter()
+            .map(|l| l["source"].as_i64().unwrap())
+            .collect();
+        assert!(sources.contains(&0));
+        assert!(sources.contains(&1));
+    }
+
+    // ========================================================================
+    // Null property values in properties_to_json
+    // ========================================================================
+
+    #[test]
+    fn test_properties_to_json_with_null() {
+        let v1 = Value::Null;
+        let v2 = Value::Int64(1);
+        let props = vec![("missing", &v1), ("present", &v2)];
+        let result = properties_to_json(props.into_iter());
+        assert!(result.contains("\"missing\":null"));
+        assert!(result.contains("\"present\":1"));
+    }
+
+    // ========================================================================
+    // UniqueId values in exports
+    // ========================================================================
+
+    #[test]
+    fn test_d3_json_unique_id_node() {
+        let mut g = DirGraph::new();
+        let n = NodeData::new(
+            Value::UniqueId(12345),
+            Value::String("UID Node".to_string()),
+            "Entity".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        g.graph.add_node(n);
+        let result = to_d3_json(&g, None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["nodes"][0]["id"], 12345);
+    }
+
+    // ========================================================================
+    // Boolean ID value
+    // ========================================================================
+
+    #[test]
+    fn test_graphml_boolean_id() {
+        let mut g = DirGraph::new();
+        let n = NodeData::new(
+            Value::Boolean(true),
+            Value::String("Bool Node".to_string()),
+            "Test".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        g.graph.add_node(n);
+        let result = to_graphml(&g, None).unwrap();
+        assert!(result.contains("<data key=\"node_id\">true</data>"));
+    }
+
+    // ========================================================================
+    // Null ID value
+    // ========================================================================
+
+    #[test]
+    fn test_csv_null_id() {
+        let mut g = DirGraph::new();
+        let n = NodeData::new(
+            Value::Null,
+            Value::String("No ID".to_string()),
+            "Test".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        );
+        g.graph.add_node(n);
+        let (nodes_csv, _) = to_csv(&g, None).unwrap();
+        let lines: Vec<&str> = nodes_csv.lines().collect();
+        // Null id becomes empty string
+        assert!(lines[1].starts_with("0,"));
+    }
+
+    // ========================================================================
+    // Point value in GraphML properties
+    // ========================================================================
+
+    #[test]
+    fn test_graphml_point_property() {
+        let mut g = DirGraph::new();
+        let mut props = HashMap::new();
+        props.insert(
+            "loc".to_string(),
+            Value::Point {
+                lat: 51.5,
+                lon: -0.1,
+            },
+        );
+        let n = NodeData::new(
+            Value::String("london".to_string()),
+            Value::String("London".to_string()),
+            "City".to_string(),
+            props,
+            &mut g.interner,
+        );
+        g.graph.add_node(n);
+        let result = to_graphml(&g, None).unwrap();
+        assert!(result.contains("node_properties"));
+        // The point value should appear as "point(51.5, -0.1)" inside the JSON
+        assert!(result.contains("point(51.5, -0.1)"));
+    }
+
+    #[test]
+    fn test_escape_csv_comma_and_newline() {
+        assert_eq!(escape_csv("a,b\nc"), "\"a,b\nc\"");
+    }
+
+    #[test]
+    fn test_escape_csv_comma_and_quote() {
+        assert_eq!(escape_csv("a,\"b\",c"), "\"a,\"\"b\"\",c\"");
+    }
+
+    #[test]
+    fn test_escape_csv_empty_string() {
+        assert_eq!(escape_csv(""), "");
+    }
+
+    #[test]
+    fn test_escape_csv_no_special_chars() {
+        assert_eq!(escape_csv("hello"), "hello");
+    }
+
+    #[test]
+    fn test_escape_csv_tab_no_quote() {
+        assert_eq!(escape_csv("a\tb"), "a\tb");
+    }
+
+    #[test]
+    fn test_escape_csv_with_quote() {
+        assert_eq!(escape_csv("a\"b"), "\"a\"\"b\"");
+    }
+
+    #[test]
+    fn test_escape_xml_combined_chars() {
+        assert_eq!(escape_xml("&<>\"'"), "&amp;&lt;&gt;&quot;&apos;");
+    }
+
+    #[test]
+    fn test_escape_xml_double_quote() {
+        assert_eq!(escape_xml("\""), "&quot;");
+    }
+
+    #[test]
+    fn test_escape_xml_empty_string() {
+        assert_eq!(escape_xml(""), "");
+    }
+
+    #[test]
+    fn test_escape_xml_greater_than() {
+        assert_eq!(escape_xml(">"), "&gt;");
+    }
+
+    #[test]
+    fn test_escape_xml_less_than() {
+        assert_eq!(escape_xml("<"), "&lt;");
+    }
+
+    #[test]
+    fn test_escape_xml_multiple_special_chars() {
+        assert_eq!(
+            escape_xml("<tag>text&</tag>"),
+            "&lt;tag&gt;text&amp;&lt;/tag&gt;"
+        );
+    }
+
+    #[test]
+    fn test_escape_xml_single_quote() {
+        assert_eq!(escape_xml("'"), "&apos;");
     }
 
     #[test]
@@ -1092,33 +2678,14 @@ mod tests {
         assert_eq!(json_string("\"\"\""), "\"\\\"\\\"\\\"\"");
     }
 
-    // Tests for json_value
     #[test]
-    fn test_json_value_string() {
-        let result = json_value(&Value::String("hello".to_string()));
-        assert_eq!(result, "\"hello\"");
+    fn test_json_string_simple() {
+        assert_eq!(json_string("hello"), "\"hello\"");
     }
 
     #[test]
-    fn test_json_value_int64() {
-        assert_eq!(json_value(&Value::Int64(42)), "42");
-        assert_eq!(json_value(&Value::Int64(-100)), "-100");
-    }
-
-    #[test]
-    fn test_json_value_float64() {
-        assert_eq!(json_value(&Value::Float64(3.14)), "3.14");
-    }
-
-    #[test]
-    fn test_json_value_float64_nan() {
-        assert_eq!(json_value(&Value::Float64(f64::NAN)), "null");
-    }
-
-    #[test]
-    fn test_json_value_float64_infinity() {
-        assert_eq!(json_value(&Value::Float64(f64::INFINITY)), "null");
-        assert_eq!(json_value(&Value::Float64(f64::NEG_INFINITY)), "null");
+    fn test_json_string_with_double_quote() {
+        assert_eq!(json_string("say \"hello\""), "\"say \\\"hello\\\"\"");
     }
 
     #[test]
@@ -1128,20 +2695,31 @@ mod tests {
     }
 
     #[test]
-    fn test_json_value_null() {
-        assert_eq!(json_value(&Value::Null), "null");
+    fn test_json_value_edge_ref() {
+        let result = json_value(&Value::EdgeRef { edge_idx: 10, src_idx: 0, dst_idx: 1 });
+        assert_eq!(result, "10");
     }
 
     #[test]
-    fn test_json_value_unique_id() {
-        assert_eq!(json_value(&Value::UniqueId(42)), "42");
+    fn test_json_value_float64() {
+        assert_eq!(json_value(&Value::Float64(3.14)), "3.14");
     }
 
     #[test]
-    fn test_json_value_point() {
-        let result = json_value(&Value::Point { lat: 40.7128, lon: -74.0060 });
-        assert!(result.contains("\"lat\""));
-        assert!(result.contains("\"lon\""));
+    fn test_json_value_float64_infinity() {
+        assert_eq!(json_value(&Value::Float64(f64::INFINITY)), "null");
+        assert_eq!(json_value(&Value::Float64(f64::NEG_INFINITY)), "null");
+    }
+
+    #[test]
+    fn test_json_value_float64_nan() {
+        assert_eq!(json_value(&Value::Float64(f64::NAN)), "null");
+    }
+
+    #[test]
+    fn test_json_value_int64() {
+        assert_eq!(json_value(&Value::Int64(42)), "42");
+        assert_eq!(json_value(&Value::Int64(-100)), "-100");
     }
 
     #[test]
@@ -1150,154 +2728,11 @@ mod tests {
     }
 
     #[test]
-    fn test_json_value_edge_ref() {
-        let result = json_value(&Value::EdgeRef { edge_idx: 10, src_idx: 0, dst_idx: 1 });
-        assert_eq!(result, "10");
-    }
-
-    #[test]
     fn test_json_value_string_with_escapes() {
         let s = Value::String("test\"with\\special".to_string());
         let result = json_value(&s);
         assert!(result.contains("\\\""));
         assert!(result.contains("\\\\"));
-    }
-
-    // Tests for value_type_name
-    #[test]
-    fn test_value_type_name_string() {
-        assert_eq!(value_type_name(&Value::String("test".to_string())), "string");
-    }
-
-    #[test]
-    fn test_value_type_name_int64() {
-        assert_eq!(value_type_name(&Value::Int64(42)), "int");
-    }
-
-    #[test]
-    fn test_value_type_name_float64() {
-        assert_eq!(value_type_name(&Value::Float64(3.14)), "float");
-    }
-
-    #[test]
-    fn test_value_type_name_boolean() {
-        assert_eq!(value_type_name(&Value::Boolean(true)), "bool");
-    }
-
-    #[test]
-    fn test_value_type_name_datetime() {
-        use chrono::NaiveDate;
-        let dt = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
-        assert_eq!(value_type_name(&Value::DateTime(dt)), "date");
-    }
-
-    #[test]
-    fn test_value_type_name_unique_id() {
-        assert_eq!(value_type_name(&Value::UniqueId(42)), "int");
-    }
-
-    #[test]
-    fn test_value_type_name_point() {
-        assert_eq!(value_type_name(&Value::Point { lat: 0.0, lon: 0.0 }), "string");
-    }
-
-    #[test]
-    fn test_value_type_name_null() {
-        assert_eq!(value_type_name(&Value::Null), "string");
-    }
-
-    #[test]
-    fn test_value_type_name_node_ref() {
-        assert_eq!(value_type_name(&Value::NodeRef(1)), "int");
-    }
-
-    #[test]
-    fn test_value_type_name_edge_ref() {
-        assert_eq!(
-            value_type_name(&Value::EdgeRef { edge_idx: 1, src_idx: 0, dst_idx: 2 }),
-            "int"
-        );
-    }
-
-    #[test]
-    fn test_value_type_name_consistency() {
-        let values = vec![
-            (Value::String("test".to_string()), "string"),
-            (Value::Int64(0), "int"),
-            (Value::Float64(0.0), "float"),
-            (Value::Boolean(false), "bool"),
-            (Value::Null, "string"),
-            (Value::UniqueId(0), "int"),
-            (Value::NodeRef(0), "int"),
-            (Value::EdgeRef { edge_idx: 0, src_idx: 0, dst_idx: 0 }, "int"),
-        ];
-        for (val, expected_type) in values {
-            assert_eq!(value_type_name(&val), expected_type);
-        }
-    }
-
-    // Tests for properties_to_json
-    #[test]
-    fn test_properties_to_json_empty() {
-        let props: Vec<(&str, &Value)> = vec![];
-        assert_eq!(properties_to_json(props.into_iter()), "{}");
-    }
-
-    #[test]
-    fn test_properties_to_json_single_property() {
-        let alice = Value::String("Alice".to_string());
-        let props = vec![("name", &alice)];
-        let result = properties_to_json(props.into_iter());
-        assert!(result.contains("\"name\""));
-        assert!(result.contains("\"Alice\""));
-    }
-
-    #[test]
-    fn test_properties_to_json_multiple_properties() {
-        let bob = Value::String("Bob".to_string());
-        let age = Value::Int64(30);
-        let props = vec![
-            ("name", &bob),
-            ("age", &age),
-        ];
-        let result = properties_to_json(props.into_iter());
-        assert!(result.contains("\"name\""));
-        assert!(result.contains("\"Bob\""));
-        assert!(result.contains("\"age\""));
-        assert!(result.contains("30"));
-    }
-
-    #[test]
-    fn test_properties_to_json_mixed_types() {
-        let val_str = Value::String("test".to_string());
-        let val_int = Value::Int64(42);
-        let val_bool = Value::Boolean(true);
-        let props = vec![
-            ("str", &val_str),
-            ("num", &val_int),
-            ("flag", &val_bool),
-        ];
-        let result = properties_to_json(props.into_iter());
-        assert!(result.contains("\"str\""));
-        assert!(result.contains("\"num\""));
-        assert!(result.contains("\"flag\""));
-    }
-
-    #[test]
-    fn test_properties_to_json_null_value() {
-        let null_val = Value::Null;
-        let props = vec![("nullable", &null_val)];
-        let result = properties_to_json(props.into_iter());
-        assert!(result.contains("\"nullable\""));
-        assert!(result.contains("null"));
-    }
-
-    #[test]
-    fn test_properties_to_json_wraps_in_braces() {
-        let props: Vec<(&str, &Value)> = vec![];
-        let result = properties_to_json(props.into_iter());
-        assert!(result.starts_with("{"));
-        assert!(result.ends_with("}"));
     }
 
     #[test]
@@ -1323,6 +2758,55 @@ mod tests {
     }
 
     #[test]
+    fn test_properties_to_json_mixed_types() {
+        let val_str = Value::String("test".to_string());
+        let val_int = Value::Int64(42);
+        let val_bool = Value::Boolean(true);
+        let props = vec![
+            ("str", &val_str),
+            ("num", &val_int),
+            ("flag", &val_bool),
+        ];
+        let result = properties_to_json(props.into_iter());
+        assert!(result.contains("\"str\""));
+        assert!(result.contains("\"num\""));
+        assert!(result.contains("\"flag\""));
+    }
+
+    #[test]
+    fn test_properties_to_json_multiple_properties() {
+        let bob = Value::String("Bob".to_string());
+        let age = Value::Int64(30);
+        let props = vec![
+            ("name", &bob),
+            ("age", &age),
+        ];
+        let result = properties_to_json(props.into_iter());
+        assert!(result.contains("\"name\""));
+        assert!(result.contains("\"Bob\""));
+        assert!(result.contains("\"age\""));
+        assert!(result.contains("30"));
+    }
+
+    #[test]
+    fn test_properties_to_json_null_value() {
+        let null_val = Value::Null;
+        let props = vec![("nullable", &null_val)];
+        let result = properties_to_json(props.into_iter());
+        assert!(result.contains("\"nullable\""));
+        assert!(result.contains("null"));
+    }
+
+    #[test]
+    fn test_properties_to_json_single_property() {
+        let alice = Value::String("Alice".to_string());
+        let props = vec![("name", &alice)];
+        let result = properties_to_json(props.into_iter());
+        assert!(result.contains("\"name\""));
+        assert!(result.contains("\"Alice\""));
+    }
+
+    #[test]
     fn test_properties_to_json_special_names() {
         let v = Value::String("value".to_string());
         let props = vec![
@@ -1332,5 +2816,95 @@ mod tests {
         let result = properties_to_json(props.into_iter());
         assert!(result.contains("\"name-with-dash\""));
         assert!(result.contains("\"name.with.dot\""));
+    }
+
+    #[test]
+    fn test_properties_to_json_wraps_in_braces() {
+        let props: Vec<(&str, &Value)> = vec![];
+        let result = properties_to_json(props.into_iter());
+        assert!(result.starts_with("{"));
+        assert!(result.ends_with("}"));
+    }
+
+    #[test]
+    fn test_value_to_string_boolean() {
+        assert_eq!(value_to_string(&Value::Boolean(true)), "true");
+        assert_eq!(value_to_string(&Value::Boolean(false)), "false");
+    }
+
+    #[test]
+    fn test_value_to_string_edge_ref() {
+        assert_eq!(
+            value_to_string(&Value::EdgeRef { edge_idx: 10, src_idx: 0, dst_idx: 1 }),
+            "edge#10"
+        );
+    }
+
+    #[test]
+    fn test_value_to_string_float64() {
+        assert_eq!(value_to_string(&Value::Float64(3.14)), "3.14");
+        assert_eq!(value_to_string(&Value::Float64(0.0)), "0");
+    }
+
+    #[test]
+    fn test_value_to_string_int64() {
+        assert_eq!(value_to_string(&Value::Int64(42)), "42");
+        assert_eq!(value_to_string(&Value::Int64(-100)), "-100");
+        assert_eq!(value_to_string(&Value::Int64(0)), "0");
+    }
+
+    #[test]
+    fn test_value_to_string_large_int() {
+        assert_eq!(value_to_string(&Value::Int64(i64::MAX)), "9223372036854775807");
+    }
+
+    #[test]
+    fn test_value_to_string_node_ref() {
+        assert_eq!(value_to_string(&Value::NodeRef(5)), "node#5");
+    }
+
+    #[test]
+    fn test_value_type_name_boolean() {
+        assert_eq!(value_type_name(&Value::Boolean(true)), "bool");
+    }
+
+    #[test]
+    fn test_value_type_name_consistency() {
+        let values = vec![
+            (Value::String("test".to_string()), "string"),
+            (Value::Int64(0), "int"),
+            (Value::Float64(0.0), "float"),
+            (Value::Boolean(false), "bool"),
+            (Value::Null, "string"),
+            (Value::UniqueId(0), "int"),
+            (Value::NodeRef(0), "int"),
+            (Value::EdgeRef { edge_idx: 0, src_idx: 0, dst_idx: 0 }, "int"),
+        ];
+        for (val, expected_type) in values {
+            assert_eq!(value_type_name(&val), expected_type);
+        }
+    }
+
+    #[test]
+    fn test_value_type_name_edge_ref() {
+        assert_eq!(
+            value_type_name(&Value::EdgeRef { edge_idx: 1, src_idx: 0, dst_idx: 2 }),
+            "int"
+        );
+    }
+
+    #[test]
+    fn test_value_type_name_float64() {
+        assert_eq!(value_type_name(&Value::Float64(3.14)), "float");
+    }
+
+    #[test]
+    fn test_value_type_name_int64() {
+        assert_eq!(value_type_name(&Value::Int64(42)), "int");
+    }
+
+    #[test]
+    fn test_value_type_name_node_ref() {
+        assert_eq!(value_type_name(&Value::NodeRef(1)), "int");
     }
 }

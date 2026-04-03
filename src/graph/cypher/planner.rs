@@ -582,14 +582,14 @@ fn push_where_into_match(query: &mut CypherQuery, params: &HashMap<String, Value
             };
 
         // Split predicate into pushable conditions and remainder
-        let (pushable, pushable_in, pushable_cmp, pushable_edge_types, remaining) =
+        let (pushed, remaining) =
             extract_pushable_equalities(&where_pred, &match_vars, &edge_vars, params);
 
         // Apply pushable conditions to MATCH/OPTIONAL MATCH patterns
-        if !pushable.is_empty()
-            || !pushable_in.is_empty()
-            || !pushable_cmp.is_empty()
-            || !pushable_edge_types.is_empty()
+        if !pushed.equality.is_empty()
+            || !pushed.in_list.is_empty()
+            || !pushed.comparison.is_empty()
+            || !pushed.edge_types.is_empty()
         {
             let patterns = match &mut query.clauses[i] {
                 Clause::Match(ref mut m) => &mut m.patterns,
@@ -599,16 +599,16 @@ fn push_where_into_match(query: &mut CypherQuery, params: &HashMap<String, Value
                     continue;
                 }
             };
-            for (var_name, property, value) in &pushable {
+            for (var_name, property, value) in &pushed.equality {
                 apply_property_to_patterns(patterns, var_name, property, value.clone());
             }
-            for (var_name, property, values) in pushable_in {
+            for (var_name, property, values) in pushed.in_list {
                 apply_in_property_to_patterns(patterns, &var_name, &property, values);
             }
-            for (var_name, property, op, value) in pushable_cmp {
+            for (var_name, property, op, value) in pushed.comparison {
                 apply_comparison_to_patterns(patterns, &var_name, &property, op, value);
             }
-            for (var_name, types) in pushable_edge_types {
+            for (var_name, types) in pushed.edge_types {
                 apply_type_to_edge_patterns(patterns, &var_name, types);
             }
 
@@ -1784,17 +1784,16 @@ fn collect_edge_variables(patterns: &[crate::graph::pattern_matching::Pattern]) 
     vars
 }
 
-/// (equality_conditions, in_conditions, comparison_conditions, edge_type_conditions, remaining_predicate)
-type PushableResult = (
-    Vec<(String, String, Value)>,
-    Vec<(String, String, Vec<Value>)>,
-    Vec<(String, String, ComparisonOp, Value)>,
-    Vec<(String, Vec<String>)>,
-    Option<Predicate>,
-);
+/// Accumulated pushable predicates extracted from a WHERE clause.
+#[derive(Default)]
+struct PushablePredicates {
+    equality: Vec<(String, String, Value)>,
+    in_list: Vec<(String, String, Vec<Value>)>,
+    comparison: Vec<(String, String, ComparisonOp, Value)>,
+    edge_types: Vec<(String, Vec<String>)>,
+}
 
 /// Extract pushable predicates from a WHERE clause into MATCH patterns.
-/// Returns (equality_conditions, in_conditions, comparison_conditions, edge_type_conditions, remaining_predicate).
 ///
 /// Pushes conditions of the form:
 /// - `variable.property = literal_value` (equality)
@@ -1810,28 +1809,10 @@ fn extract_pushable_equalities(
     match_vars: &[(String, Option<String>)],
     edge_vars: &[String],
     params: &HashMap<String, Value>,
-) -> PushableResult {
-    let mut pushable = Vec::new();
-    let mut pushable_in = Vec::new();
-    let mut pushable_cmp = Vec::new();
-    let mut pushable_edge_types = Vec::new();
-    let remaining = extract_from_predicate(
-        pred,
-        match_vars,
-        edge_vars,
-        params,
-        &mut pushable,
-        &mut pushable_in,
-        &mut pushable_cmp,
-        &mut pushable_edge_types,
-    );
-    (
-        pushable,
-        pushable_in,
-        pushable_cmp,
-        pushable_edge_types,
-        remaining,
-    )
+) -> (PushablePredicates, Option<Predicate>) {
+    let mut pushable = PushablePredicates::default();
+    let remaining = extract_from_predicate(pred, match_vars, edge_vars, params, &mut pushable);
+    (pushable, remaining)
 }
 
 /// Recursively extract pushable predicates from a predicate tree.
@@ -1841,10 +1822,7 @@ fn extract_from_predicate(
     match_vars: &[(String, Option<String>)],
     edge_vars: &[String],
     params: &HashMap<String, Value>,
-    pushable: &mut Vec<(String, String, Value)>,
-    pushable_in: &mut Vec<(String, String, Vec<Value>)>,
-    pushable_cmp: &mut Vec<(String, String, ComparisonOp, Value)>,
-    pushable_edge_types: &mut Vec<(String, Vec<String>)>,
+    out: &mut PushablePredicates,
 ) -> Option<Predicate> {
     match pred {
         Predicate::Comparison {
@@ -1854,21 +1832,19 @@ fn extract_from_predicate(
         } => {
             // Check type(r) = 'TypeA' — push edge type constraint
             if let Some((var, types)) = try_extract_type_equality(left, right, edge_vars) {
-                pushable_edge_types.push((var, types));
+                out.edge_types.push((var, types));
                 return None;
             }
-            // Check if this is variable.property = literal or variable.property = $param
             if let Some((var, prop, val)) = try_extract_equality(left, right, match_vars, params) {
-                pushable.push((var, prop, val));
-                None // Fully consumed
-                     // Check if this is id(var) = literal or id(var) = $param
+                out.equality.push((var, prop, val));
+                None
             } else if let Some((var, prop, val)) =
                 try_extract_id_equality(left, right, match_vars, params)
             {
-                pushable.push((var, prop, val));
-                None // Fully consumed
+                out.equality.push((var, prop, val));
+                None
             } else {
-                Some(pred.clone()) // Keep as-is
+                Some(pred.clone())
             }
         }
         Predicate::Comparison {
@@ -1883,7 +1859,7 @@ fn extract_from_predicate(
             if let Some((var, prop, op, val)) =
                 try_extract_comparison(left, right, *op, match_vars, params)
             {
-                pushable_cmp.push((var, prop, op, val));
+                out.comparison.push((var, prop, op, val));
                 None
             } else {
                 Some(pred.clone())
@@ -1892,70 +1868,40 @@ fn extract_from_predicate(
         Predicate::In { expr, list } => {
             // Check type(r) IN ['TypeA', 'TypeB'] — push edge type constraint
             if let Some((var, types)) = try_extract_type_in(expr, list, edge_vars) {
-                pushable_edge_types.push((var, types));
+                out.edge_types.push((var, types));
                 return None;
             }
-            // Push variable.property IN [literal, ...] into MATCH pattern
-            if let Expression::PropertyAccess { variable, property } = expr {
-                if match_vars.iter().any(|(v, _)| v == variable) {
-                    let all_literals: Option<Vec<Value>> = list
-                        .iter()
-                        .map(|item| {
-                            if let Expression::Literal(val) = item {
-                                Some(val.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    if let Some(values) = all_literals {
-                        pushable_in.push((variable.clone(), property.clone(), values));
-                        return None; // Fully consumed
+            let all_literals: Option<Vec<Value>> = list
+                .iter()
+                .map(|item| {
+                    if let Expression::Literal(val) = item {
+                        Some(val.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if let Some(values) = all_literals {
+                if let Expression::PropertyAccess { variable, property } = expr {
+                    if match_vars.iter().any(|(v, _)| v == variable) {
+                        out.in_list
+                            .push((variable.clone(), property.clone(), values));
+                        return None;
                     }
                 }
-            }
-            // Push id(var) IN [literal, ...] into MATCH pattern as "id" IN [...]
-            if let Some(var) = extract_id_func_variable(expr) {
-                if match_vars.iter().any(|(v, _)| v == var) {
-                    let all_literals: Option<Vec<Value>> = list
-                        .iter()
-                        .map(|item| {
-                            if let Expression::Literal(val) = item {
-                                Some(val.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    if let Some(values) = all_literals {
-                        pushable_in.push((var.to_string(), "id".to_string(), values));
-                        return None; // Fully consumed
+                if let Some(var) = extract_id_func_variable(expr) {
+                    if match_vars.iter().any(|(v, _)| v == var) {
+                        out.in_list
+                            .push((var.to_string(), "id".to_string(), values));
+                        return None;
                     }
                 }
             }
             Some(pred.clone())
         }
         Predicate::And(left, right) => {
-            let left_remaining = extract_from_predicate(
-                left,
-                match_vars,
-                edge_vars,
-                params,
-                pushable,
-                pushable_in,
-                pushable_cmp,
-                pushable_edge_types,
-            );
-            let right_remaining = extract_from_predicate(
-                right,
-                match_vars,
-                edge_vars,
-                params,
-                pushable,
-                pushable_in,
-                pushable_cmp,
-                pushable_edge_types,
-            );
+            let left_remaining = extract_from_predicate(left, match_vars, edge_vars, params, out);
+            let right_remaining = extract_from_predicate(right, match_vars, edge_vars, params, out);
 
             match (left_remaining, right_remaining) {
                 (None, None) => None,

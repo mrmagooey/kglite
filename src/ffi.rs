@@ -20,7 +20,7 @@ use crate::datatypes::values::Value;
 use crate::graph::batch_operations::ConnectionBatchProcessor;
 use crate::graph::cypher::ast::CypherQuery;
 use crate::graph::cypher::{
-    execute_mutable, is_mutation_query, optimize, parse_cypher, CypherExecutor,
+    execute_mutable, is_mutation_query, optimize, parse_cypher, CypherExecutor, CypherResult,
 };
 use crate::graph::io_operations::{load_file, prepare_save, write_graph_v3};
 use crate::graph::schema::{DirGraph, EdgeData};
@@ -311,25 +311,8 @@ pub extern "C" fn kg_cypher(
             }
         };
         let graph = Arc::make_mut(&mut *arc);
-        match execute_mutable(graph, &optimized, params, None) {
-            Ok(r) => {
-                let json = result_to_json(&r.columns, &r.rows, Some(&*arc));
-                match CString::new(json) {
-                    Ok(s) => {
-                        unsafe { *out = s.into_raw() };
-                        0
-                    }
-                    Err(e) => {
-                        set_error(format!("result contains null bytes: {e}"));
-                        -1
-                    }
-                }
-            }
-            Err(e) => {
-                set_error(e);
-                -1
-            }
-        }
+        let result = execute_mutable(graph, &optimized, params, None);
+        emit_result(result, &*arc, out)
     } else {
         // Read path: shared lock allows concurrent read queries
         let arc = match handle_ref.inner.read() {
@@ -348,25 +331,8 @@ pub extern "C" fn kg_cypher(
             }
         };
         let executor = CypherExecutor::with_params(&*arc, &params, None);
-        match executor.execute(&optimized) {
-            Ok(r) => {
-                let json = result_to_json(&r.columns, &r.rows, Some(&*arc));
-                match CString::new(json) {
-                    Ok(s) => {
-                        unsafe { *out = s.into_raw() };
-                        0
-                    }
-                    Err(e) => {
-                        set_error(format!("result contains null bytes: {e}"));
-                        -1
-                    }
-                }
-            }
-            Err(e) => {
-                set_error(e);
-                -1
-            }
-        }
+        let result = executor.execute(&optimized);
+        emit_result(result, &*arc, out)
     }
 }
 
@@ -437,8 +403,6 @@ pub extern "C" fn kg_cypher_batch(
 
     struct BatchEntry {
         query_str: String,
-        #[allow(dead_code)]
-        parsed: Arc<CypherQuery>, // retained for is_mutation_query check above
         params: HashMap<String, Value>,
         is_mutation: bool,
     }
@@ -489,7 +453,6 @@ pub extern "C" fn kg_cypher_batch(
         }
         entries.push(BatchEntry {
             query_str,
-            parsed,
             params,
             is_mutation,
         });
@@ -832,6 +795,34 @@ fn value_to_json_with_graph(
                 }
             }
             serde_json::json!({"__edge_ref": edge_idx, "__src": src_idx, "__dst": dst_idx})
+        }
+    }
+}
+
+/// Serialize a query result to JSON, convert to CString, and write to `out`.
+/// On success returns 0; on error sets the thread-local error and returns -1.
+fn emit_result(
+    result: Result<CypherResult, String>,
+    graph: &DirGraph,
+    out: *mut *mut c_char,
+) -> c_int {
+    match result {
+        Ok(r) => {
+            let json = result_to_json(&r.columns, &r.rows, Some(graph));
+            match CString::new(json) {
+                Ok(s) => {
+                    unsafe { *out = s.into_raw() };
+                    0
+                }
+                Err(e) => {
+                    set_error(format!("result contains null bytes: {e}"));
+                    -1
+                }
+            }
+        }
+        Err(e) => {
+            set_error(e);
+            -1
         }
     }
 }
