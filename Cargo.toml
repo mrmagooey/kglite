@@ -2,6 +2,7 @@
 name = "kglite"
 version = "0.6.18"
 edition = "2021"
+rust-version = "1.75"
 authors = ["Kristian dF Kollsgård <kkollsg@gmail.com>"]
 description = "A high-performance graph database with Python bindings written in Rust."
 readme = "README.md"

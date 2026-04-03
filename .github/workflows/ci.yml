@@ -40,6 +40,43 @@ jobs:
       - name: Run Rust tests
         run: cargo test
 
+      - name: Run Rust FFI tests
+        run: cargo test --features ffi --no-default-features
+
+  rust-msrv:
+    name: Rust MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust MSRV
+        uses: dtolnay/rust-toolchain@1.75
+
+      - name: Cache cargo registry & target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-msrv-
+
+      - name: Check MSRV builds
+        run: cargo check --all-features
+
+  cargo-deny:
+    name: Cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Run cargo deny
+        run: cargo deny check
+
   python-lint:
     name: Python lint
     runs-on: ubuntu-latest
@@ -99,12 +136,6 @@ jobs:
           pip install mypy pandas-stubs
           python -m mypy.stubtest kglite --ignore-missing-stub --mypy-config-file mypy_stubtest.ini --allowlist stubtest_allowlist.txt
 
-      - name: Upload coverage
-        if: matrix.python-version == '3.12'
-        uses: codecov/codecov-action@v5
-        with:
-          files: coverage.xml
-          token: ${{ secrets.CODECOV_TOKEN }}
 
   python-benchmarks:
     name: Benchmarks
@@ -203,12 +234,6 @@ jobs:
           PYTHON_VER=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
           RUSTFLAGS="-L${PYTHON_LIB} -lpython${PYTHON_VER}" cargo tarpaulin --out xml --skip-clean
 
-      - name: Upload Rust coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          files: cobertura.xml
-          flags: rust
-          token: ${{ secrets.CODECOV_TOKEN }}
 
   changelog-check:
     name: Changelog check
