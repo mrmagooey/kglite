@@ -1596,3 +1596,287 @@ pub fn format_for_dictionary(
         })
         .collect()
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_method_config_from_string() {
+        let config = MethodConfig::from_string("contains".to_string());
+        assert_eq!(config.method_type, "contains");
+        assert_eq!(config.resolve, None);
+        assert_eq!(config.max_distance_m, None);
+    }
+
+    #[test]
+    fn test_spatial_resolve_parse_centroid() {
+        let result = MethodConfig::parse_resolve("centroid");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), SpatialResolve::Centroid);
+    }
+
+    #[test]
+    fn test_spatial_resolve_parse_closest() {
+        let result = MethodConfig::parse_resolve("closest");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), SpatialResolve::Closest);
+    }
+
+    #[test]
+    fn test_spatial_resolve_parse_geometry() {
+        let result = MethodConfig::parse_resolve("geometry");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), SpatialResolve::Geometry);
+    }
+
+    #[test]
+    fn test_spatial_resolve_parse_invalid() {
+        let result = MethodConfig::parse_resolve("invalid");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_value_to_f64_float() {
+        let v = Value::Float64(3.14);
+        assert_eq!(value_to_f64(&v), Some(3.14));
+    }
+
+    #[test]
+    fn test_value_to_f64_int() {
+        let v = Value::Int64(42);
+        assert_eq!(value_to_f64(&v), Some(42.0));
+    }
+
+    #[test]
+    fn test_value_to_f64_string() {
+        let v = Value::String("2.5".to_string());
+        assert_eq!(value_to_f64(&v), Some(2.5));
+    }
+
+    #[test]
+    fn test_value_to_f64_invalid_string() {
+        let v = Value::String("not_a_number".to_string());
+        assert_eq!(value_to_f64(&v), None);
+    }
+
+    #[test]
+    fn test_value_to_f64_boolean() {
+        let v = Value::Boolean(true);
+        assert_eq!(value_to_f64(&v), None);
+    }
+
+    #[test]
+    fn test_value_to_f64_null() {
+        let v = Value::Null;
+        assert_eq!(value_to_f64(&v), None);
+    }
+
+    #[test]
+    fn test_format_property_list_basic() {
+        let values = vec!["Alice".to_string(), "Bob".to_string(), "Charlie".to_string()];
+        let result = format_property_list(&values, None);
+        assert_eq!(result, "Alice, Bob, Charlie");
+    }
+
+    #[test]
+    fn test_format_property_list_with_truncation() {
+        let values = vec!["VeryLongNameHere".to_string(), "AnotherLongName".to_string()];
+        let result = format_property_list(&values, Some(15));
+        assert!(result.contains("...") || result.len() <= 15 + 3);
+    }
+
+    #[test]
+    fn test_format_property_list_empty() {
+        let values: Vec<String> = vec![];
+        let result = format_property_list(&values, None);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_format_property_list_single() {
+        let values = vec!["single".to_string()];
+        let result = format_property_list(&values, None);
+        assert_eq!(result, "single");
+    }
+
+    #[test]
+    fn test_child_property_group_creation() {
+        let group = ChildPropertyGroup {
+            parent_idx: NodeIndex::new(0),
+            parent_title: "Parent".to_string(),
+            values: vec!["val1".to_string(), "val2".to_string()],
+        };
+        assert_eq!(group.parent_title, "Parent");
+        assert_eq!(group.values.len(), 2);
+    }
+
+    #[test]
+    fn test_format_for_storage_basic() {
+        let group = ChildPropertyGroup {
+            parent_idx: NodeIndex::new(0),
+            parent_title: "Parent".to_string(),
+            values: vec!["val1".to_string(), "val2".to_string()],
+        };
+        let groups = vec![group];
+        let result = format_for_storage(&groups, None);
+        assert_eq!(result.len(), 1);
+        if let Value::String(s) = &result[0].1 {
+            assert_eq!(s, "val1, val2");
+        } else {
+            panic!("Expected string value");
+        }
+    }
+
+    #[test]
+    fn test_format_for_storage_with_truncation() {
+        let group = ChildPropertyGroup {
+            parent_idx: NodeIndex::new(0),
+            parent_title: "Parent".to_string(),
+            values: vec!["VeryLongValue1".to_string(), "VeryLongValue2".to_string()],
+        };
+        let groups = vec![group];
+        let result = format_for_storage(&groups, Some(10));
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_format_for_dictionary_basic() {
+        let group = ChildPropertyGroup {
+            parent_idx: NodeIndex::new(0),
+            parent_title: "ParentTitle".to_string(),
+            values: vec!["val1".to_string(), "val2".to_string()],
+        };
+        let groups = vec![group];
+        let result = format_for_dictionary(&groups, None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "ParentTitle");
+        assert_eq!(result[0].1, "val1, val2");
+    }
+
+    #[test]
+    fn test_format_for_dictionary_multiple_groups() {
+        let group1 = ChildPropertyGroup {
+            parent_idx: NodeIndex::new(0),
+            parent_title: "Parent1".to_string(),
+            values: vec!["a".to_string(), "b".to_string()],
+        };
+        let group2 = ChildPropertyGroup {
+            parent_idx: NodeIndex::new(1),
+            parent_title: "Parent2".to_string(),
+            values: vec!["x".to_string(), "y".to_string()],
+        };
+        let groups = vec![group1, group2];
+        let result = format_for_dictionary(&groups, None);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].0, "Parent1");
+        assert_eq!(result[1].0, "Parent2");
+    }
+
+    #[test]
+    fn test_temporal_edge_filter_at_variant() {
+        let configs = vec![];
+        let date = chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        let _filter = TemporalEdgeFilter::At(configs, date);
+    }
+
+    #[test]
+    fn test_temporal_edge_filter_during_variant() {
+        let configs = vec![];
+        let start = chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        let end = chrono::NaiveDate::from_ymd_opt(2024, 12, 31).unwrap();
+        let _filter = TemporalEdgeFilter::During(configs, start, end);
+    }
+
+    #[test]
+    fn test_resolve_geometry_field_with_override() {
+        let result = resolve_geometry_field(None, Some("custom_geom"));
+        assert_eq!(result, Some("custom_geom"));
+    }
+
+    #[test]
+    fn test_resolve_geometry_field_no_override_no_config() {
+        let result = resolve_geometry_field(None, None);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_spatial_resolve_enum_equality() {
+        assert_eq!(SpatialResolve::Centroid, SpatialResolve::Centroid);
+        assert_ne!(SpatialResolve::Centroid, SpatialResolve::Closest);
+    }
+
+    #[test]
+    fn test_method_config_full_construction() {
+        let mut config = MethodConfig::from_string("distance".to_string());
+        config.max_distance_m = Some(100.0);
+        config.k = Some(5);
+        config.eps = Some(0.5);
+        config.min_samples = Some(3);
+
+        assert_eq!(config.max_distance_m, Some(100.0));
+        assert_eq!(config.k, Some(5));
+        assert_eq!(config.eps, Some(0.5));
+        assert_eq!(config.min_samples, Some(3));
+    }
+
+    #[test]
+    fn test_format_property_list_no_truncation_needed() {
+        let values = vec!["a".to_string(), "b".to_string()];
+        let result = format_property_list(&values, Some(100));
+        assert_eq!(result, "a, b");
+    }
+
+    #[test]
+    fn test_format_for_storage_empty_groups() {
+        let groups: Vec<ChildPropertyGroup> = vec![];
+        let result = format_for_storage(&groups, None);
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_format_for_dictionary_empty_groups() {
+        let groups: Vec<ChildPropertyGroup> = vec![];
+        let result = format_for_dictionary(&groups, None);
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_child_property_group_empty_values() {
+        let group = ChildPropertyGroup {
+            parent_idx: NodeIndex::new(5),
+            parent_title: "Test".to_string(),
+            values: vec![],
+        };
+        assert_eq!(group.values.len(), 0);
+        assert_eq!(group.parent_idx.index(), 5);
+    }
+
+    #[test]
+    fn test_value_to_f64_large_int() {
+        let v = Value::Int64(999999);
+        assert_eq!(value_to_f64(&v), Some(999999.0));
+    }
+
+    #[test]
+    fn test_value_to_f64_negative_float() {
+        let v = Value::Float64(-3.14);
+        assert_eq!(value_to_f64(&v), Some(-3.14));
+    }
+
+    #[test]
+    fn test_value_to_f64_negative_int() {
+        let v = Value::Int64(-42);
+        assert_eq!(value_to_f64(&v), Some(-42.0));
+    }
+
+    #[test]
+    fn test_spatial_resolve_debug_format() {
+        let resolve = SpatialResolve::Centroid;
+        assert_eq!(format!("{:?}", resolve), "Centroid");
+    }
+}

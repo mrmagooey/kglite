@@ -222,3 +222,63 @@ impl CombinedTypeLookup {
         &self.target_type
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_lookup_with_type_fallback_direct() {
+        let mut map = HashMap::new();
+        map.insert(Value::Int64(42), NodeIndex::new(1));
+        let result = CombinedTypeLookup::lookup_with_type_fallback(&map, &Value::Int64(42));
+        assert_eq!(result, Some(NodeIndex::new(1)));
+    }
+
+    #[test]
+    fn test_lookup_with_type_fallback_float_to_int() {
+        let mut map = HashMap::new();
+        map.insert(Value::Int64(42), NodeIndex::new(1));
+        let result = CombinedTypeLookup::lookup_with_type_fallback(&map, &Value::Float64(42.0));
+        assert_eq!(result, Some(NodeIndex::new(1)));
+    }
+
+    #[test]
+    fn test_lookup_with_type_fallback_float_non_whole() {
+        let mut map = HashMap::new();
+        map.insert(Value::Int64(42), NodeIndex::new(1));
+        let result = CombinedTypeLookup::lookup_with_type_fallback(&map, &Value::Float64(42.5));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_lookup_with_type_fallback_int_to_float() {
+        let mut map = HashMap::new();
+        map.insert(Value::Float64(42.0), NodeIndex::new(1));
+        let result = CombinedTypeLookup::lookup_with_type_fallback(&map, &Value::Int64(42));
+        assert_eq!(result, Some(NodeIndex::new(1)));
+    }
+
+    #[test]
+    fn test_lookup_with_type_fallback_unique_id() {
+        let mut map = HashMap::new();
+        map.insert(Value::UniqueId(42), NodeIndex::new(1));
+        let result = CombinedTypeLookup::lookup_with_type_fallback(&map, &Value::Int64(42));
+        assert_eq!(result, Some(NodeIndex::new(1)));
+    }
+
+    #[test]
+    fn test_lookup_with_type_fallback_unique_id_to_int64() {
+        let mut map = HashMap::new();
+        map.insert(Value::Int64(42), NodeIndex::new(1));
+        let result = CombinedTypeLookup::lookup_with_type_fallback(&map, &Value::UniqueId(42));
+        assert_eq!(result, Some(NodeIndex::new(1)));
+    }
+
+    #[test]
+    fn test_lookup_with_type_fallback_string_type() {
+        let map = HashMap::new();
+        let result = CombinedTypeLookup::lookup_with_type_fallback(&map, &Value::String("test".to_string()));
+        assert_eq!(result, None);
+    }
+}

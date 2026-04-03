@@ -2467,4 +2467,178 @@ mod tests {
             panic!("Expected edge pattern");
         }
     }
+
+    // Additional comprehensive tests for better coverage
+    #[test]
+    fn test_tokenize_float_variants() {
+        let tok1 = tokenize("{v: 1.5}").unwrap();
+        assert!(tok1.iter().any(|t| matches!(t, Token::FloatLit(_))));
+        let tok2 = tokenize("{v: .5}").unwrap();
+        assert!(tok2.iter().any(|t| matches!(t, Token::FloatLit(_))));
+    }
+
+    #[test]
+    fn test_tokenize_parameter_reference() {
+        let tokens = tokenize("$param_name").unwrap();
+        assert!(tokens.iter().any(|t| matches!(t, Token::Parameter(ref s) if s == "param_name")));
+    }
+
+    #[test]
+    fn test_tokenize_escaped_chars() {
+        let tokens = tokenize("{s: \"line1\\nline2\"}").unwrap();
+        assert!(tokens.iter().any(|t| matches!(t, Token::StringLit(ref s) if s.contains('\n'))));
+    }
+
+    #[test]
+    fn test_tokenize_multi_pipe() {
+        let tokens = tokenize("[:A|B|C|D]").unwrap();
+        let pipes = tokens.iter().filter(|t| matches!(t, Token::Pipe)).count();
+        assert_eq!(pipes, 3);
+    }
+
+    #[test]
+    fn test_tokenize_error_case() {
+        let result = tokenize("{bad: @symbol}");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_multi_type_connection() {
+        let pattern = parse_pattern("(a)-[:TYPE1|TYPE2]->(b)").unwrap();
+        if let PatternElement::Edge(ep) = &pattern.elements[1] {
+            assert!(ep.connection_types.is_some());
+        }
+    }
+
+    #[test]
+    fn test_parse_edge_variable() {
+        let pattern = parse_pattern("(a)-[e:REL]->(b)").unwrap();
+        if let PatternElement::Edge(ep) = &pattern.elements[1] {
+            assert_eq!(ep.variable, Some("e".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_parse_node_properties_multiple() {
+        let pattern = parse_pattern("(n {a: 1, b: 2, c: 3})").unwrap();
+        if let PatternElement::Node(np) = &pattern.elements[0] {
+            let props = np.properties.as_ref().unwrap();
+            assert_eq!(props.len(), 3);
+        }
+    }
+
+    #[test]
+    fn test_parse_param_reference() {
+        let pattern = parse_pattern("(n {val: $p})").unwrap();
+        if let PatternElement::Node(np) = &pattern.elements[0] {
+            if let Some(props) = &np.properties {
+                matches!(props.get("val"), Some(PropertyMatcher::EqualsParam(_)));
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_var_reference() {
+        let pattern = parse_pattern("(n {val: v})").unwrap();
+        if let PatternElement::Node(np) = &pattern.elements[0] {
+            if let Some(props) = &np.properties {
+                matches!(props.get("val"), Some(PropertyMatcher::EqualsVar(_)));
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_starts_with_edge_error() {
+        assert!(parse_pattern("-[]->(a)").is_err());
+    }
+
+    #[test]
+    fn test_parse_missing_paren_error() {
+        assert!(parse_pattern("(a").is_err());
+    }
+
+    #[test]
+    fn test_parse_missing_bracket_error() {
+        assert!(parse_pattern("(a)-[:REL-(b)").is_err());
+    }
+
+    #[test]
+    fn test_parse_bad_arrow_error() {
+        assert!(parse_pattern("(a)<-[:REL]->(b)").is_err());
+    }
+
+    #[test]
+    fn test_tokenize_numbers_range() {
+        let tokens = tokenize("*2..5").unwrap();
+        assert!(tokens.contains(&Token::Star));
+        assert!(tokens.contains(&Token::IntLit(2)));
+        assert!(tokens.contains(&Token::DotDot));
+        assert!(tokens.contains(&Token::IntLit(5)));
+    }
+
+    #[test]
+    fn test_tokenize_bools() {
+        let tokens = tokenize("{a: true, b: false}").unwrap();
+        assert!(tokens.iter().any(|t| matches!(t, Token::BoolLit(true))));
+        assert!(tokens.iter().any(|t| matches!(t, Token::BoolLit(false))));
+    }
+
+    #[test]
+    fn test_parse_multi_paren() {
+        let pattern = parse_pattern("(((a)-[:REL]->(b)))").unwrap();
+        assert_eq!(pattern.elements.len(), 3);
+    }
+
+    #[test]
+    fn test_tokenize_underscore_idents() {
+        let tokens = tokenize("(v:T_1)").unwrap();
+        assert!(tokens.iter().any(|t| matches!(t, Token::Identifier(ref s) if s == "v")));
+        assert!(tokens.iter().any(|t| matches!(t, Token::Identifier(ref s) if s == "T_1")));
+    }
+
+    #[test]
+    fn test_tokenize_colons_in_props() {
+        let tokens = tokenize("{k: v, x: y}").unwrap();
+        let colons = tokens.iter().filter(|t| matches!(t, Token::Colon)).count();
+        assert!(colons >= 2);
+    }
+
+    #[test]
+    fn test_parse_edge_no_type_outgoing() {
+        let pattern = parse_pattern("(a)-[]->(b)").unwrap();
+        if let PatternElement::Edge(ep) = &pattern.elements[1] {
+            assert_eq!(ep.connection_type, None);
+            assert_eq!(ep.direction, EdgeDirection::Outgoing);
+        }
+    }
+
+    #[test]
+    fn test_parse_edge_with_props() {
+        let pattern = parse_pattern("(a)-[:REL {w: 1}]->(b)").unwrap();
+        if let PatternElement::Edge(ep) = &pattern.elements[1] {
+            assert!(ep.properties.is_some());
+        }
+    }
+
+    #[test]
+    fn test_parse_anon_edge() {
+        let pattern = parse_pattern("(a)-[]->(b)").unwrap();
+        if let PatternElement::Edge(ep) = &pattern.elements[1] {
+            assert_eq!(ep.variable, None);
+            assert_eq!(ep.connection_type, None);
+        }
+    }
+
+    #[test]
+    fn test_tokenize_whitespace() {
+        let t1 = tokenize("(a)").unwrap();
+        let t2 = tokenize("  (  a  )  ").unwrap();
+        assert_eq!(t1.len(), t2.len());
+    }
+
+    #[test]
+    fn test_tokenize_float_edge() {
+        let tokens = tokenize("{v: 3.14159}").unwrap();
+        assert!(tokens.iter().any(|t| matches!(t, Token::FloatLit(f) if (f - 3.14159).abs() < 0.0001)));
+    }
 }

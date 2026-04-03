@@ -854,3 +854,181 @@ fn format_result_view_multiline(
 
     buf
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_middle_short_string() {
+        let result = truncate_middle("short", 20);
+        assert_eq!(result, "short");
+    }
+
+    #[test]
+    fn test_truncate_middle_long_string() {
+        let long = "this is a very long string that exceeds the maximum length";
+        let result = truncate_middle(long, 20);
+        assert!(result.contains(" ... "));
+        assert!(result.len() <= 30); // Allowing some margin
+    }
+
+    #[test]
+    fn test_truncate_middle_exact_length() {
+        let result = truncate_middle("exactly20chars123456", 20);
+        assert_eq!(result, "exactly20chars123456");
+    }
+
+    #[test]
+    fn test_format_preprocessed_value_plain_int() {
+        use super::super::py_convert::PreProcessedValue;
+
+        let pv = PreProcessedValue::Plain(Value::Int64(42));
+        let formatted = format_preprocessed_value(&pv);
+        assert_eq!(formatted, "42");
+    }
+
+    #[test]
+    fn test_format_preprocessed_value_plain_string() {
+        use super::super::py_convert::PreProcessedValue;
+
+        let pv = PreProcessedValue::Plain(Value::String("test".to_string()));
+        let formatted = format_preprocessed_value(&pv);
+        // format_value adds quotes for strings
+        assert!(formatted.contains("test"));
+    }
+
+    #[test]
+    fn test_format_preprocessed_value_json() {
+        use super::super::py_convert::PreProcessedValue;
+
+        let json = serde_json::json!({"key": "value"});
+        let pv = PreProcessedValue::ParsedJson(json);
+        let formatted = format_preprocessed_value(&pv);
+        assert!(formatted.contains("key"));
+        assert!(formatted.contains("value"));
+    }
+
+    #[test]
+    fn test_format_table_empty() {
+        use super::super::py_convert::PreProcessedValue;
+
+        let columns = vec!["col1".to_string(), "col2".to_string()];
+        let rows: Vec<Vec<PreProcessedValue>> = vec![];
+        let result = format_table(&columns, &rows);
+        assert!(result.contains("shape: (0, 2)"));
+        assert!(result.contains("(empty)"));
+    }
+
+    #[test]
+    fn test_format_table_single_row() {
+        use super::super::py_convert::PreProcessedValue;
+
+        let columns = vec!["name".to_string(), "age".to_string()];
+        let rows = vec![
+            vec![
+                PreProcessedValue::Plain(Value::String("Alice".to_string())),
+                PreProcessedValue::Plain(Value::Int64(30)),
+            ],
+        ];
+        let result = format_table(&columns, &rows);
+        assert!(result.contains("shape: (1, 2)"));
+        assert!(result.contains("name"));
+        assert!(result.contains("Alice"));
+        assert!(result.contains("30"));
+    }
+
+    #[test]
+    fn test_format_table_multiple_rows() {
+        use super::super::py_convert::PreProcessedValue;
+
+        let columns = vec!["id".to_string()];
+        let rows = vec![
+            vec![PreProcessedValue::Plain(Value::Int64(1))],
+            vec![PreProcessedValue::Plain(Value::Int64(2))],
+            vec![PreProcessedValue::Plain(Value::Int64(3))],
+        ];
+        let result = format_table(&columns, &rows);
+        assert!(result.contains("shape: (3, 1)"));
+    }
+
+    #[test]
+    fn test_format_table_many_rows_truncated() {
+        use super::super::py_convert::PreProcessedValue;
+
+        let columns = vec!["id".to_string()];
+        let mut rows = Vec::new();
+        for i in 0..30 {
+            rows.push(vec![PreProcessedValue::Plain(Value::Int64(i))]);
+        }
+        let result = format_table(&columns, &rows);
+        assert!(result.contains("shape: (30, 1)"));
+        assert!(result.contains("…")); // Should show truncation indicator
+    }
+
+    #[test]
+    fn test_connection_summary_construction() {
+        let summary = ConnectionSummary {
+            connection_type: "AUTHORED".to_string(),
+            target_type: "Paper".to_string(),
+            target_id: "p123".to_string(),
+            target_title: "My Paper".to_string(),
+            outgoing: true,
+        };
+
+        assert_eq!(summary.connection_type, "AUTHORED");
+        assert_eq!(summary.target_type, "Paper");
+        assert!(summary.outgoing);
+    }
+
+    #[test]
+    fn test_node_connections_default() {
+        let nc = NodeConnections::default();
+        assert!(nc.connections.is_empty());
+    }
+
+    #[test]
+    fn test_node_connections_with_items() {
+        let mut nc = NodeConnections::default();
+        nc.connections.push(ConnectionSummary {
+            connection_type: "RELATED".to_string(),
+            target_type: "Item".to_string(),
+            target_id: "i1".to_string(),
+            target_title: "First Item".to_string(),
+            outgoing: true,
+        });
+
+        assert_eq!(nc.connections.len(), 1);
+        assert_eq!(nc.connections[0].connection_type, "RELATED");
+    }
+
+    #[test]
+    fn test_format_table_column_width_calculation() {
+        use super::super::py_convert::PreProcessedValue;
+
+        let columns = vec!["short".to_string(), "verylongcolumn".to_string()];
+        let rows = vec![
+            vec![
+                PreProcessedValue::Plain(Value::String("a".to_string())),
+                PreProcessedValue::Plain(Value::String("b".to_string())),
+            ],
+        ];
+        let result = format_table(&columns, &rows);
+        // Should accommodate the long column name
+        assert!(result.contains("verylongcolumn"));
+    }
+
+    #[test]
+    fn test_truncate_middle_boundary() {
+        let test_str = "0123456789abcdefghij";
+        let result = truncate_middle(test_str, 15);
+        // Should preserve some chars from both sides
+        assert!(result.starts_with("01"));
+        assert!(result.ends_with("ij"));
+        assert!(result.contains(" ... "));
+    }
+}

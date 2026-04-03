@@ -131,7 +131,7 @@ pub struct ResultRow {
 
 /// Lightweight edge binding — stores only indices, no cloned data.
 /// Edge properties are resolved on-demand from the graph via edge_index.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EdgeBinding {
     pub source: NodeIndex,
     pub target: NodeIndex,
@@ -313,5 +313,297 @@ fn csv_value(buf: &mut String, val: &Value) {
             use std::fmt::Write;
             let _ = write!(buf, "{}", edge_idx);
         }
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bindings_new() {
+        let bindings: Bindings<i32> = Bindings::new();
+        assert!(bindings.is_empty());
+        assert_eq!(bindings.len(), 0);
+    }
+
+    #[test]
+    fn test_bindings_with_capacity() {
+        let bindings: Bindings<i32> = Bindings::with_capacity(10);
+        assert!(bindings.is_empty());
+        assert_eq!(bindings.len(), 0);
+    }
+
+    #[test]
+    fn test_bindings_insert_and_get() {
+        let mut bindings: Bindings<i32> = Bindings::new();
+        bindings.insert("key1".to_string(), 42);
+        assert_eq!(bindings.get("key1"), Some(&42));
+        assert_eq!(bindings.get("key2"), None);
+    }
+
+    #[test]
+    fn test_bindings_insert_update() {
+        let mut bindings: Bindings<i32> = Bindings::new();
+        bindings.insert("key".to_string(), 10);
+        assert_eq!(bindings.get("key"), Some(&10));
+        bindings.insert("key".to_string(), 20);
+        assert_eq!(bindings.get("key"), Some(&20));
+        assert_eq!(bindings.len(), 1);
+    }
+
+    #[test]
+    fn test_bindings_get_mut() {
+        let mut bindings: Bindings<i32> = Bindings::new();
+        bindings.insert("key".to_string(), 10);
+        if let Some(val) = bindings.get_mut("key") {
+            *val = 20;
+        }
+        assert_eq!(bindings.get("key"), Some(&20));
+    }
+
+    #[test]
+    fn test_bindings_contains_key() {
+        let mut bindings: Bindings<i32> = Bindings::new();
+        bindings.insert("key".to_string(), 42);
+        assert!(bindings.contains_key("key"));
+        assert!(!bindings.contains_key("missing"));
+    }
+
+    #[test]
+    fn test_bindings_keys() {
+        let mut bindings: Bindings<i32> = Bindings::new();
+        bindings.insert("a".to_string(), 1);
+        bindings.insert("b".to_string(), 2);
+        let keys: Vec<_> = bindings.keys().cloned().collect();
+        assert_eq!(keys.len(), 2);
+        assert!(keys.contains(&"a".to_string()));
+        assert!(keys.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn test_bindings_iter() {
+        let mut bindings: Bindings<i32> = Bindings::new();
+        bindings.insert("a".to_string(), 1);
+        bindings.insert("b".to_string(), 2);
+        let items: Vec<_> = bindings.iter().collect();
+        assert_eq!(items.len(), 2);
+    }
+
+    #[test]
+    fn test_bindings_remove() {
+        let mut bindings: Bindings<i32> = Bindings::new();
+        bindings.insert("key".to_string(), 42);
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings.remove("key"), Some(42));
+        assert_eq!(bindings.len(), 0);
+        assert_eq!(bindings.remove("key"), None);
+    }
+
+    #[test]
+    fn test_bindings_into_iter() {
+        let mut bindings: Bindings<i32> = Bindings::new();
+        bindings.insert("a".to_string(), 1);
+        bindings.insert("b".to_string(), 2);
+        let items: Vec<_> = bindings.into_iter().collect();
+        assert_eq!(items.len(), 2);
+    }
+
+    #[test]
+    fn test_bindings_ref_iter() {
+        let mut bindings: Bindings<i32> = Bindings::new();
+        bindings.insert("a".to_string(), 1);
+        bindings.insert("b".to_string(), 2);
+        let items: Vec<_> = (&bindings).into_iter().collect();
+        assert_eq!(items.len(), 2);
+    }
+
+    #[test]
+    fn test_bindings_to_hashmap() {
+        let mut bindings: Bindings<i32> = Bindings::new();
+        bindings.insert("a".to_string(), 1);
+        bindings.insert("b".to_string(), 2);
+        let map = bindings.to_hashmap();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("a"), Some(&1));
+        assert_eq!(map.get("b"), Some(&2));
+    }
+
+    #[test]
+    fn test_result_row_new() {
+        let row = ResultRow::new();
+        assert!(row.node_bindings.is_empty());
+        assert!(row.edge_bindings.is_empty());
+        assert!(row.path_bindings.is_empty());
+        assert!(row.projected.is_empty());
+    }
+
+    #[test]
+    fn test_result_row_with_capacity() {
+        let row = ResultRow::with_capacity(5, 3, 2);
+        assert!(row.node_bindings.is_empty());
+        assert!(row.edge_bindings.is_empty());
+        assert!(row.path_bindings.is_empty());
+        assert!(row.projected.is_empty());
+    }
+
+    #[test]
+    fn test_result_row_from_projected() {
+        let mut projected = Bindings::new();
+        projected.insert("result".to_string(), Value::Int64(42));
+        let row = ResultRow::from_projected(projected);
+        assert!(row.node_bindings.is_empty());
+        assert!(row.edge_bindings.is_empty());
+        assert!(row.path_bindings.is_empty());
+        assert_eq!(row.projected.get("result"), Some(&Value::Int64(42)));
+    }
+
+    #[test]
+    fn test_result_set_new() {
+        let rs = ResultSet::new();
+        assert!(rs.rows.is_empty());
+        assert!(rs.columns.is_empty());
+    }
+
+    #[test]
+    fn test_cypher_result_empty() {
+        let result = CypherResult::empty();
+        assert!(result.columns.is_empty());
+        assert!(result.rows.is_empty());
+        assert!(result.stats.is_none());
+        assert!(result.profile.is_none());
+    }
+
+    #[test]
+    fn test_csv_field_no_special_chars() {
+        let mut buf = String::new();
+        csv_field(&mut buf, "simple");
+        assert_eq!(buf, "simple");
+    }
+
+    #[test]
+    fn test_csv_field_with_comma() {
+        let mut buf = String::new();
+        csv_field(&mut buf, "hello,world");
+        assert_eq!(buf, "\"hello,world\"");
+    }
+
+    #[test]
+    fn test_csv_field_with_quote() {
+        let mut buf = String::new();
+        csv_field(&mut buf, "hello\"world");
+        assert_eq!(buf, "\"hello\"\"world\"");
+    }
+
+    #[test]
+    fn test_csv_field_with_newline() {
+        let mut buf = String::new();
+        csv_field(&mut buf, "hello\nworld");
+        assert_eq!(buf, "\"hello\nworld\"");
+    }
+
+    #[test]
+    fn test_csv_value_null() {
+        let mut buf = String::new();
+        csv_value(&mut buf, &Value::Null);
+        assert_eq!(buf, "");
+    }
+
+    #[test]
+    fn test_csv_value_string() {
+        let mut buf = String::new();
+        csv_value(&mut buf, &Value::String("test".to_string()));
+        assert_eq!(buf, "test");
+    }
+
+    #[test]
+    fn test_csv_value_int64() {
+        let mut buf = String::new();
+        csv_value(&mut buf, &Value::Int64(42));
+        assert_eq!(buf, "42");
+    }
+
+    #[test]
+    fn test_csv_value_float64() {
+        let mut buf = String::new();
+        csv_value(&mut buf, &Value::Float64(3.14));
+        assert!(buf.contains("3.14"));
+    }
+
+    #[test]
+    fn test_csv_value_boolean_true() {
+        let mut buf = String::new();
+        csv_value(&mut buf, &Value::Boolean(true));
+        assert_eq!(buf, "true");
+    }
+
+    #[test]
+    fn test_csv_value_boolean_false() {
+        let mut buf = String::new();
+        csv_value(&mut buf, &Value::Boolean(false));
+        assert_eq!(buf, "false");
+    }
+
+    #[test]
+    fn test_to_csv_empty() {
+        let result = CypherResult::empty();
+        let csv = result.to_csv();
+        assert_eq!(csv, "\n");
+    }
+
+    #[test]
+    fn test_to_csv_with_columns() {
+        let result = CypherResult {
+            columns: vec!["name".to_string(), "age".to_string()],
+            rows: vec![vec![Value::String("Alice".to_string()), Value::Int64(30)]],
+            stats: None,
+            profile: None,
+        };
+        let csv = result.to_csv();
+        assert!(csv.contains("name"));
+        assert!(csv.contains("age"));
+        assert!(csv.contains("Alice"));
+        assert!(csv.contains("30"));
+    }
+
+    #[test]
+    fn test_to_csv_with_special_chars() {
+        let result = CypherResult {
+            columns: vec!["text".to_string()],
+            rows: vec![vec![Value::String("hello,world".to_string())]],
+            stats: None,
+            profile: None,
+        };
+        let csv = result.to_csv();
+        assert!(csv.contains("\"hello,world\""));
+    }
+
+    #[test]
+    fn test_mutation_stats_default() {
+        let stats = MutationStats::default();
+        assert_eq!(stats.nodes_created, 0);
+        assert_eq!(stats.relationships_created, 0);
+        assert_eq!(stats.properties_set, 0);
+        assert_eq!(stats.nodes_deleted, 0);
+        assert_eq!(stats.relationships_deleted, 0);
+        assert_eq!(stats.properties_removed, 0);
+    }
+
+    #[test]
+    fn test_clause_stats_creation() {
+        let stats = ClauseStats {
+            clause_name: "MATCH".to_string(),
+            rows_in: 100,
+            rows_out: 50,
+            elapsed_us: 1000,
+        };
+        assert_eq!(stats.clause_name, "MATCH");
+        assert_eq!(stats.rows_in, 100);
+        assert_eq!(stats.rows_out, 50);
+        assert_eq!(stats.elapsed_us, 1000);
     }
 }

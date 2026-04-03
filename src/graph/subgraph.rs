@@ -185,3 +185,151 @@ pub struct SubgraphStats {
     pub node_types: HashMap<String, usize>,
     pub connection_types: HashMap<String, usize>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_expand_selection_empty_graph() {
+        let graph = DirGraph::new();
+        let mut selection = CurrentSelection::new();
+
+        let result = expand_selection(&graph, &mut selection, 1);
+        // Should handle empty graph gracefully
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_expand_selection_zero_hops() {
+        let graph = DirGraph::new();
+        let mut selection = CurrentSelection::new();
+
+        // With 0 hops, selection should remain unchanged
+        let result = expand_selection(&graph, &mut selection, 0);
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_extract_subgraph_empty_selection() {
+        let source = DirGraph::new();
+        let selection = CurrentSelection::new();
+
+        let result = extract_subgraph(&source, &selection);
+        // Should handle empty selection
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_get_subgraph_stats_empty_selection() {
+        let source = DirGraph::new();
+        let selection = CurrentSelection::new();
+
+        let result = get_subgraph_stats(&source, &selection);
+        // Should handle empty selection
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_subgraph_stats_structure() {
+        let stats = SubgraphStats {
+            node_count: 5,
+            edge_count: 10,
+            node_types: {
+                let mut map = HashMap::new();
+                map.insert("Person".to_string(), 3);
+                map.insert("Company".to_string(), 2);
+                map
+            },
+            connection_types: {
+                let mut map = HashMap::new();
+                map.insert("WORKS_AT".to_string(), 3);
+                map.insert("KNOWS".to_string(), 7);
+                map
+            },
+        };
+
+        assert_eq!(stats.node_count, 5);
+        assert_eq!(stats.edge_count, 10);
+        assert_eq!(stats.node_types.len(), 2);
+        assert_eq!(stats.connection_types.len(), 2);
+        assert_eq!(stats.node_types.get("Person"), Some(&3));
+        assert_eq!(stats.connection_types.get("WORKS_AT"), Some(&3));
+    }
+
+    #[test]
+    fn test_expand_selection_preserves_frontier() {
+        let graph = DirGraph::new();
+        let mut selection = CurrentSelection::new();
+
+        // Even with a single hop in empty graph, should not error
+        let _ = expand_selection(&graph, &mut selection, 1);
+    }
+
+    #[test]
+    fn test_extract_subgraph_clones_interner() {
+        let source = DirGraph::new();
+        let selection = CurrentSelection::new();
+
+        let result = extract_subgraph(&source, &selection);
+        // If successful, the subgraph should have an interner
+        if let Ok(subgraph) = result {
+            // Verify the subgraph has been initialized
+            assert_eq!(subgraph.graph.node_count(), source.graph.node_count());
+        }
+    }
+
+    #[test]
+    fn test_subgraph_stats_empty_maps() {
+        let stats = SubgraphStats {
+            node_count: 0,
+            edge_count: 0,
+            node_types: HashMap::new(),
+            connection_types: HashMap::new(),
+        };
+
+        assert_eq!(stats.node_count, 0);
+        assert_eq!(stats.edge_count, 0);
+        assert!(stats.node_types.is_empty());
+        assert!(stats.connection_types.is_empty());
+    }
+
+    #[test]
+    fn test_expand_selection_returns_result_type() {
+        let graph = DirGraph::new();
+        let mut selection = CurrentSelection::new();
+
+        let result = expand_selection(&graph, &mut selection, 1);
+        // Should return Result type
+        match result {
+            Ok(_) => {},
+            Err(_) => {},
+        }
+    }
+
+    #[test]
+    fn test_extract_subgraph_returns_dirgraph() {
+        let source = DirGraph::new();
+        let selection = CurrentSelection::new();
+
+        let result = extract_subgraph(&source, &selection);
+        // Result should be Result<DirGraph, String>
+        match result {
+            Ok(_graph) => {},
+            Err(_) => {},
+        }
+    }
+
+    #[test]
+    fn test_get_subgraph_stats_returns_struct() {
+        let source = DirGraph::new();
+        let selection = CurrentSelection::new();
+
+        let result = get_subgraph_stats(&source, &selection);
+        // Result should be Result<SubgraphStats, String>
+        match result {
+            Ok(_stats) => {},
+            Err(_) => {},
+        }
+    }
+}

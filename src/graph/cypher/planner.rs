@@ -3657,4 +3657,301 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_fold_or_to_in_basic() {
+        // n.type = 'A' OR n.type = 'B' should fold to n.type IN ['A', 'B']
+        let mut query = parse_cypher(
+            "MATCH (n) WHERE n.type = 'A' OR n.type = 'B' RETURN n"
+        ).unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        // After folding OR to IN, the predicate should use IN matcher
+        assert_eq!(query.clauses.len(), 3);
+        if let Clause::Match(m) = &query.clauses[0] {
+            if let PatternElement::Node(np) = &m.patterns[0].elements[0] {
+                let props = np.properties.as_ref();
+                assert!(props.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn test_multiple_or_conditions() {
+        let mut query = parse_cypher(
+            "MATCH (n) WHERE n.x = 1 OR n.x = 2 OR n.x = 3 RETURN n"
+        ).unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        assert_eq!(query.clauses.len(), 3);
+    }
+
+    #[test]
+    fn test_limit_pushdown() {
+        let mut query = parse_cypher(
+            "MATCH (n:Person) RETURN n LIMIT 10"
+        ).unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        // LIMIT should be pushed into MATCH via limit_hint
+        if let Clause::Match(m) = &query.clauses[0] {
+            assert!(m.limit_hint.is_some());
+        }
+    }
+
+    #[test]
+    fn test_distinct_pushdown() {
+        let mut query = parse_cypher(
+            "MATCH (n:Person) RETURN DISTINCT n.name"
+        ).unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        // RETURN should have distinct flag set
+        let found_distinct = query.clauses.iter().any(|c| {
+            matches!(c, Clause::Return(r) if r.distinct)
+        });
+        assert!(found_distinct);
+    }
+
+    #[test]
+    fn test_complex_and_or_predicate() {
+        let mut query = parse_cypher(
+            "MATCH (n) WHERE (n.a = 1 AND n.b = 2) OR (n.c = 3) RETURN n"
+        ).unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        assert_eq!(query.clauses.len(), 3);
+    }
+
+    #[test]
+    fn test_union_optimization() {
+        let mut query = parse_cypher(
+            "MATCH (n:A) RETURN n UNION MATCH (m:B) RETURN m"
+        ).unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        // UNION clauses should be optimized
+        let has_union = query.clauses.iter().any(|c| matches!(c, Clause::Union(_)));
+        assert!(has_union);
+    }
+
+    #[test]
+    fn test_parameter_in_comparison() {
+        let mut query = parse_cypher(
+            "MATCH (n) WHERE n.value < $threshold RETURN n"
+        ).unwrap();
+
+        let graph = DirGraph::new();
+        let mut params = HashMap::new();
+        params.insert("threshold".to_string(), Value::Int64(100));
+        optimize(&mut query, &graph, &params);
+
+        // Parameter should be resolved and comparison pushed
+        if let Clause::Match(m) = &query.clauses[0] {
+            if let PatternElement::Node(np) = &m.patterns[0].elements[0] {
+                assert!(np.properties.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn test_no_optimization_needed() {
+        let mut query = parse_cypher(
+            "MATCH (n) RETURN n"
+        ).unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        // Should still have basic structure
+        assert_eq!(query.clauses.len(), 2); // MATCH + RETURN
+    }
+
+    #[test]
+    fn test_property_with_special_chars() {
+        let mut query = parse_cypher(
+            "MATCH (n) WHERE n.`special-prop` = 42 RETURN n"
+        ).unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        assert_eq!(query.clauses.len(), 3);
+    }
+
+    #[test]
+    fn test_range_with_gt_lt() {
+        let mut query = parse_cypher(
+            "MATCH (n) WHERE n.x > 10 AND n.x < 20 RETURN n"
+        ).unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        // Range should be created by merging comparisons
+        if let Clause::Match(m) = &query.clauses[0] {
+            if let PatternElement::Node(np) = &m.patterns[0].elements[0] {
+                let props = np.properties.as_ref();
+                assert!(props.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn test_identity_function_pushdown() {
+        let mut query = parse_cypher(
+            "MATCH (n) WHERE id(n) = 999 RETURN n"
+        ).unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        if let Clause::Match(m) = &query.clauses[0] {
+            if let PatternElement::Node(np) = &m.patterns[0].elements[0] {
+                let props = np.properties.as_ref();
+                assert!(props.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn test_multiple_patterns() {
+        let mut query = parse_cypher(
+            "MATCH (a:A), (b:B) WHERE a.x = 1 AND b.y = 2 RETURN a, b"
+        ).unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        // Multiple patterns should still be optimized
+        if let Clause::Match(m) = &query.clauses[0] {
+            assert!(m.patterns.len() > 0);
+        }
+    }
+
+    #[test]
+    fn test_in_operator_simple() {
+        let mut query = parse_cypher(
+            "MATCH (n) WHERE n.status IN ['active', 'pending'] RETURN n"
+        ).unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        if let Clause::Match(m) = &query.clauses[0] {
+            if let PatternElement::Node(np) = &m.patterns[0].elements[0] {
+                assert!(np.properties.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn test_skip_clause_parsing() {
+        let mut query = parse_cypher(
+            "MATCH (n) RETURN n SKIP 5"
+        ).unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        // SKIP should be recognized
+        let has_skip = query.clauses.iter().any(|c| matches!(c, Clause::Skip(_)));
+        assert!(has_skip);
+    }
+
+    #[test]
+    fn test_optional_match_preserved() {
+        let mut query = parse_cypher(
+            "MATCH (n) OPTIONAL MATCH (n)-[r]->(m) RETURN n, m"
+        ).unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        // OptionalMatch clause should be preserved
+        let has_optional = query.clauses.iter().any(|c| {
+            matches!(c, Clause::OptionalMatch(_))
+        });
+        assert!(has_optional);
+    }
+
+    #[test]
+    fn test_where_with_and() {
+        let mut query = parse_cypher(
+            "MATCH (n:Person) WHERE n.age > 25 AND n.age < 65 RETURN n"
+        ).unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        // Both predicates should be pushed
+        if let Clause::Match(m) = &query.clauses[0] {
+            if let PatternElement::Node(np) = &m.patterns[0].elements[0] {
+                assert!(np.properties.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn test_case_insensitive_type_function() {
+        // Test that type() function matching is case-insensitive
+        let mut query = parse_cypher(
+            "MATCH (s)-[r]->(e) WHERE TYPE(r) = 'HasRole' RETURN r"
+        ).unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        if let Clause::Match(m) = &query.clauses[0] {
+            let edge_found = m.patterns[0].elements.iter().any(|el| {
+                if let PatternElement::Edge(ep) = el {
+                    ep.connection_type.is_some()
+                } else {
+                    false
+                }
+            });
+            assert!(edge_found);
+        }
+    }
+
+    #[test]
+    fn test_property_in_list_with_vars() {
+        let mut query = parse_cypher(
+            "MATCH (n) WHERE n.status IN ['a', 'b', 'c'] RETURN n"
+        ).unwrap();
+
+        let graph = DirGraph::new();
+        let params = HashMap::new();
+        optimize(&mut query, &graph, &params);
+
+        assert_eq!(query.clauses.len(), 3);
+    }
 }

@@ -224,3 +224,44 @@ fn try_convert_to_float(value: &Value) -> Option<f64> {
 fn get_node_property<'a>(node: &'a NodeData, property: &str) -> Option<Cow<'a, Value>> {
     node.get_property(property)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_try_convert_to_float_int64() {
+        assert_eq!(try_convert_to_float(&Value::Int64(42)), Some(42.0));
+    }
+
+    #[test]
+    fn test_try_convert_to_float_float64() {
+        assert_eq!(try_convert_to_float(&Value::Float64(3.14)), Some(3.14));
+    }
+
+    #[test]
+    fn test_try_convert_to_float_unique_id() {
+        assert_eq!(try_convert_to_float(&Value::UniqueId(10)), Some(10.0));
+    }
+
+    #[test]
+    fn test_try_convert_to_float_string() {
+        assert_eq!(try_convert_to_float(&Value::String("5.5".to_string())), Some(5.5));
+        assert_eq!(try_convert_to_float(&Value::String("not_a_number".to_string())), None);
+    }
+
+    #[test]
+    fn test_try_convert_to_float_null() {
+        assert_eq!(try_convert_to_float(&Value::Null), None);
+    }
+
+    #[test]
+    fn test_try_convert_to_float_boolean() {
+        assert_eq!(try_convert_to_float(&Value::Boolean(true)), None);
+    }
+
+    #[test]
+    fn test_try_convert_to_float_datetime() {
+        assert_eq!(try_convert_to_float(&Value::DateTime(chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap())), None);
+    }
+}

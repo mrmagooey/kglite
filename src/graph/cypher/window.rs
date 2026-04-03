@@ -10,7 +10,7 @@ use rayon::prelude::*;
 
 use super::ast::{is_window_expression, Expression, OrderItem, ReturnClause};
 use super::executor::{return_item_column_name, CypherExecutor, RAYON_THRESHOLD};
-use super::result::{Bindings, ResultRow, ResultSet};
+use super::result::{Bindings, ClauseStats, ResultRow, ResultSet};
 use crate::datatypes::values::Value;
 use crate::graph::{filtering_methods, value_operations};
 
@@ -253,5 +253,218 @@ impl CypherExecutor<'_> {
         }
 
         Ok(())
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use petgraph::graph::{NodeIndex, EdgeIndex};
+
+    #[test]
+    fn test_bindings_with_window_functions() {
+        let mut bindings: Bindings<Value> = Bindings::new();
+        bindings.insert("col1".to_string(), Value::Int64(42));
+        bindings.insert("col2".to_string(), Value::String("test".to_string()));
+
+        assert_eq!(bindings.get("col1"), Some(&Value::Int64(42)));
+        assert_eq!(bindings.get("col2"), Some(&Value::String("test".to_string())));
+        assert_eq!(bindings.len(), 2);
+    }
+
+    #[test]
+    fn test_result_row_projected_values() {
+        let mut row = ResultRow::new();
+        row.projected.insert("row_number".to_string(), Value::Int64(1));
+        row.projected.insert("rank".to_string(), Value::Int64(1));
+        row.projected.insert("value".to_string(), Value::Int64(100));
+
+        assert_eq!(row.projected.len(), 3);
+        assert_eq!(row.projected.get("row_number"), Some(&Value::Int64(1)));
+        assert_eq!(row.projected.get("rank"), Some(&Value::Int64(1)));
+    }
+
+    #[test]
+    fn test_result_set_columns_order() {
+        let mut result_set = ResultSet::new();
+        result_set.columns = vec![
+            "col1".to_string(),
+            "col2".to_string(),
+            "row_number".to_string(),
+        ];
+
+        assert_eq!(result_set.columns.len(), 3);
+        assert_eq!(result_set.columns[0], "col1");
+        assert_eq!(result_set.columns[2], "row_number");
+    }
+
+    #[test]
+    fn test_path_binding_creation() {
+        use super::super::result::PathBinding;
+
+        let path = PathBinding {
+            source: NodeIndex::new(0),
+            target: NodeIndex::new(5),
+            hops: 3,
+            path: vec![(NodeIndex::new(0), "edge1".to_string())],
+        };
+
+        assert_eq!(path.hops, 3);
+        assert_eq!(path.path.len(), 1);
+    }
+
+    #[test]
+    fn test_edge_binding_copy() {
+        use super::super::result::EdgeBinding;
+
+        let binding = EdgeBinding {
+            source: NodeIndex::new(0),
+            target: NodeIndex::new(1),
+            edge_index: EdgeIndex::new(0),
+        };
+
+        let binding2 = binding;
+        assert_eq!(binding.source, binding2.source);
+        assert_eq!(binding.target, binding2.target);
+    }
+
+    #[test]
+    fn test_order_item_basic() {
+        let item = OrderItem {
+            expression: Expression::Variable("col1".to_string()),
+            ascending: true,
+        };
+
+        assert!(item.ascending);
+    }
+
+    #[test]
+    fn test_order_item_descending() {
+        let item = OrderItem {
+            expression: Expression::Variable("col1".to_string()),
+            ascending: false,
+        };
+
+        assert!(!item.ascending);
+    }
+
+    #[test]
+    fn test_value_comparison_ordering() {
+        let vals = vec![
+            Value::Int64(3),
+            Value::Int64(1),
+            Value::Int64(2),
+        ];
+
+        assert_ne!(vals[0], vals[1]);
+        assert_ne!(vals[1], vals[2]);
+    }
+
+    #[test]
+    fn test_bindings_empty_operations() {
+        let bindings: Bindings<i32> = Bindings::new();
+
+        assert_eq!(bindings.len(), 0);
+        assert!(bindings.is_empty());
+        assert_eq!(bindings.get("key"), None);
+        assert!(!bindings.contains_key("key"));
+    }
+
+    #[test]
+    fn test_result_row_clone() {
+        let mut row1 = ResultRow::new();
+        row1.projected.insert("col".to_string(), Value::Int64(42));
+
+        let row2 = row1.clone();
+        assert_eq!(row2.projected.get("col"), Some(&Value::Int64(42)));
+    }
+
+    #[test]
+    fn test_clause_stats_clone() {
+        let stats = ClauseStats {
+            clause_name: "MATCH".to_string(),
+            rows_in: 100,
+            rows_out: 50,
+            elapsed_us: 5000,
+        };
+
+        let stats2 = stats.clone();
+        assert_eq!(stats2.clause_name, "MATCH");
+        assert_eq!(stats2.rows_in, 100);
+    }
+
+    #[test]
+    fn test_result_set_new() {
+        let rs = ResultSet::new();
+        assert!(rs.rows.is_empty());
+        assert!(rs.columns.is_empty());
+    }
+
+    #[test]
+    fn test_result_row_with_edge_binding() {
+        use super::super::result::EdgeBinding;
+
+        let mut row = ResultRow::new();
+        let binding = EdgeBinding {
+            source: NodeIndex::new(0),
+            target: NodeIndex::new(1),
+            edge_index: EdgeIndex::new(5),
+        };
+
+        row.edge_bindings.insert("r".to_string(), binding);
+        assert_eq!(row.edge_bindings.get("r"), Some(&binding));
+    }
+
+    #[test]
+    fn test_multiple_bindings_types() {
+        let mut row = ResultRow::new();
+        row.node_bindings.insert("n".to_string(), NodeIndex::new(0));
+        row.projected.insert("count".to_string(), Value::Int64(42));
+
+        assert_eq!(row.node_bindings.len(), 1);
+        assert_eq!(row.projected.len(), 1);
+    }
+
+    #[test]
+    fn test_path_binding_multi_hop() {
+        use super::super::result::PathBinding;
+
+        let path = PathBinding {
+            source: NodeIndex::new(0),
+            target: NodeIndex::new(10),
+            hops: 5,
+            path: vec![
+                (NodeIndex::new(0), "e1".to_string()),
+                (NodeIndex::new(2), "e2".to_string()),
+                (NodeIndex::new(4), "e3".to_string()),
+            ],
+        };
+
+        assert_eq!(path.hops, 5);
+        assert_eq!(path.path.len(), 3);
+    }
+
+    #[test]
+    fn test_bindings_update_behavior() {
+        let mut bindings: Bindings<i32> = Bindings::new();
+        bindings.insert("key".to_string(), 10);
+        assert_eq!(bindings.get("key"), Some(&10));
+
+        bindings.insert("key".to_string(), 20);
+        assert_eq!(bindings.get("key"), Some(&20));
+        assert_eq!(bindings.len(), 1);
+    }
+
+    #[test]
+    fn test_result_row_default_construction() {
+        let row = ResultRow::new();
+        assert!(row.node_bindings.is_empty());
+        assert!(row.edge_bindings.is_empty());
+        assert!(row.path_bindings.is_empty());
+        assert!(row.projected.is_empty());
     }
 }

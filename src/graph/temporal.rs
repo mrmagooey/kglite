@@ -230,3 +230,128 @@ pub fn node_passes_context(
         TemporalContext::During(start, end) => node_overlaps_range(node, config, start, end),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    fn make_date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn test_is_temporally_valid_at_point() {
+        let config = TemporalConfig {
+            valid_from: "start".to_string(),
+            valid_to: "end".to_string(),
+        };
+        let reference = make_date(2024, 6, 15);
+        let props = vec![
+            (InternedKey::from_str("start"), Value::DateTime(make_date(2024, 1, 1))),
+            (InternedKey::from_str("end"), Value::DateTime(make_date(2024, 12, 31))),
+        ];
+        assert!(is_temporally_valid(&props, &config, &reference));
+    }
+
+    #[test]
+    fn test_is_temporally_valid_before_start() {
+        let config = TemporalConfig {
+            valid_from: "start".to_string(),
+            valid_to: "end".to_string(),
+        };
+        let reference = make_date(2023, 12, 31);
+        let props = vec![
+            (InternedKey::from_str("start"), Value::DateTime(make_date(2024, 1, 1))),
+            (InternedKey::from_str("end"), Value::DateTime(make_date(2024, 12, 31))),
+        ];
+        assert!(!is_temporally_valid(&props, &config, &reference));
+    }
+
+    #[test]
+    fn test_is_temporally_valid_after_end() {
+        let config = TemporalConfig {
+            valid_from: "start".to_string(),
+            valid_to: "end".to_string(),
+        };
+        let reference = make_date(2025, 1, 1);
+        let props = vec![
+            (InternedKey::from_str("start"), Value::DateTime(make_date(2024, 1, 1))),
+            (InternedKey::from_str("end"), Value::DateTime(make_date(2024, 12, 31))),
+        ];
+        assert!(!is_temporally_valid(&props, &config, &reference));
+    }
+
+    #[test]
+    fn test_is_temporally_valid_null_end() {
+        let config = TemporalConfig {
+            valid_from: "start".to_string(),
+            valid_to: "end".to_string(),
+        };
+        let reference = make_date(2024, 12, 31);
+        let props = vec![
+            (InternedKey::from_str("start"), Value::DateTime(make_date(2024, 1, 1))),
+            (InternedKey::from_str("end"), Value::Null),
+        ];
+        assert!(is_temporally_valid(&props, &config, &reference));
+    }
+
+    #[test]
+    fn test_is_temporally_valid_missing_properties() {
+        let config = TemporalConfig {
+            valid_from: "start".to_string(),
+            valid_to: "end".to_string(),
+        };
+        let reference = make_date(2024, 6, 15);
+        let props = vec![];
+        assert!(is_temporally_valid(&props, &config, &reference));
+    }
+
+    #[test]
+    fn test_overlaps_range_true() {
+        let config = TemporalConfig {
+            valid_from: "start".to_string(),
+            valid_to: "end".to_string(),
+        };
+        let range_start = make_date(2024, 1, 1);
+        let range_end = make_date(2024, 12, 31);
+        let props = vec![
+            (InternedKey::from_str("start"), Value::DateTime(make_date(2024, 6, 1))),
+            (InternedKey::from_str("end"), Value::DateTime(make_date(2024, 7, 1))),
+        ];
+        assert!(overlaps_range(&props, &config, &range_start, &range_end));
+    }
+
+    #[test]
+    fn test_overlaps_range_false_before() {
+        let config = TemporalConfig {
+            valid_from: "start".to_string(),
+            valid_to: "end".to_string(),
+        };
+        let range_start = make_date(2024, 6, 1);
+        let range_end = make_date(2024, 12, 31);
+        let props = vec![
+            (InternedKey::from_str("start"), Value::DateTime(make_date(2024, 1, 1))),
+            (InternedKey::from_str("end"), Value::DateTime(make_date(2024, 5, 31))),
+        ];
+        assert!(!overlaps_range(&props, &config, &range_start, &range_end));
+    }
+
+    #[test]
+    fn test_is_temporally_valid_multi_matching_config() {
+        let config1 = TemporalConfig {
+            valid_from: "s1".to_string(),
+            valid_to: "e1".to_string(),
+        };
+        let config2 = TemporalConfig {
+            valid_from: "s2".to_string(),
+            valid_to: "e2".to_string(),
+        };
+        let reference = make_date(2024, 6, 15);
+        let props = vec![
+            (InternedKey::from_str("s1"), Value::DateTime(make_date(2024, 1, 1))),
+            (InternedKey::from_str("e1"), Value::DateTime(make_date(2024, 12, 31))),
+        ];
+        assert!(is_temporally_valid_multi(&props, &[config1, config2], &reference));
+    }
+}

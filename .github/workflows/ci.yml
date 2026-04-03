@@ -61,7 +61,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.10', '3.12', '3.13']
+        python-version: ['3.10', '3.11', '3.12', '3.13']
     steps:
       - uses: actions/checkout@v6
 
@@ -153,3 +153,80 @@ jobs:
           alert-threshold: '150%'
           comment-on-alert: true
           fail-on-alert: false
+
+  cargo-audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        run: cargo audit
+
+  rust-coverage:
+    name: Rust coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Cache cargo registry & target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-tarpaulin-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-tarpaulin-
+
+      - name: Install tarpaulin
+        run: cargo install cargo-tarpaulin --locked
+
+      - name: Run Rust coverage
+        run: |
+          PYTHON_LIB=$(python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
+          PYTHON_VER=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+          RUSTFLAGS="-L${PYTHON_LIB} -lpython${PYTHON_VER}" cargo tarpaulin --out xml --skip-clean
+
+      - name: Upload Rust coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: cobertura.xml
+          flags: rust
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  changelog-check:
+    name: Changelog check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check changelog updated when src/ changes
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if git diff --name-only "origin/${BASE_REF}...HEAD" | grep -q '^src/'; then
+            if ! git diff "origin/${BASE_REF}...HEAD" -- CHANGELOG.md | grep -q '^+'; then
+              echo "ERROR: Changes to src/ detected but CHANGELOG.md was not updated."
+              echo "Please add an entry to the [Unreleased] section of CHANGELOG.md."
+              exit 1
+            fi
+          fi

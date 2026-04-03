@@ -550,3 +550,296 @@ pub fn get_connections(
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_level_nodes_structure() {
+        let level_nodes = LevelNodes {
+            parent_title: "Test Parent".to_string(),
+            parent_id: Some(Value::Int64(1)),
+            parent_idx: Some(NodeIndex::new(0)),
+            parent_type: Some("Person".to_string()),
+            nodes: Vec::new(),
+        };
+
+        assert_eq!(level_nodes.parent_title, "Test Parent");
+        assert_eq!(level_nodes.parent_id, Some(Value::Int64(1)));
+        assert_eq!(level_nodes.parent_type, Some("Person".to_string()));
+        assert!(level_nodes.nodes.is_empty());
+    }
+
+    #[test]
+    fn test_level_values_structure() {
+        let level_values = LevelValues {
+            parent_title: "Test Parent".to_string(),
+            values: vec![vec![Value::Int64(1), Value::String("test".into())]],
+        };
+
+        assert_eq!(level_values.parent_title, "Test Parent");
+        assert_eq!(level_values.values.len(), 1);
+    }
+
+    #[test]
+    fn test_unique_values_structure() {
+        let unique_values = UniqueValues {
+            parent_title: "Test".to_string(),
+            parent_idx: Some(NodeIndex::new(0)),
+            values: vec![Value::String("value1".into()), Value::String("value2".into())],
+        };
+
+        assert_eq!(unique_values.parent_title, "Test");
+        assert_eq!(unique_values.values.len(), 2);
+    }
+
+    #[test]
+    fn test_connection_info_structure() {
+        let conn_info = ConnectionInfo {
+            node_id: Value::Int64(1),
+            node_title: "Node Title".to_string(),
+            node_type: "Person".to_string(),
+            incoming: Vec::new(),
+            outgoing: Vec::new(),
+        };
+
+        assert_eq!(conn_info.node_id, Value::Int64(1));
+        assert_eq!(conn_info.node_title, "Node Title");
+        assert_eq!(conn_info.node_type, "Person");
+        assert!(conn_info.incoming.is_empty());
+        assert!(conn_info.outgoing.is_empty());
+    }
+
+    #[test]
+    fn test_level_connections_structure() {
+        let level_conns = LevelConnections {
+            parent_title: "Parent".to_string(),
+            parent_id: Some(Value::Int64(1)),
+            parent_idx: Some(NodeIndex::new(0)),
+            parent_type: Some("Person".to_string()),
+            connections: Vec::new(),
+        };
+
+        assert_eq!(level_conns.parent_title, "Parent");
+        assert!(level_conns.connections.is_empty());
+    }
+
+    #[test]
+    fn test_get_nodes_empty_graph_no_selection() {
+        let graph = DirGraph::new();
+        let selection = CurrentSelection::new();
+
+        let result = get_nodes(&graph, &selection, None, None, None);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_nodes_with_none_indices() {
+        let graph = DirGraph::new();
+        let selection = CurrentSelection::new();
+
+        let result = get_nodes(&graph, &selection, None, None, None);
+        // Should handle empty graph gracefully
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_nodes_with_empty_indices() {
+        let graph = DirGraph::new();
+        let selection = CurrentSelection::new();
+
+        let result = get_nodes(&graph, &selection, None, Some(&[]), None);
+        // Should handle empty indices array
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_property_values_empty_selection() {
+        let graph = DirGraph::new();
+        let selection = CurrentSelection::new();
+
+        let result = get_property_values(&graph, &selection, None, &["id", "title"], None, None);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_unique_values_empty_selection() {
+        let graph = DirGraph::new();
+        let selection = CurrentSelection::new();
+
+        let result = get_unique_values(&graph, &selection, "type", None, false, None);
+        // Non-grouped path always emits one "All" entry; values are empty for an empty graph
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].parent_title, "All");
+        assert!(result[0].values.is_empty());
+    }
+
+    #[test]
+    fn test_get_connections_empty_graph() {
+        let graph = DirGraph::new();
+        let selection = CurrentSelection::new();
+
+        let result = get_connections(&graph, &selection, None, None, false);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_connections_include_node_properties_false() {
+        let graph = DirGraph::new();
+        let selection = CurrentSelection::new();
+
+        let result = get_connections(&graph, &selection, None, None, false);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_connections_include_node_properties_true() {
+        let graph = DirGraph::new();
+        let selection = CurrentSelection::new();
+
+        let result = get_connections(&graph, &selection, None, None, true);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_format_unique_values_for_storage_empty() {
+        let values: Vec<UniqueValues> = vec![];
+        let result = format_unique_values_for_storage(&values, None);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_format_unique_values_for_storage_single_value() {
+        let values = vec![UniqueValues {
+            parent_title: "Test".to_string(),
+            parent_idx: None,
+            values: vec![Value::String("test_value".into())],
+        }];
+
+        let result = format_unique_values_for_storage(&values, None);
+        assert_eq!(result.len(), 1);
+
+        if let Value::String(s) = &result[0].1 {
+            assert_eq!(s, "test_value");
+        } else {
+            panic!("Expected string value");
+        }
+    }
+
+    #[test]
+    fn test_format_unique_values_for_storage_multiple_values() {
+        let values = vec![UniqueValues {
+            parent_title: "Test".to_string(),
+            parent_idx: None,
+            values: vec![
+                Value::String("apple".into()),
+                Value::String("banana".into()),
+                Value::String("cherry".into()),
+            ],
+        }];
+
+        let result = format_unique_values_for_storage(&values, None);
+        assert_eq!(result.len(), 1);
+
+        if let Value::String(s) = &result[0].1 {
+            // Values should be sorted and deduped
+            assert!(s.contains("apple"));
+            assert!(s.contains("banana"));
+            assert!(s.contains("cherry"));
+        } else {
+            panic!("Expected string value");
+        }
+    }
+
+    #[test]
+    fn test_format_unique_values_with_max_length() {
+        let values = vec![UniqueValues {
+            parent_title: "Test".to_string(),
+            parent_idx: None,
+            values: vec![
+                Value::String("a".into()),
+                Value::String("b".into()),
+                Value::String("c".into()),
+                Value::String("d".into()),
+                Value::String("e".into()),
+            ],
+        }];
+
+        let result = format_unique_values_for_storage(&values, Some(2));
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_format_unique_values_deduplicate() {
+        let values = vec![UniqueValues {
+            parent_title: "Test".to_string(),
+            parent_idx: None,
+            values: vec![
+                Value::String("duplicate".into()),
+                Value::String("duplicate".into()),
+                Value::String("unique".into()),
+            ],
+        }];
+
+        let result = format_unique_values_for_storage(&values, None);
+        assert_eq!(result.len(), 1);
+
+        if let Value::String(s) = &result[0].1 {
+            // Should be deduplicated
+            let count = s.matches("duplicate").count();
+            assert_eq!(count, 1);
+        }
+    }
+
+    #[test]
+    fn test_format_unique_values_sorts() {
+        let values = vec![UniqueValues {
+            parent_title: "Test".to_string(),
+            parent_idx: None,
+            values: vec![
+                Value::String("zebra".into()),
+                Value::String("apple".into()),
+                Value::String("monkey".into()),
+            ],
+        }];
+
+        let result = format_unique_values_for_storage(&values, None);
+
+        if let Value::String(s) = &result[0].1 {
+            // Should be in sorted order
+            let parts: Vec<&str> = s.split(", ").collect();
+            assert_eq!(parts[0], "apple");
+            assert_eq!(parts[1], "monkey");
+            assert_eq!(parts[2], "zebra");
+        }
+    }
+
+    #[test]
+    fn test_get_unique_values_group_by_parent_false() {
+        let graph = DirGraph::new();
+        let selection = CurrentSelection::new();
+
+        let result = get_unique_values(&graph, &selection, "type", None, false, None);
+        // With empty selection, should return empty or one aggregate result
+        assert!(result.is_empty() || result.len() <= 1);
+    }
+
+    #[test]
+    fn test_get_unique_values_group_by_parent_true() {
+        let graph = DirGraph::new();
+        let selection = CurrentSelection::new();
+
+        let result = get_unique_values(&graph, &selection, "type", None, true, None);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_property_values_with_max_nodes() {
+        let graph = DirGraph::new();
+        let selection = CurrentSelection::new();
+
+        let result = get_property_values(&graph, &selection, None, &["id"], None, Some(5));
+        assert!(result.is_empty());
+    }
+}
