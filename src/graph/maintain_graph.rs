@@ -1508,3 +1508,675 @@ fn compute_aggregate(expr: &str, values: &[f64], count: usize) -> Value {
         Value::Null
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Tests for check_data_validity ──
+    #[test]
+    fn test_check_data_validity_valid_column() {
+        let result = check_data_validity(&create_test_dataframe(), "id");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_check_data_validity_invalid_column() {
+        let result = check_data_validity(&create_test_dataframe(), "nonexistent_column");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Column 'nonexistent_column' not found"));
+    }
+
+    // ── Tests for get_column_types ──
+    #[test]
+    fn test_get_column_types_returns_map() {
+        let df = create_test_dataframe();
+        let types = get_column_types(&df);
+        assert!(!types.is_empty());
+        assert!(types.contains_key("id") || types.contains_key("name"));
+    }
+
+    #[test]
+    fn test_get_column_types_maps_names_to_types() {
+        let df = create_test_dataframe();
+        let types = get_column_types(&df);
+        for (col_name, col_type) in types {
+            assert!(!col_name.is_empty());
+            assert!(!col_type.is_empty());
+        }
+    }
+
+    // ── Tests for walk_to_ancestor ──
+    #[test]
+    fn test_walk_to_ancestor_same_level() {
+        use petgraph::graph::NodeIndex;
+        let node_idx = NodeIndex::new(0);
+        let parent_maps = vec![HashMap::new(); 3];
+        let result = walk_to_ancestor(node_idx, 1, 1, &parent_maps);
+        assert_eq!(result, Some(node_idx));
+    }
+
+    #[test]
+    fn test_walk_to_ancestor_target_level_greater_than_start() {
+        use petgraph::graph::NodeIndex;
+        let node_idx = NodeIndex::new(0);
+        let parent_maps = vec![HashMap::new(); 3];
+        let result = walk_to_ancestor(node_idx, 1, 2, &parent_maps);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_walk_to_ancestor_with_parent_maps() {
+        use petgraph::graph::NodeIndex;
+        let child_idx = NodeIndex::new(0);
+        let parent_idx = NodeIndex::new(1);
+        let mut parent_maps = vec![HashMap::new(); 3];
+        parent_maps[1].insert(child_idx, parent_idx);
+        let result = walk_to_ancestor(child_idx, 1, 0, &parent_maps);
+        assert_eq!(result, Some(parent_idx));
+    }
+
+    #[test]
+    fn test_walk_to_ancestor_missing_parent() {
+        use petgraph::graph::NodeIndex;
+        let node_idx = NodeIndex::new(0);
+        let parent_maps = vec![HashMap::new(); 3];
+        let result = walk_to_ancestor(node_idx, 1, 0, &parent_maps);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_walk_to_ancestor_multi_level() {
+        use petgraph::graph::NodeIndex;
+        let leaf_idx = NodeIndex::new(0);
+        let mid_idx = NodeIndex::new(1);
+        let root_idx = NodeIndex::new(2);
+        let mut parent_maps = vec![HashMap::new(); 4];
+        // Proper setup: leaf at level 2 has parent mid at level 2 map
+        // mid at level 1 has parent root at level 1 map (but we only need up to level 1 for a 2-level walk)
+        parent_maps[2].insert(leaf_idx, mid_idx);
+        parent_maps[1].insert(mid_idx, root_idx);
+        // Walk from leaf (level 2) to level 0: should go through level 2 to get to mid, then level 1 to get to root
+        let result = walk_to_ancestor(leaf_idx, 2, 0, &parent_maps);
+        assert_eq!(result, Some(root_idx));
+    }
+
+    #[test]
+    fn test_walk_to_ancestor_zero_level() {
+        use petgraph::graph::NodeIndex;
+        let node_idx = NodeIndex::new(0);
+        let parent_maps = vec![HashMap::new(); 3];
+        let result = walk_to_ancestor(node_idx, 0, 0, &parent_maps);
+        assert_eq!(result, Some(node_idx));
+    }
+
+    // ── Tests for is_aggregate_expr ──
+    #[test]
+    fn test_is_aggregate_expr_count() {
+        assert!(is_aggregate_expr("count(*)"));
+        assert!(is_aggregate_expr("  count(*)  "));
+    }
+
+    #[test]
+    fn test_is_aggregate_expr_sum() {
+        assert!(is_aggregate_expr("sum(value)"));
+        assert!(is_aggregate_expr("  sum(field)  "));
+    }
+
+    #[test]
+    fn test_is_aggregate_expr_mean() {
+        assert!(is_aggregate_expr("mean(value)"));
+        assert!(is_aggregate_expr("avg(value)"));
+    }
+
+    #[test]
+    fn test_is_aggregate_expr_min_max() {
+        assert!(is_aggregate_expr("min(value)"));
+        assert!(is_aggregate_expr("max(value)"));
+    }
+
+    #[test]
+    fn test_is_aggregate_expr_std() {
+        assert!(is_aggregate_expr("std(value)"));
+    }
+
+    #[test]
+    fn test_is_aggregate_expr_collect() {
+        assert!(is_aggregate_expr("collect(value)"));
+    }
+
+    #[test]
+    fn test_is_aggregate_expr_not_aggregate() {
+        assert!(!is_aggregate_expr("value"));
+        assert!(!is_aggregate_expr("some_field"));
+        assert!(!is_aggregate_expr(""));
+    }
+
+    #[test]
+    fn test_is_aggregate_expr_partial_match() {
+        assert!(!is_aggregate_expr("sum_value"));
+        assert!(!is_aggregate_expr("count_items"));
+    }
+
+    #[test]
+    fn test_is_aggregate_expr_uppercase() {
+        assert!(!is_aggregate_expr("SUM(value)"));
+        assert!(!is_aggregate_expr("COUNT(*)"));
+    }
+
+    #[test]
+    fn test_is_aggregate_expr_all_valid() {
+        let agg_fns = vec!["count(*)", "sum(x)", "mean(x)", "avg(x)", "min(x)", "max(x)", "std(x)", "collect(x)"];
+        for fn_name in agg_fns {
+            assert!(is_aggregate_expr(fn_name));
+        }
+    }
+
+    // ── Tests for is_spatial_compute ──
+    #[test]
+    fn test_is_spatial_compute_distance() {
+        assert!(is_spatial_compute("distance"));
+        assert!(is_spatial_compute("  distance  "));
+    }
+
+    #[test]
+    fn test_is_spatial_compute_area() {
+        assert!(is_spatial_compute("area"));
+    }
+
+    #[test]
+    fn test_is_spatial_compute_perimeter() {
+        assert!(is_spatial_compute("perimeter"));
+    }
+
+    #[test]
+    fn test_is_spatial_compute_centroid() {
+        assert!(is_spatial_compute("centroid_lat"));
+        assert!(is_spatial_compute("centroid_lon"));
+    }
+
+    #[test]
+    fn test_is_spatial_compute_not_spatial() {
+        assert!(!is_spatial_compute("latitude"));
+        assert!(!is_spatial_compute("location"));
+        assert!(!is_spatial_compute(""));
+    }
+
+    #[test]
+    fn test_is_spatial_compute_uppercase() {
+        assert!(!is_spatial_compute("DISTANCE"));
+        assert!(!is_spatial_compute("Area"));
+    }
+
+    #[test]
+    fn test_is_spatial_compute_all_valid() {
+        let spatial_fns = vec!["distance", "area", "perimeter", "centroid_lat", "centroid_lon"];
+        for fn_name in spatial_fns {
+            assert!(is_spatial_compute(fn_name));
+        }
+    }
+
+    // ── Tests for extract_agg_property ──
+    #[test]
+    fn test_extract_agg_property_sum() {
+        let result = extract_agg_property("sum(value)");
+        assert_eq!(result, Some("value"));
+    }
+
+    #[test]
+    fn test_extract_agg_property_mean() {
+        let result = extract_agg_property("mean(field_name)");
+        assert_eq!(result, Some("field_name"));
+    }
+
+    #[test]
+    fn test_extract_agg_property_with_spaces() {
+        let result = extract_agg_property("  sum(  value  )  ");
+        assert_eq!(result, Some("value"));
+    }
+
+    #[test]
+    fn test_extract_agg_property_count_star() {
+        let result = extract_agg_property("count(*)");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_agg_property_empty_parens() {
+        let result = extract_agg_property("sum()");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_agg_property_no_parens() {
+        let result = extract_agg_property("value");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_agg_property_complex_names() {
+        let result = extract_agg_property("sum(field_with_underscores)");
+        assert_eq!(result, Some("field_with_underscores"));
+    }
+
+    #[test]
+    fn test_extract_agg_property_unbalanced_parens() {
+        let result = extract_agg_property("sum(value");
+        assert_eq!(result, None);
+        let result = extract_agg_property("sum value)");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_agg_property_with_special_chars() {
+        let result = extract_agg_property("sum(field_name_123)");
+        assert_eq!(result, Some("field_name_123"));
+    }
+
+    // ── Tests for mg_value_to_f64 ──
+    #[test]
+    fn test_mg_value_to_f64_float64() {
+        let val = Value::Float64(3.14);
+        assert_eq!(mg_value_to_f64(&val), Some(3.14));
+    }
+
+    #[test]
+    fn test_mg_value_to_f64_int64() {
+        let val = Value::Int64(42);
+        assert_eq!(mg_value_to_f64(&val), Some(42.0));
+    }
+
+    #[test]
+    fn test_mg_value_to_f64_string_valid() {
+        let val = Value::String("3.14".to_string());
+        let result = mg_value_to_f64(&val);
+        assert!(result.is_some());
+        assert!((result.unwrap() - 3.14).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_mg_value_to_f64_string_integer() {
+        let val = Value::String("42".to_string());
+        assert_eq!(mg_value_to_f64(&val), Some(42.0));
+    }
+
+    #[test]
+    fn test_mg_value_to_f64_string_invalid() {
+        let val = Value::String("not_a_number".to_string());
+        assert_eq!(mg_value_to_f64(&val), None);
+    }
+
+    #[test]
+    fn test_mg_value_to_f64_null() {
+        let val = Value::Null;
+        assert_eq!(mg_value_to_f64(&val), None);
+    }
+
+    #[test]
+    fn test_mg_value_to_f64_unique_id() {
+        let val = Value::UniqueId(123);
+        assert_eq!(mg_value_to_f64(&val), None);
+    }
+
+    #[test]
+    fn test_mg_value_to_f64_negative_numbers() {
+        let val = Value::Float64(-3.14);
+        assert_eq!(mg_value_to_f64(&val), Some(-3.14));
+        let val = Value::Int64(-42);
+        assert_eq!(mg_value_to_f64(&val), Some(-42.0));
+        let val = Value::String("-99.99".to_string());
+        let result = mg_value_to_f64(&val);
+        assert!(result.is_some());
+        assert!((result.unwrap() - (-99.99)).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_mg_value_to_f64_zero_values() {
+        let val = Value::Float64(0.0);
+        assert_eq!(mg_value_to_f64(&val), Some(0.0));
+        let val = Value::Int64(0);
+        assert_eq!(mg_value_to_f64(&val), Some(0.0));
+        let val = Value::String("0".to_string());
+        assert_eq!(mg_value_to_f64(&val), Some(0.0));
+    }
+
+    #[test]
+    fn test_mg_value_to_f64_scientific_notation() {
+        let val = Value::String("1e-5".to_string());
+        let result = mg_value_to_f64(&val);
+        assert!(result.is_some());
+        assert!((result.unwrap() - 0.00001).abs() < 0.000001);
+    }
+
+    #[test]
+    fn test_mg_value_to_f64_large_numbers() {
+        let val = Value::Int64(i64::MAX / 2);
+        let result = mg_value_to_f64(&val);
+        assert!(result.is_some());
+        assert!(result.unwrap() > 0.0);
+    }
+
+    #[test]
+    fn test_mg_value_to_f64_string_whitespace() {
+        let val = Value::String("  42.5  ".to_string());
+        let result = mg_value_to_f64(&val);
+        // Rust's parse() does not trim whitespace, so this returns None
+        assert!(result.is_none());
+    }
+
+    // ── Tests for compute_aggregate ──
+    #[test]
+    fn test_compute_aggregate_count_star() {
+        let result = compute_aggregate("count(*)", &[], 5);
+        assert_eq!(result, Value::Int64(5));
+    }
+
+    #[test]
+    fn test_compute_aggregate_sum() {
+        let values = vec![1.0, 2.0, 3.0];
+        let result = compute_aggregate("sum(value)", &values, 3);
+        match result {
+            Value::Float64(f) => assert!((f - 6.0).abs() < 0.0001),
+            _ => panic!("Expected Float64"),
+        }
+    }
+
+    #[test]
+    fn test_compute_aggregate_mean() {
+        let values = vec![1.0, 2.0, 3.0];
+        let result = compute_aggregate("mean(value)", &values, 3);
+        match result {
+            Value::Float64(f) => assert!((f - 2.0).abs() < 0.0001),
+            _ => panic!("Expected Float64"),
+        }
+    }
+
+    #[test]
+    fn test_compute_aggregate_avg() {
+        let values = vec![2.0, 4.0, 6.0];
+        let result = compute_aggregate("avg(value)", &values, 3);
+        match result {
+            Value::Float64(f) => assert!((f - 4.0).abs() < 0.0001),
+            _ => panic!("Expected Float64"),
+        }
+    }
+
+    #[test]
+    fn test_compute_aggregate_min() {
+        let values = vec![3.0, 1.0, 2.0];
+        let result = compute_aggregate("min(value)", &values, 3);
+        match result {
+            Value::Float64(f) => assert!((f - 1.0).abs() < 0.0001),
+            _ => panic!("Expected Float64"),
+        }
+    }
+
+    #[test]
+    fn test_compute_aggregate_max() {
+        let values = vec![1.0, 3.0, 2.0];
+        let result = compute_aggregate("max(value)", &values, 3);
+        match result {
+            Value::Float64(f) => assert!((f - 3.0).abs() < 0.0001),
+            _ => panic!("Expected Float64"),
+        }
+    }
+
+    #[test]
+    fn test_compute_aggregate_std() {
+        let values = vec![1.0, 2.0, 3.0];
+        let result = compute_aggregate("std(value)", &values, 3);
+        match result {
+            Value::Float64(f) => assert!(f > 0.0),
+            _ => panic!("Expected Float64"),
+        }
+    }
+
+    #[test]
+    fn test_compute_aggregate_std_single_value() {
+        let values = vec![1.0];
+        let result = compute_aggregate("std(value)", &values, 1);
+        assert_eq!(result, Value::Float64(0.0));
+    }
+
+    #[test]
+    fn test_compute_aggregate_std_two_values() {
+        let values = vec![1.0, 3.0];
+        let result = compute_aggregate("std(value)", &values, 2);
+        match result {
+            Value::Float64(f) => {
+                assert!((f - std::f64::consts::SQRT_2).abs() < 0.001);
+            }
+            _ => panic!("Expected Float64"),
+        }
+    }
+
+    #[test]
+    fn test_compute_aggregate_collect() {
+        let values = vec![1.0, 2.0, 3.0];
+        let result = compute_aggregate("collect(value)", &values, 3);
+        match result {
+            Value::String(s) => assert!(s.contains("1") && s.contains("2") && s.contains("3")),
+            _ => panic!("Expected String"),
+        }
+    }
+
+    #[test]
+    fn test_compute_aggregate_collect_single_value() {
+        let values = vec![42.0];
+        let result = compute_aggregate("collect(value)", &values, 1);
+        match result {
+            Value::String(s) => assert_eq!(s, "42"),
+            _ => panic!("Expected String"),
+        }
+    }
+
+    #[test]
+    fn test_compute_aggregate_collect_with_decimals() {
+        let values = vec![1.5, 2.7, 3.14];
+        let result = compute_aggregate("collect(value)", &values, 3);
+        match result {
+            Value::String(s) => {
+                assert!(s.contains("1.5"));
+                assert!(s.contains("2.7"));
+                assert!(s.contains("3.14"));
+            }
+            _ => panic!("Expected String"),
+        }
+    }
+
+    #[test]
+    fn test_compute_aggregate_empty_values_with_property() {
+        let result = compute_aggregate("sum(value)", &[], 0);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_compute_aggregate_unknown_function() {
+        let values = vec![1.0, 2.0];
+        let result = compute_aggregate("unknown_agg(value)", &values, 2);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_compute_aggregate_sum_negative_values() {
+        let values = vec![-1.0, -2.0, 3.0];
+        let result = compute_aggregate("sum(value)", &values, 3);
+        match result {
+            Value::Float64(f) => assert!((f - 0.0).abs() < 0.0001),
+            _ => panic!("Expected Float64"),
+        }
+    }
+
+    #[test]
+    fn test_compute_aggregate_min_with_negatives() {
+        let values = vec![5.0, -3.0, 2.0];
+        let result = compute_aggregate("min(value)", &values, 3);
+        match result {
+            Value::Float64(f) => assert!((f - (-3.0)).abs() < 0.0001),
+            _ => panic!("Expected Float64"),
+        }
+    }
+
+    #[test]
+    fn test_compute_aggregate_max_all_same() {
+        let values = vec![5.0, 5.0, 5.0];
+        let result = compute_aggregate("max(value)", &values, 3);
+        match result {
+            Value::Float64(f) => assert!((f - 5.0).abs() < 0.0001),
+            _ => panic!("Expected Float64"),
+        }
+    }
+
+    #[test]
+    fn test_compute_aggregate_mean_with_single_value() {
+        let values = vec![5.0];
+        let result = compute_aggregate("mean(value)", &values, 1);
+        match result {
+            Value::Float64(f) => assert!((f - 5.0).abs() < 0.0001),
+            _ => panic!("Expected Float64"),
+        }
+    }
+
+    #[test]
+    fn test_compute_aggregate_with_whitespace() {
+        let values = vec![1.0, 2.0, 3.0];
+        let result = compute_aggregate("  sum(value)  ", &values, 3);
+        match result {
+            Value::Float64(f) => assert!((f - 6.0).abs() < 0.0001),
+            _ => panic!("Expected Float64"),
+        }
+    }
+
+    #[test]
+    fn test_compute_aggregate_all_functions() {
+        let values = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let sum_result = compute_aggregate("sum(v)", &values, 5);
+        assert!(matches!(sum_result, Value::Float64(_)));
+        let mean_result = compute_aggregate("mean(v)", &values, 5);
+        assert!(matches!(mean_result, Value::Float64(_)));
+        let min_result = compute_aggregate("min(v)", &values, 5);
+        assert!(matches!(min_result, Value::Float64(_)));
+        let max_result = compute_aggregate("max(v)", &values, 5);
+        assert!(matches!(max_result, Value::Float64(_)));
+        let count_result = compute_aggregate("count(*)", &values, 5);
+        assert_eq!(count_result, Value::Int64(5));
+        let collect_result = compute_aggregate("collect(v)", &values, 5);
+        assert!(matches!(collect_result, Value::String(_)));
+    }
+
+    // ── PropertySpec tests ──
+    #[test]
+    fn test_property_spec_copy_list() {
+        let spec = PropertySpec::CopyList(vec!["name".to_string(), "value".to_string()]);
+        match spec {
+            PropertySpec::CopyList(props) => assert_eq!(props.len(), 2),
+            _ => panic!("Expected CopyList"),
+        }
+    }
+
+    #[test]
+    fn test_property_spec_copy_all() {
+        let spec = PropertySpec::CopyAll;
+        match spec {
+            PropertySpec::CopyAll => {},
+            _ => panic!("Expected CopyAll"),
+        }
+    }
+
+    #[test]
+    fn test_property_spec_rename_map() {
+        let mut map = HashMap::new();
+        map.insert("target".to_string(), "source".to_string());
+        let spec = PropertySpec::RenameMap(map);
+        match spec {
+            PropertySpec::RenameMap(m) => assert_eq!(m.len(), 1),
+            _ => panic!("Expected RenameMap"),
+        }
+    }
+
+    #[test]
+    fn test_property_spec_enum_variants() {
+        let spec_copy = PropertySpec::CopyAll;
+        let spec_list = PropertySpec::CopyList(vec!["a".to_string()]);
+        let spec_rename = PropertySpec::RenameMap(HashMap::new());
+        assert!(matches!(spec_copy, PropertySpec::CopyAll));
+        assert!(matches!(spec_list, PropertySpec::CopyList(_)));
+        assert!(matches!(spec_rename, PropertySpec::RenameMap(_)));
+    }
+
+    // ── ConflictHandling parsing tests ──
+    #[test]
+    fn test_conflict_handling_parse_replace() {
+        let mode = match Some("replace") {
+            Some("replace") => ConflictHandling::Replace,
+            Some("skip") => ConflictHandling::Skip,
+            Some("preserve") => ConflictHandling::Preserve,
+            Some("sum") => ConflictHandling::Sum,
+            Some("update") | None => ConflictHandling::Update,
+            Some(_) => panic!("Unknown"),
+        };
+        assert!(matches!(mode, ConflictHandling::Replace));
+    }
+
+    #[test]
+    fn test_conflict_handling_parse_skip() {
+        let mode = match Some("skip") {
+            Some("replace") => ConflictHandling::Replace,
+            Some("skip") => ConflictHandling::Skip,
+            Some("preserve") => ConflictHandling::Preserve,
+            Some("sum") => ConflictHandling::Sum,
+            Some("update") | None => ConflictHandling::Update,
+            Some(_) => panic!("Unknown"),
+        };
+        assert!(matches!(mode, ConflictHandling::Skip));
+    }
+
+    #[test]
+    fn test_conflict_handling_parse_preserve() {
+        let mode = match Some("preserve") {
+            Some("replace") => ConflictHandling::Replace,
+            Some("skip") => ConflictHandling::Skip,
+            Some("preserve") => ConflictHandling::Preserve,
+            Some("sum") => ConflictHandling::Sum,
+            Some("update") | None => ConflictHandling::Update,
+            Some(_) => panic!("Unknown"),
+        };
+        assert!(matches!(mode, ConflictHandling::Preserve));
+    }
+
+    #[test]
+    fn test_conflict_handling_parse_sum() {
+        let mode = match Some("sum") {
+            Some("replace") => ConflictHandling::Replace,
+            Some("skip") => ConflictHandling::Skip,
+            Some("preserve") => ConflictHandling::Preserve,
+            Some("sum") => ConflictHandling::Sum,
+            Some("update") | None => ConflictHandling::Update,
+            Some(_) => panic!("Unknown"),
+        };
+        assert!(matches!(mode, ConflictHandling::Sum));
+    }
+
+    #[test]
+    fn test_conflict_handling_parse_default() {
+        let mode = match None::<&str> {
+            Some("replace") => ConflictHandling::Replace,
+            Some("skip") => ConflictHandling::Skip,
+            Some("preserve") => ConflictHandling::Preserve,
+            Some("sum") => ConflictHandling::Sum,
+            Some("update") | None => ConflictHandling::Update,
+            Some(_) => panic!("Unknown"),
+        };
+        assert!(matches!(mode, ConflictHandling::Update));
+    }
+
+    // Helper function to create a test DataFrame
+    fn create_test_dataframe() -> DataFrame {
+        use crate::datatypes::values::ColumnType;
+        DataFrame::new(vec![
+            ("id".to_string(), ColumnType::UniqueId),
+            ("name".to_string(), ColumnType::String),
+        ])
+    }
+}

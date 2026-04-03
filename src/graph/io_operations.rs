@@ -738,3 +738,588 @@ pub fn import_embeddings_from_file(graph: &mut DirGraph, path: &str) -> io::Resu
         skipped: total_skipped,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── Tests for bincode_options ──────────────────────────────────────────
+    #[test]
+    fn test_bincode_options_consistency() {
+        let options1 = bincode_options();
+        let options2 = bincode_options();
+
+        // Both should have the same configuration
+        let test_val = 42u32;
+        let serialized1 = options1.serialize(&test_val).unwrap();
+        let serialized2 = options2.serialize(&test_val).unwrap();
+
+        assert_eq!(serialized1, serialized2);
+    }
+
+    #[test]
+    fn test_bincode_options_little_endian() {
+        let options = bincode_options();
+
+        let test_val: u32 = 0x12345678;
+        let serialized = options.serialize(&test_val).unwrap();
+
+        // Little endian: least significant byte first
+        assert_eq!(serialized[0], 0x78);
+        assert_eq!(serialized[1], 0x56);
+        assert_eq!(serialized[2], 0x34);
+        assert_eq!(serialized[3], 0x12);
+    }
+
+    #[test]
+    fn test_bincode_options_fixint_encoding() {
+        let options = bincode_options();
+
+        // Fixed-size integers should always use 4 bytes for u32
+        let test_val: u32 = 42;
+        let serialized = options.serialize(&test_val).unwrap();
+
+        assert_eq!(serialized.len(), 4); // Fixed 4 bytes for u32
+    }
+
+    #[test]
+    fn test_bincode_ser_deserialize_symmetry() {
+        let original = 12345u64;
+        let serialized = bincode_ser(&original).unwrap();
+        let deserialized: u64 = bincode_deser(&serialized).unwrap();
+
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn test_bincode_ser_string() {
+        let original = "Hello, World!".to_string();
+        let serialized = bincode_ser(&original).unwrap();
+        let deserialized: String = bincode_deser(&serialized).unwrap();
+
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn test_bincode_ser_vec() {
+        let original = vec![1, 2, 3, 4, 5];
+        let serialized = bincode_ser(&original).unwrap();
+        let deserialized: Vec<i32> = bincode_deser(&serialized).unwrap();
+
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn test_bincode_deser_with_trailing_bytes() {
+        // Since bincode_options allows trailing bytes, this should succeed
+        let valid_with_trailing = [42u32, 99u32];
+        let serialized = bincode_ser(&valid_with_trailing).unwrap();
+
+        // Append extra bytes
+        let mut with_extra = serialized.clone();
+        with_extra.push(0xFF);
+
+        // Should still deserialize the first u32
+        let result: io::Result<u32> = bincode_deser(&with_extra);
+        assert!(result.is_ok());
+    }
+
+    // ─── Tests for zstd_compress/decompress ─────────────────────────────────
+    #[test]
+    fn test_zstd_compress_decompress_symmetry() {
+        let original = b"The quick brown fox jumps over the lazy dog";
+        let compressed = zstd_compress(original).unwrap();
+        let decompressed = zstd_decompress(&compressed).unwrap();
+
+        assert_eq!(original.to_vec(), decompressed);
+    }
+
+    #[test]
+    fn test_zstd_compress_empty_data() {
+        let original = b"";
+        let compressed = zstd_compress(original).unwrap();
+        let decompressed = zstd_decompress(&compressed).unwrap();
+
+        assert_eq!(original.to_vec(), decompressed);
+    }
+
+    #[test]
+    fn test_zstd_compress_large_data() {
+        let original = vec![42u8; 100000];
+        let compressed = zstd_compress(&original).unwrap();
+        let decompressed = zstd_decompress(&compressed).unwrap();
+
+        assert_eq!(original, decompressed);
+    }
+
+    #[test]
+    fn test_zstd_compress_repetitive_data() {
+        // Use larger repetitive data to ensure compression ratio is good
+        let mut original = Vec::new();
+        for _ in 0..1000 {
+            original.extend_from_slice(b"aaa");
+        }
+
+        let compressed = zstd_compress(&original).unwrap();
+
+        // Highly repetitive large data should compress significantly
+        assert!(compressed.len() < original.len());
+    }
+
+    #[test]
+    fn test_zstd_decompress_invalid_data() {
+        let invalid = vec![0xFF, 0xFF, 0xFF];
+        let result = zstd_decompress(&invalid);
+
+        assert!(result.is_err());
+    }
+
+    // ─── Tests for V3 Magic and Constants ────────────────────────────────────
+    #[test]
+    fn test_v3_magic_bytes() {
+        assert_eq!(V3_MAGIC.len(), 4);
+        assert_eq!(V3_MAGIC[0], 0x52); // 'R'
+        assert_eq!(V3_MAGIC[1], 0x47); // 'G'
+        assert_eq!(V3_MAGIC[2], 0x46); // 'F'
+        assert_eq!(V3_MAGIC[3], 0x03); // v3
+    }
+
+    #[test]
+    fn test_kgle_magic_bytes() {
+        assert_eq!(KGLE_MAGIC.len(), 4);
+        assert_eq!(KGLE_MAGIC, *b"KGLE");
+    }
+
+    #[test]
+    fn test_current_format_version() {
+        assert_eq!(CURRENT_FORMAT_VERSION, 3);
+    }
+
+    #[test]
+    fn test_kgle_version() {
+        assert_eq!(KGLE_VERSION, 1);
+    }
+
+    #[test]
+    fn test_current_core_data_version() {
+        assert_eq!(CURRENT_CORE_DATA_VERSION, 1);
+    }
+
+    #[test]
+    fn test_file_mmap_threshold() {
+        assert_eq!(FILE_MMAP_THRESHOLD, 65536); // 64 KB
+    }
+
+    // ─── Tests for default functions ────────────────────────────────────────
+    #[test]
+    fn test_default_auto_vacuum_threshold() {
+        let threshold = default_auto_vacuum_threshold();
+        assert_eq!(threshold, Some(0.3));
+    }
+
+    #[test]
+    fn test_default_ts_data_version() {
+        let version = default_ts_data_version();
+        assert_eq!(version, 2);
+    }
+
+    // ─── Tests for V3ColumnSection ──────────────────────────────────────────
+    #[test]
+    fn test_v3_column_section_creation() {
+        let section = V3ColumnSection {
+            type_name: "Node".to_string(),
+            compressed_size: 1024,
+            row_count: 100,
+            columns: {
+                let mut map = HashMap::new();
+                map.insert("name".to_string(), "string".to_string());
+                map.insert("count".to_string(), "int64".to_string());
+                map
+            },
+        };
+
+        assert_eq!(section.type_name, "Node");
+        assert_eq!(section.compressed_size, 1024);
+        assert_eq!(section.row_count, 100);
+        assert_eq!(section.columns.len(), 2);
+    }
+
+    #[test]
+    fn test_v3_column_section_serde() {
+        let section = V3ColumnSection {
+            type_name: "Test".to_string(),
+            compressed_size: 512,
+            row_count: 50,
+            columns: {
+                let mut map = HashMap::new();
+                map.insert("field".to_string(), "type".to_string());
+                map
+            },
+        };
+
+        let json = serde_json::to_string(&section).unwrap();
+        let deserialized: V3ColumnSection = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(section.type_name, deserialized.type_name);
+        assert_eq!(section.compressed_size, deserialized.compressed_size);
+        assert_eq!(section.row_count, deserialized.row_count);
+    }
+
+    // ─── Tests for FileMetadata ──────────────────────────────────────────────
+    #[test]
+    fn test_file_metadata_default() {
+        let metadata = FileMetadata::default();
+
+        assert_eq!(metadata.core_data_version, 0);
+        assert_eq!(metadata.library_version, "");
+        assert!(metadata.schema_definition.is_none());
+        assert!(metadata.property_index_keys.is_empty());
+        assert!(metadata.node_type_metadata.is_empty());
+    }
+
+    #[test]
+    fn test_file_metadata_serde_empty() {
+        let metadata = FileMetadata::default();
+        let json = serde_json::to_string(&metadata).unwrap();
+        let deserialized: FileMetadata = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(metadata.core_data_version, deserialized.core_data_version);
+        assert_eq!(metadata.library_version, deserialized.library_version);
+    }
+
+    #[test]
+    fn test_file_metadata_with_values() {
+        let mut metadata = FileMetadata::default();
+        metadata.core_data_version = 1;
+        metadata.library_version = "0.6.5".to_string();
+        metadata.topology_compressed_size = 2048;
+        metadata.timeseries_data_version = 2;
+
+        let json = serde_json::to_string(&metadata).unwrap();
+        let deserialized: FileMetadata = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.core_data_version, 1);
+        assert_eq!(deserialized.library_version, "0.6.5");
+        assert_eq!(deserialized.topology_compressed_size, 2048);
+        assert_eq!(deserialized.timeseries_data_version, 2);
+    }
+
+    #[test]
+    fn test_file_metadata_auto_vacuum_deserialize_default() {
+        // Test that the serde default is correctly applied during deserialization
+        let json = "{}";
+        let metadata: FileMetadata = serde_json::from_str(json).unwrap();
+        assert_eq!(metadata.auto_vacuum_threshold, Some(0.3));
+    }
+
+    #[test]
+    fn test_file_metadata_auto_vacuum_none() {
+        let mut metadata = FileMetadata::default();
+        metadata.auto_vacuum_threshold = None;
+
+        let json = serde_json::to_string(&metadata).unwrap();
+        let deserialized: FileMetadata = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.auto_vacuum_threshold, None);
+    }
+
+    #[test]
+    fn test_file_metadata_column_sections() {
+        let section = V3ColumnSection {
+            type_name: "Node".to_string(),
+            compressed_size: 1024,
+            row_count: 100,
+            columns: HashMap::new(),
+        };
+
+        let mut metadata = FileMetadata::default();
+        metadata.column_sections = vec![section.clone()];
+
+        let json = serde_json::to_string(&metadata).unwrap();
+        let deserialized: FileMetadata = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.column_sections.len(), 1);
+        assert_eq!(
+            deserialized.column_sections[0].type_name,
+            "Node"
+        );
+    }
+
+    #[test]
+    fn test_file_metadata_node_type_metadata() {
+        let mut metadata = FileMetadata::default();
+        let mut type_meta = HashMap::new();
+        type_meta.insert("name".to_string(), "string".to_string());
+        metadata.node_type_metadata.insert("Person".to_string(), type_meta);
+
+        let json = serde_json::to_string(&metadata).unwrap();
+        let deserialized: FileMetadata = serde_json::from_str(&json).unwrap();
+
+        assert!(deserialized.node_type_metadata.contains_key("Person"));
+    }
+
+    #[test]
+    fn test_file_metadata_connection_type_metadata() {
+        let mut metadata = FileMetadata::default();
+        // Note: ConnectionTypeInfo is defined elsewhere, so we just test the empty state
+        assert!(metadata.connection_type_metadata.is_empty());
+
+        let json = serde_json::to_string(&metadata).unwrap();
+        let deserialized: FileMetadata = serde_json::from_str(&json).unwrap();
+
+        assert!(deserialized.connection_type_metadata.is_empty());
+    }
+
+    #[test]
+    fn test_file_metadata_spatial_configs() {
+        let mut metadata = FileMetadata::default();
+        assert!(metadata.spatial_configs.is_empty());
+
+        let json = serde_json::to_string(&metadata).unwrap();
+        let deserialized: FileMetadata = serde_json::from_str(&json).unwrap();
+
+        assert!(deserialized.spatial_configs.is_empty());
+    }
+
+    #[test]
+    fn test_file_metadata_timeseries_configs() {
+        let mut metadata = FileMetadata::default();
+        assert!(metadata.timeseries_configs.is_empty());
+
+        let json = serde_json::to_string(&metadata).unwrap();
+        let deserialized: FileMetadata = serde_json::from_str(&json).unwrap();
+
+        assert!(deserialized.timeseries_configs.is_empty());
+    }
+
+    #[test]
+    fn test_file_metadata_temporal_configs() {
+        let mut metadata = FileMetadata::default();
+        assert!(metadata.temporal_node_configs.is_empty());
+        assert!(metadata.temporal_edge_configs.is_empty());
+
+        let json = serde_json::to_string(&metadata).unwrap();
+        let deserialized: FileMetadata = serde_json::from_str(&json).unwrap();
+
+        assert!(deserialized.temporal_node_configs.is_empty());
+        assert!(deserialized.temporal_edge_configs.is_empty());
+    }
+
+    #[test]
+    fn test_export_stats_creation() {
+        let stats = ExportStats {
+            stores: 5,
+            embeddings: 1000,
+        };
+
+        assert_eq!(stats.stores, 5);
+        assert_eq!(stats.embeddings, 1000);
+    }
+
+    #[test]
+    fn test_import_stats_creation() {
+        let stats = ImportStats {
+            stores: 3,
+            imported: 500,
+            skipped: 100,
+        };
+
+        assert_eq!(stats.stores, 3);
+        assert_eq!(stats.imported, 500);
+        assert_eq!(stats.skipped, 100);
+    }
+
+    #[test]
+    fn test_embedding_export_filter_types() {
+        let filter = EmbeddingExportFilter::Types(vec![
+            "Person".to_string(),
+            "Company".to_string(),
+        ]);
+
+        match filter {
+            EmbeddingExportFilter::Types(types) => {
+                assert_eq!(types.len(), 2);
+                assert!(types.contains(&"Person".to_string()));
+            }
+            _ => panic!("Expected Types variant"),
+        }
+    }
+
+    #[test]
+    fn test_embedding_export_filter_type_properties() {
+        let mut props = HashMap::new();
+        props.insert("Person".to_string(), vec!["name".to_string()]);
+        let filter = EmbeddingExportFilter::TypeProperties(props);
+
+        match filter {
+            EmbeddingExportFilter::TypeProperties(map) => {
+                assert!(map.contains_key("Person"));
+            }
+            _ => panic!("Expected TypeProperties variant"),
+        }
+    }
+
+    #[test]
+    fn test_exported_embedding_store_creation() {
+        let store = ExportedEmbeddingStore {
+            node_type: "Document".to_string(),
+            text_column: "content".to_string(),
+            dimension: 1536,
+            entries: vec![(Value::String("doc_1".to_string()), vec![0.1, 0.2, 0.3])],
+        };
+
+        assert_eq!(store.node_type, "Document");
+        assert_eq!(store.text_column, "content");
+        assert_eq!(store.dimension, 1536);
+        assert_eq!(store.entries.len(), 1);
+    }
+
+    #[test]
+    fn test_exported_embedding_store_serde() {
+        let store = ExportedEmbeddingStore {
+            node_type: "Test".to_string(),
+            text_column: "field".to_string(),
+            dimension: 128,
+            entries: vec![(Value::Int64(1), vec![0.5])],
+        };
+
+        let serialized = bincode_ser(&store).unwrap();
+        let deserialized: ExportedEmbeddingStore = bincode_deser(&serialized).unwrap();
+
+        assert_eq!(store.node_type, deserialized.node_type);
+        assert_eq!(store.dimension, deserialized.dimension);
+    }
+
+    #[test]
+    fn test_embedding_strip_suffix() {
+        let full_name = "summary_emb";
+        let stripped = full_name.strip_suffix("_emb").unwrap_or(full_name);
+        assert_eq!(stripped, "summary");
+    }
+
+    #[test]
+    fn test_embedding_strip_suffix_not_present() {
+        let full_name = "summary";
+        let stripped = full_name.strip_suffix("_emb").unwrap_or(full_name);
+        assert_eq!(stripped, "summary");
+    }
+
+    #[test]
+    fn test_u32_to_le_bytes() {
+        let value: u32 = 0x12345678;
+        let bytes = value.to_le_bytes();
+
+        assert_eq!(bytes[0], 0x78);
+        assert_eq!(bytes[1], 0x56);
+        assert_eq!(bytes[2], 0x34);
+        assert_eq!(bytes[3], 0x12);
+    }
+
+    #[test]
+    fn test_u32_from_le_bytes() {
+        let bytes = [0x78, 0x56, 0x34, 0x12];
+        let value = u32::from_le_bytes(bytes);
+
+        assert_eq!(value, 0x12345678);
+    }
+
+    #[test]
+    fn test_le_bytes_roundtrip() {
+        let original: u32 = 42;
+        let bytes = original.to_le_bytes();
+        let restored = u32::from_le_bytes(bytes);
+
+        assert_eq!(original, restored);
+    }
+
+    #[test]
+    fn test_large_le_bytes_roundtrip() {
+        let original: u32 = 0xDEADBEEF;
+        let bytes = original.to_le_bytes();
+        let restored = u32::from_le_bytes(bytes);
+
+        assert_eq!(original, restored);
+    }
+
+    #[test]
+    fn test_file_metadata_id_field_aliases() {
+        let mut metadata = FileMetadata::default();
+        metadata.id_field_aliases.insert("Person".to_string(), "person_id".to_string());
+
+        let json = serde_json::to_string(&metadata).unwrap();
+        let deserialized: FileMetadata = serde_json::from_str(&json).unwrap();
+
+        assert!(deserialized.id_field_aliases.contains_key("Person"));
+    }
+
+    #[test]
+    fn test_file_metadata_title_field_aliases() {
+        let mut metadata = FileMetadata::default();
+        metadata.title_field_aliases.insert("Company".to_string(), "company_name".to_string());
+
+        let json = serde_json::to_string(&metadata).unwrap();
+        let deserialized: FileMetadata = serde_json::from_str(&json).unwrap();
+
+        assert!(deserialized.title_field_aliases.contains_key("Company"));
+    }
+
+    #[test]
+    fn test_bincode_ser_bool() {
+        let original = true;
+        let serialized = bincode_ser(&original).unwrap();
+        let deserialized: bool = bincode_deser(&serialized).unwrap();
+
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn test_bincode_ser_hashmap() {
+        let mut original = HashMap::new();
+        original.insert("key1".to_string(), 100);
+        original.insert("key2".to_string(), 200);
+
+        let serialized = bincode_ser(&original).unwrap();
+        let deserialized: HashMap<String, i32> = bincode_deser(&serialized).unwrap();
+
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn test_zstd_compress_json() {
+        let json = r#"{"name": "test", "value": 42}"#;
+        let compressed = zstd_compress(json.as_bytes()).unwrap();
+        let decompressed = zstd_decompress(&compressed).unwrap();
+
+        assert_eq!(json.as_bytes().to_vec(), decompressed);
+    }
+
+    #[test]
+    fn test_exported_embedding_store_multiple_entries() {
+        let store = ExportedEmbeddingStore {
+            node_type: "Document".to_string(),
+            text_column: "content".to_string(),
+            dimension: 128,
+            entries: vec![
+                (Value::String("doc_1".to_string()), vec![0.1, 0.2]),
+                (Value::String("doc_2".to_string()), vec![0.3, 0.4]),
+                (Value::String("doc_3".to_string()), vec![0.5, 0.6]),
+            ],
+        };
+
+        assert_eq!(store.entries.len(), 3);
+        assert_eq!(store.dimension, 128);
+    }
+
+    #[test]
+    fn test_v3_column_section_empty_columns() {
+        let section = V3ColumnSection {
+            type_name: "EmptyType".to_string(),
+            compressed_size: 0,
+            row_count: 0,
+            columns: HashMap::new(),
+        };
+
+        assert_eq!(section.columns.len(), 0);
+        assert_eq!(section.row_count, 0);
+    }
+}

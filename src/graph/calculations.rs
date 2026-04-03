@@ -724,3 +724,494 @@ pub fn store_count_results(
 
     Ok(report)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── Tests for is_known_aggregate ───────────────────────────────────────
+    #[test]
+    fn test_is_known_aggregate_sum() {
+        assert!(is_known_aggregate("sum"));
+    }
+
+    #[test]
+    fn test_is_known_aggregate_count() {
+        assert!(is_known_aggregate("count"));
+    }
+
+    #[test]
+    fn test_is_known_aggregate_min() {
+        assert!(is_known_aggregate("min"));
+    }
+
+    #[test]
+    fn test_is_known_aggregate_max() {
+        assert!(is_known_aggregate("max"));
+    }
+
+    #[test]
+    fn test_is_known_aggregate_mean() {
+        assert!(is_known_aggregate("mean"));
+    }
+
+    #[test]
+    fn test_is_known_aggregate_std() {
+        assert!(is_known_aggregate("std"));
+    }
+
+    #[test]
+    fn test_is_known_aggregate_unknown() {
+        assert!(!is_known_aggregate("unknown_func"));
+    }
+
+    #[test]
+    fn test_is_known_aggregate_empty_string() {
+        assert!(!is_known_aggregate(""));
+    }
+
+    // ─── Tests for is_likely_aggregate_name ─────────────────────────────────
+    #[test]
+    fn test_is_likely_aggregate_name_sum() {
+        assert!(is_likely_aggregate_name("sum"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_SUM_uppercase() {
+        assert!(is_likely_aggregate_name("SUM"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_avg() {
+        assert!(is_likely_aggregate_name("avg"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_average() {
+        assert!(is_likely_aggregate_name("average"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_mean() {
+        assert!(is_likely_aggregate_name("mean"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_median() {
+        assert!(is_likely_aggregate_name("median"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_min() {
+        assert!(is_likely_aggregate_name("min"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_max() {
+        assert!(is_likely_aggregate_name("max"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_count() {
+        assert!(is_likely_aggregate_name("count"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_std() {
+        assert!(is_likely_aggregate_name("std"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_stdev() {
+        assert!(is_likely_aggregate_name("stdev"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_stddev() {
+        assert!(is_likely_aggregate_name("stddev"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_var() {
+        assert!(is_likely_aggregate_name("var"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_variance() {
+        assert!(is_likely_aggregate_name("variance"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_with_whitespace() {
+        assert!(is_likely_aggregate_name("  sum  "));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_unknown() {
+        assert!(!is_likely_aggregate_name("foobar"));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_empty() {
+        assert!(!is_likely_aggregate_name(""));
+    }
+
+    #[test]
+    fn test_is_likely_aggregate_name_empty_whitespace() {
+        assert!(!is_likely_aggregate_name("   "));
+    }
+
+    // ─── Tests for extract_unknown_aggregate_function ──────────────────────
+    #[test]
+    fn test_extract_unknown_aggregate_function_known() {
+        let result = extract_unknown_aggregate_function("sum(price)");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_function_unknown() {
+        let result = extract_unknown_aggregate_function("unknown(price)");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "unknown");
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_function_mixed_case() {
+        let result = extract_unknown_aggregate_function("Unknown(property)");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_function_no_parens() {
+        let result = extract_unknown_aggregate_function("just_text");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_function_multiple_parens() {
+        let result = extract_unknown_aggregate_function("something(a)");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_function_with_spaces() {
+        let result = extract_unknown_aggregate_function("  sum  (price)");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_function_special_chars() {
+        // Underscores should be allowed in function names
+        let result = extract_unknown_aggregate_function("custom_func(x)");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_function_count() {
+        let result = extract_unknown_aggregate_function("count(items)");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_function_mean() {
+        let result = extract_unknown_aggregate_function("mean(values)");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_unknown_aggregate_function_min() {
+        let result = extract_unknown_aggregate_function("min(data)");
+        assert_eq!(result, None);
+    }
+
+    // ─── Tests for has_aggregation ──────────────────────────────────────────
+    #[test]
+    fn test_has_aggregation_simple_number() {
+        // Expr::Number doesn't contain aggregation
+        let expr = Expr::Number(5.0);
+        assert!(!has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_variable() {
+        let expr = Expr::Variable("price".to_string());
+        assert!(!has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_with_add() {
+        let expr = Expr::Add(
+            Box::new(Expr::Variable("a".to_string())),
+            Box::new(Expr::Variable("b".to_string())),
+        );
+        assert!(!has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_with_subtract() {
+        let expr = Expr::Subtract(
+            Box::new(Expr::Variable("a".to_string())),
+            Box::new(Expr::Variable("b".to_string())),
+        );
+        assert!(!has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_with_multiply() {
+        let expr = Expr::Multiply(
+            Box::new(Expr::Variable("a".to_string())),
+            Box::new(Expr::Variable("b".to_string())),
+        );
+        assert!(!has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_with_divide() {
+        let expr = Expr::Divide(
+            Box::new(Expr::Variable("a".to_string())),
+            Box::new(Expr::Variable("b".to_string())),
+        );
+        assert!(!has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_aggregate_type() {
+        let expr = Expr::Aggregate(
+            AggregateType::Sum,
+            Box::new(Expr::Variable("price".to_string())),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_aggregate_mean() {
+        let expr = Expr::Aggregate(
+            AggregateType::Mean,
+            Box::new(Expr::Variable("value".to_string())),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_aggregate_std() {
+        let expr = Expr::Aggregate(
+            AggregateType::Std,
+            Box::new(Expr::Variable("data".to_string())),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_aggregate_min() {
+        let expr = Expr::Aggregate(
+            AggregateType::Min,
+            Box::new(Expr::Variable("price".to_string())),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_aggregate_max() {
+        let expr = Expr::Aggregate(
+            AggregateType::Max,
+            Box::new(Expr::Variable("value".to_string())),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_aggregate_count() {
+        let expr = Expr::Aggregate(
+            AggregateType::Count,
+            Box::new(Expr::Variable("id".to_string())),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_nested_aggregate_in_add() {
+        let expr = Expr::Add(
+            Box::new(Expr::Aggregate(
+                AggregateType::Sum,
+                Box::new(Expr::Variable("a".to_string())),
+            )),
+            Box::new(Expr::Variable("b".to_string())),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_nested_aggregate_in_multiply() {
+        let expr = Expr::Multiply(
+            Box::new(Expr::Variable("x".to_string())),
+            Box::new(Expr::Aggregate(
+                AggregateType::Mean,
+                Box::new(Expr::Variable("price".to_string())),
+            )),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_nested_aggregate_in_subtract() {
+        let expr = Expr::Subtract(
+            Box::new(Expr::Aggregate(
+                AggregateType::Max,
+                Box::new(Expr::Variable("value".to_string())),
+            )),
+            Box::new(Expr::Number(1.0)),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_nested_aggregate_in_divide() {
+        let expr = Expr::Divide(
+            Box::new(Expr::Aggregate(
+                AggregateType::Sum,
+                Box::new(Expr::Variable("total".to_string())),
+            )),
+            Box::new(Expr::Number(2.0)),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    #[test]
+    fn test_has_aggregation_deep_nesting() {
+        let expr = Expr::Add(
+            Box::new(Expr::Subtract(
+                Box::new(Expr::Aggregate(
+                    AggregateType::Max,
+                    Box::new(Expr::Variable("value".to_string())),
+                )),
+                Box::new(Expr::Number(1.0)),
+            )),
+            Box::new(Expr::Variable("y".to_string())),
+        );
+        assert!(has_aggregation(&expr));
+    }
+
+    // ─── Tests for StatResult ───────────────────────────────────────────────
+    #[test]
+    fn test_stat_result_creation() {
+        let result = StatResult {
+            node_idx: Some(NodeIndex::new(0)),
+            parent_idx: None,
+            parent_title: Some("Parent".to_string()),
+            value: Value::Int64(42),
+            error_msg: None,
+        };
+
+        assert_eq!(result.node_idx, Some(NodeIndex::new(0)));
+        assert_eq!(result.parent_idx, None);
+        assert_eq!(result.parent_title, Some("Parent".to_string()));
+        assert!(!matches!(result.value, Value::Null));
+        assert!(result.error_msg.is_none());
+    }
+
+    #[test]
+    fn test_stat_result_with_error() {
+        let result = StatResult {
+            node_idx: Some(NodeIndex::new(5)),
+            parent_idx: Some(NodeIndex::new(1)),
+            parent_title: None,
+            value: Value::Null,
+            error_msg: Some("Evaluation failed".to_string()),
+        };
+
+        assert!(result.error_msg.is_some());
+        assert_eq!(result.error_msg.as_ref().unwrap(), "Evaluation failed");
+    }
+
+    #[test]
+    fn test_stat_result_no_indices() {
+        let result = StatResult {
+            node_idx: None,
+            parent_idx: None,
+            parent_title: Some("Root".to_string()),
+            value: Value::Float64(3.14),
+            error_msg: None,
+        };
+
+        assert!(result.node_idx.is_none());
+        assert!(result.parent_idx.is_none());
+    }
+
+    #[test]
+    fn test_stat_result_null_value() {
+        let result = StatResult {
+            node_idx: Some(NodeIndex::new(10)),
+            parent_idx: Some(NodeIndex::new(2)),
+            parent_title: Some("Parent".to_string()),
+            value: Value::Null,
+            error_msg: None,
+        };
+
+        assert!(matches!(result.value, Value::Null));
+    }
+
+    // ─── Tests for EvaluationResult ──────────────────────────────────────────
+    #[test]
+    fn test_evaluation_result_computed() {
+        let results = vec![StatResult {
+            node_idx: Some(NodeIndex::new(0)),
+            parent_idx: None,
+            parent_title: None,
+            value: Value::Float64(3.14),
+            error_msg: None,
+        }];
+
+        let eval_result = EvaluationResult::Computed(results);
+
+        match eval_result {
+            EvaluationResult::Computed(r) => assert_eq!(r.len(), 1),
+            _ => panic!("Expected Computed variant"),
+        }
+    }
+
+    #[test]
+    fn test_evaluation_result_computed_empty() {
+        let results: Vec<StatResult> = vec![];
+
+        let eval_result = EvaluationResult::Computed(results);
+
+        match eval_result {
+            EvaluationResult::Computed(r) => assert_eq!(r.len(), 0),
+            _ => panic!("Expected Computed variant"),
+        }
+    }
+
+    #[test]
+    fn test_evaluation_result_computed_multiple() {
+        let results = vec![
+            StatResult {
+                node_idx: Some(NodeIndex::new(0)),
+                parent_idx: None,
+                parent_title: None,
+                value: Value::Int64(100),
+                error_msg: None,
+            },
+            StatResult {
+                node_idx: Some(NodeIndex::new(1)),
+                parent_idx: None,
+                parent_title: None,
+                value: Value::Int64(200),
+                error_msg: None,
+            },
+            StatResult {
+                node_idx: Some(NodeIndex::new(2)),
+                parent_idx: None,
+                parent_title: None,
+                value: Value::Int64(300),
+                error_msg: None,
+            },
+        ];
+
+        let eval_result = EvaluationResult::Computed(results);
+
+        match eval_result {
+            EvaluationResult::Computed(r) => assert_eq!(r.len(), 3),
+            _ => panic!("Expected Computed variant"),
+        }
+    }
+}

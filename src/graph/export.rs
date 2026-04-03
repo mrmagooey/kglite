@@ -903,3 +903,434 @@ fn properties_to_json<'a>(properties: impl Iterator<Item = (&'a str, &'a Value)>
         .collect();
     format!("{{{}}}", pairs.join(","))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Tests for escape_xml
+    #[test]
+    fn test_escape_xml_empty_string() {
+        assert_eq!(escape_xml(""), "");
+    }
+
+    #[test]
+    fn test_escape_xml_ampersand() {
+        assert_eq!(escape_xml("&"), "&amp;");
+        assert_eq!(escape_xml("a&b"), "a&amp;b");
+    }
+
+    #[test]
+    fn test_escape_xml_less_than() {
+        assert_eq!(escape_xml("<"), "&lt;");
+    }
+
+    #[test]
+    fn test_escape_xml_greater_than() {
+        assert_eq!(escape_xml(">"), "&gt;");
+    }
+
+    #[test]
+    fn test_escape_xml_double_quote() {
+        assert_eq!(escape_xml("\""), "&quot;");
+    }
+
+    #[test]
+    fn test_escape_xml_single_quote() {
+        assert_eq!(escape_xml("'"), "&apos;");
+    }
+
+    #[test]
+    fn test_escape_xml_multiple_special_chars() {
+        assert_eq!(
+            escape_xml("<tag>text&</tag>"),
+            "&lt;tag&gt;text&amp;&lt;/tag&gt;"
+        );
+    }
+
+    #[test]
+    fn test_escape_xml_combined_chars() {
+        assert_eq!(escape_xml("&<>\"'"), "&amp;&lt;&gt;&quot;&apos;");
+    }
+
+    // Tests for escape_csv
+    #[test]
+    fn test_escape_csv_empty_string() {
+        assert_eq!(escape_csv(""), "");
+    }
+
+    #[test]
+    fn test_escape_csv_no_special_chars() {
+        assert_eq!(escape_csv("hello"), "hello");
+    }
+
+    #[test]
+    fn test_escape_csv_with_comma() {
+        assert_eq!(escape_csv("a,b"), "\"a,b\"");
+    }
+
+    #[test]
+    fn test_escape_csv_with_quote() {
+        assert_eq!(escape_csv("a\"b"), "\"a\"\"b\"");
+    }
+
+    #[test]
+    fn test_escape_csv_with_newline() {
+        assert_eq!(escape_csv("line1\nline2"), "\"line1\nline2\"");
+    }
+
+    #[test]
+    fn test_escape_csv_comma_and_quote() {
+        assert_eq!(escape_csv("a,\"b\",c"), "\"a,\"\"b\"\",c\"");
+    }
+
+    #[test]
+    fn test_escape_csv_comma_and_newline() {
+        assert_eq!(escape_csv("a,b\nc"), "\"a,b\nc\"");
+    }
+
+    #[test]
+    fn test_escape_csv_tab_no_quote() {
+        assert_eq!(escape_csv("a\tb"), "a\tb");
+    }
+
+    // Tests for value_to_string
+    #[test]
+    fn test_value_to_string_string() {
+        assert_eq!(value_to_string(&Value::String("hello".to_string())), "hello");
+    }
+
+    #[test]
+    fn test_value_to_string_int64() {
+        assert_eq!(value_to_string(&Value::Int64(42)), "42");
+        assert_eq!(value_to_string(&Value::Int64(-100)), "-100");
+        assert_eq!(value_to_string(&Value::Int64(0)), "0");
+    }
+
+    #[test]
+    fn test_value_to_string_float64() {
+        assert_eq!(value_to_string(&Value::Float64(3.14)), "3.14");
+        assert_eq!(value_to_string(&Value::Float64(0.0)), "0");
+    }
+
+    #[test]
+    fn test_value_to_string_boolean() {
+        assert_eq!(value_to_string(&Value::Boolean(true)), "true");
+        assert_eq!(value_to_string(&Value::Boolean(false)), "false");
+    }
+
+    #[test]
+    fn test_value_to_string_null() {
+        assert_eq!(value_to_string(&Value::Null), "");
+    }
+
+    #[test]
+    fn test_value_to_string_unique_id() {
+        assert_eq!(value_to_string(&Value::UniqueId(42)), "42");
+    }
+
+    #[test]
+    fn test_value_to_string_point() {
+        let result = value_to_string(&Value::Point { lat: 40.7128, lon: -74.0060 });
+        assert!(result.contains("40.7128"));
+        assert!(result.contains("-74.006"));
+    }
+
+    #[test]
+    fn test_value_to_string_node_ref() {
+        assert_eq!(value_to_string(&Value::NodeRef(5)), "node#5");
+    }
+
+    #[test]
+    fn test_value_to_string_edge_ref() {
+        assert_eq!(
+            value_to_string(&Value::EdgeRef { edge_idx: 10, src_idx: 0, dst_idx: 1 }),
+            "edge#10"
+        );
+    }
+
+    #[test]
+    fn test_value_to_string_large_int() {
+        assert_eq!(value_to_string(&Value::Int64(i64::MAX)), "9223372036854775807");
+    }
+
+    // Tests for json_string
+    #[test]
+    fn test_json_string_empty() {
+        assert_eq!(json_string(""), "\"\"");
+    }
+
+    #[test]
+    fn test_json_string_simple() {
+        assert_eq!(json_string("hello"), "\"hello\"");
+    }
+
+    #[test]
+    fn test_json_string_with_double_quote() {
+        assert_eq!(json_string("say \"hello\""), "\"say \\\"hello\\\"\"");
+    }
+
+    #[test]
+    fn test_json_string_with_backslash() {
+        assert_eq!(json_string("path\\to\\file"), "\"path\\\\to\\\\file\"");
+    }
+
+    #[test]
+    fn test_json_string_with_newline() {
+        assert_eq!(json_string("line1\nline2"), "\"line1\\nline2\"");
+    }
+
+    #[test]
+    fn test_json_string_multiple_escapes() {
+        let input = "a\"b\\c\nd";
+        let expected = "\"a\\\"b\\\\c\\nd\"";
+        assert_eq!(json_string(input), expected);
+    }
+
+    #[test]
+    fn test_json_string_only_quotes() {
+        assert_eq!(json_string("\"\"\""), "\"\\\"\\\"\\\"\"");
+    }
+
+    // Tests for json_value
+    #[test]
+    fn test_json_value_string() {
+        let result = json_value(&Value::String("hello".to_string()));
+        assert_eq!(result, "\"hello\"");
+    }
+
+    #[test]
+    fn test_json_value_int64() {
+        assert_eq!(json_value(&Value::Int64(42)), "42");
+        assert_eq!(json_value(&Value::Int64(-100)), "-100");
+    }
+
+    #[test]
+    fn test_json_value_float64() {
+        assert_eq!(json_value(&Value::Float64(3.14)), "3.14");
+    }
+
+    #[test]
+    fn test_json_value_float64_nan() {
+        assert_eq!(json_value(&Value::Float64(f64::NAN)), "null");
+    }
+
+    #[test]
+    fn test_json_value_float64_infinity() {
+        assert_eq!(json_value(&Value::Float64(f64::INFINITY)), "null");
+        assert_eq!(json_value(&Value::Float64(f64::NEG_INFINITY)), "null");
+    }
+
+    #[test]
+    fn test_json_value_boolean() {
+        assert_eq!(json_value(&Value::Boolean(true)), "true");
+        assert_eq!(json_value(&Value::Boolean(false)), "false");
+    }
+
+    #[test]
+    fn test_json_value_null() {
+        assert_eq!(json_value(&Value::Null), "null");
+    }
+
+    #[test]
+    fn test_json_value_unique_id() {
+        assert_eq!(json_value(&Value::UniqueId(42)), "42");
+    }
+
+    #[test]
+    fn test_json_value_point() {
+        let result = json_value(&Value::Point { lat: 40.7128, lon: -74.0060 });
+        assert!(result.contains("\"lat\""));
+        assert!(result.contains("\"lon\""));
+    }
+
+    #[test]
+    fn test_json_value_node_ref() {
+        assert_eq!(json_value(&Value::NodeRef(5)), "5");
+    }
+
+    #[test]
+    fn test_json_value_edge_ref() {
+        let result = json_value(&Value::EdgeRef { edge_idx: 10, src_idx: 0, dst_idx: 1 });
+        assert_eq!(result, "10");
+    }
+
+    #[test]
+    fn test_json_value_string_with_escapes() {
+        let s = Value::String("test\"with\\special".to_string());
+        let result = json_value(&s);
+        assert!(result.contains("\\\""));
+        assert!(result.contains("\\\\"));
+    }
+
+    // Tests for value_type_name
+    #[test]
+    fn test_value_type_name_string() {
+        assert_eq!(value_type_name(&Value::String("test".to_string())), "string");
+    }
+
+    #[test]
+    fn test_value_type_name_int64() {
+        assert_eq!(value_type_name(&Value::Int64(42)), "int");
+    }
+
+    #[test]
+    fn test_value_type_name_float64() {
+        assert_eq!(value_type_name(&Value::Float64(3.14)), "float");
+    }
+
+    #[test]
+    fn test_value_type_name_boolean() {
+        assert_eq!(value_type_name(&Value::Boolean(true)), "bool");
+    }
+
+    #[test]
+    fn test_value_type_name_datetime() {
+        use chrono::NaiveDate;
+        let dt = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        assert_eq!(value_type_name(&Value::DateTime(dt)), "date");
+    }
+
+    #[test]
+    fn test_value_type_name_unique_id() {
+        assert_eq!(value_type_name(&Value::UniqueId(42)), "int");
+    }
+
+    #[test]
+    fn test_value_type_name_point() {
+        assert_eq!(value_type_name(&Value::Point { lat: 0.0, lon: 0.0 }), "string");
+    }
+
+    #[test]
+    fn test_value_type_name_null() {
+        assert_eq!(value_type_name(&Value::Null), "string");
+    }
+
+    #[test]
+    fn test_value_type_name_node_ref() {
+        assert_eq!(value_type_name(&Value::NodeRef(1)), "int");
+    }
+
+    #[test]
+    fn test_value_type_name_edge_ref() {
+        assert_eq!(
+            value_type_name(&Value::EdgeRef { edge_idx: 1, src_idx: 0, dst_idx: 2 }),
+            "int"
+        );
+    }
+
+    #[test]
+    fn test_value_type_name_consistency() {
+        let values = vec![
+            (Value::String("test".to_string()), "string"),
+            (Value::Int64(0), "int"),
+            (Value::Float64(0.0), "float"),
+            (Value::Boolean(false), "bool"),
+            (Value::Null, "string"),
+            (Value::UniqueId(0), "int"),
+            (Value::NodeRef(0), "int"),
+            (Value::EdgeRef { edge_idx: 0, src_idx: 0, dst_idx: 0 }, "int"),
+        ];
+        for (val, expected_type) in values {
+            assert_eq!(value_type_name(&val), expected_type);
+        }
+    }
+
+    // Tests for properties_to_json
+    #[test]
+    fn test_properties_to_json_empty() {
+        let props: Vec<(&str, &Value)> = vec![];
+        assert_eq!(properties_to_json(props.into_iter()), "{}");
+    }
+
+    #[test]
+    fn test_properties_to_json_single_property() {
+        let alice = Value::String("Alice".to_string());
+        let props = vec![("name", &alice)];
+        let result = properties_to_json(props.into_iter());
+        assert!(result.contains("\"name\""));
+        assert!(result.contains("\"Alice\""));
+    }
+
+    #[test]
+    fn test_properties_to_json_multiple_properties() {
+        let bob = Value::String("Bob".to_string());
+        let age = Value::Int64(30);
+        let props = vec![
+            ("name", &bob),
+            ("age", &age),
+        ];
+        let result = properties_to_json(props.into_iter());
+        assert!(result.contains("\"name\""));
+        assert!(result.contains("\"Bob\""));
+        assert!(result.contains("\"age\""));
+        assert!(result.contains("30"));
+    }
+
+    #[test]
+    fn test_properties_to_json_mixed_types() {
+        let val_str = Value::String("test".to_string());
+        let val_int = Value::Int64(42);
+        let val_bool = Value::Boolean(true);
+        let props = vec![
+            ("str", &val_str),
+            ("num", &val_int),
+            ("flag", &val_bool),
+        ];
+        let result = properties_to_json(props.into_iter());
+        assert!(result.contains("\"str\""));
+        assert!(result.contains("\"num\""));
+        assert!(result.contains("\"flag\""));
+    }
+
+    #[test]
+    fn test_properties_to_json_null_value() {
+        let null_val = Value::Null;
+        let props = vec![("nullable", &null_val)];
+        let result = properties_to_json(props.into_iter());
+        assert!(result.contains("\"nullable\""));
+        assert!(result.contains("null"));
+    }
+
+    #[test]
+    fn test_properties_to_json_wraps_in_braces() {
+        let props: Vec<(&str, &Value)> = vec![];
+        let result = properties_to_json(props.into_iter());
+        assert!(result.starts_with("{"));
+        assert!(result.ends_with("}"));
+    }
+
+    #[test]
+    fn test_properties_to_json_many_properties() {
+        let v1 = Value::String("a".to_string());
+        let v2 = Value::Int64(1);
+        let v3 = Value::Float64(1.5);
+        let v4 = Value::Boolean(true);
+        let v5 = Value::Null;
+        let props = vec![
+            ("p1", &v1),
+            ("p2", &v2),
+            ("p3", &v3),
+            ("p4", &v4),
+            ("p5", &v5),
+        ];
+        let result = properties_to_json(props.into_iter());
+        assert!(result.contains("\"p1\""));
+        assert!(result.contains("\"p2\""));
+        assert!(result.contains("\"p3\""));
+        assert!(result.contains("\"p4\""));
+        assert!(result.contains("\"p5\""));
+    }
+
+    #[test]
+    fn test_properties_to_json_special_names() {
+        let v = Value::String("value".to_string());
+        let props = vec![
+            ("name-with-dash", &v),
+            ("name.with.dot", &v),
+        ];
+        let result = properties_to_json(props.into_iter());
+        assert!(result.contains("\"name-with-dash\""));
+        assert!(result.contains("\"name.with.dot\""));
+    }
+}

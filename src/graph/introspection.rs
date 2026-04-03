@@ -3206,3 +3206,740 @@ if __name__ == "__main__":
         version = env!("CARGO_PKG_VERSION"),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::datatypes::values::Value;
+    use std::collections::HashMap;
+
+    // ── TypeCapabilities tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_type_capabilities_flags_csv_all_flags() {
+        let caps = TypeCapabilities {
+            has_timeseries: true,
+            has_geometry: true,
+            has_location: true,
+            has_embeddings: true,
+        };
+        let flags = caps.flags_csv();
+        assert_eq!(flags, "ts,geo,vec");
+    }
+
+    #[test]
+    fn test_type_capabilities_flags_csv_only_timeseries() {
+        let caps = TypeCapabilities {
+            has_timeseries: true,
+            has_geometry: false,
+            has_location: false,
+            has_embeddings: false,
+        };
+        let flags = caps.flags_csv();
+        assert_eq!(flags, "ts");
+    }
+
+    #[test]
+    fn test_type_capabilities_flags_csv_location_not_geometry() {
+        let caps = TypeCapabilities {
+            has_timeseries: false,
+            has_geometry: false,
+            has_location: true,
+            has_embeddings: false,
+        };
+        let flags = caps.flags_csv();
+        assert_eq!(flags, "loc");
+    }
+
+    #[test]
+    fn test_type_capabilities_flags_csv_location_and_geometry() {
+        // When both location and geometry are set, only "geo" should appear
+        let caps = TypeCapabilities {
+            has_timeseries: false,
+            has_geometry: true,
+            has_location: true,
+            has_embeddings: false,
+        };
+        let flags = caps.flags_csv();
+        assert_eq!(flags, "geo");
+    }
+
+    #[test]
+    fn test_type_capabilities_flags_csv_empty() {
+        let caps = TypeCapabilities {
+            has_timeseries: false,
+            has_geometry: false,
+            has_location: false,
+            has_embeddings: false,
+        };
+        let flags = caps.flags_csv();
+        assert_eq!(flags, "");
+    }
+
+    #[test]
+    fn test_type_capabilities_merge() {
+        let mut caps1 = TypeCapabilities {
+            has_timeseries: true,
+            has_geometry: false,
+            has_location: false,
+            has_embeddings: false,
+        };
+        let caps2 = TypeCapabilities {
+            has_timeseries: false,
+            has_geometry: true,
+            has_location: false,
+            has_embeddings: true,
+        };
+        caps1.merge(&caps2);
+        assert!(caps1.has_timeseries);
+        assert!(caps1.has_geometry);
+        assert!(!caps1.has_location);
+        assert!(caps1.has_embeddings);
+    }
+
+    #[test]
+    fn test_type_capabilities_merge_all_true() {
+        let mut caps1 = TypeCapabilities {
+            has_timeseries: true,
+            has_geometry: true,
+            has_location: true,
+            has_embeddings: true,
+        };
+        let caps2 = TypeCapabilities {
+            has_timeseries: false,
+            has_geometry: false,
+            has_location: false,
+            has_embeddings: false,
+        };
+        caps1.merge(&caps2);
+        assert!(caps1.has_timeseries);
+        assert!(caps1.has_geometry);
+        assert!(caps1.has_location);
+        assert!(caps1.has_embeddings);
+    }
+
+    // ── property_complexity tests ────────────────────────────────────────
+
+    #[test]
+    fn test_property_complexity_very_low() {
+        assert_eq!(property_complexity(0), "vl");
+        assert_eq!(property_complexity(1), "vl");
+        assert_eq!(property_complexity(3), "vl");
+    }
+
+    #[test]
+    fn test_property_complexity_low() {
+        assert_eq!(property_complexity(4), "l");
+        assert_eq!(property_complexity(6), "l");
+        assert_eq!(property_complexity(8), "l");
+    }
+
+    #[test]
+    fn test_property_complexity_medium() {
+        assert_eq!(property_complexity(9), "m");
+        assert_eq!(property_complexity(12), "m");
+        assert_eq!(property_complexity(15), "m");
+    }
+
+    #[test]
+    fn test_property_complexity_high() {
+        assert_eq!(property_complexity(16), "h");
+        assert_eq!(property_complexity(20), "h");
+        assert_eq!(property_complexity(30), "h");
+    }
+
+    #[test]
+    fn test_property_complexity_very_high() {
+        assert_eq!(property_complexity(31), "vh");
+        assert_eq!(property_complexity(100), "vh");
+        assert_eq!(property_complexity(1000), "vh");
+    }
+
+    // ── size_tier tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_size_tier_very_small() {
+        assert_eq!(size_tier(0), "vs");
+        assert_eq!(size_tier(5), "vs");
+        assert_eq!(size_tier(9), "vs");
+    }
+
+    #[test]
+    fn test_size_tier_small() {
+        assert_eq!(size_tier(10), "s");
+        assert_eq!(size_tier(50), "s");
+        assert_eq!(size_tier(99), "s");
+    }
+
+    #[test]
+    fn test_size_tier_medium() {
+        assert_eq!(size_tier(100), "m");
+        assert_eq!(size_tier(500), "m");
+        assert_eq!(size_tier(999), "m");
+    }
+
+    #[test]
+    fn test_size_tier_large() {
+        assert_eq!(size_tier(1000), "l");
+        assert_eq!(size_tier(5000), "l");
+        assert_eq!(size_tier(9999), "l");
+    }
+
+    #[test]
+    fn test_size_tier_very_large() {
+        assert_eq!(size_tier(10000), "vl");
+        assert_eq!(size_tier(100000), "vl");
+        assert_eq!(size_tier(1000000), "vl");
+    }
+
+    // ── format_type_descriptor tests ────────────────────────────────────
+
+    #[test]
+    fn test_format_type_descriptor_without_flags() {
+        let caps = TypeCapabilities {
+            has_timeseries: false,
+            has_geometry: false,
+            has_location: false,
+            has_embeddings: false,
+        };
+        let result = format_type_descriptor("Person", 50, 5, &caps);
+        assert_eq!(result, "Person[s,l]");
+    }
+
+    #[test]
+    fn test_format_type_descriptor_with_flags() {
+        let caps = TypeCapabilities {
+            has_timeseries: true,
+            has_geometry: false,
+            has_location: false,
+            has_embeddings: true,
+        };
+        let result = format_type_descriptor("Place", 500, 20, &caps);
+        assert_eq!(result, "Place[m,h,ts,vec]");
+    }
+
+    #[test]
+    fn test_format_type_descriptor_xml_escaping() {
+        let caps = TypeCapabilities {
+            has_timeseries: false,
+            has_geometry: false,
+            has_location: false,
+            has_embeddings: false,
+        };
+        let result = format_type_descriptor("A&B<C>D\"E", 10, 2, &caps);
+        assert_eq!(result, "A&amp;B&lt;C&gt;D&quot;E[s,vl]");
+    }
+
+    // ── children_counts tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_children_counts_empty() {
+        let parent_types: HashMap<String, String> = HashMap::new();
+        let result = children_counts(&parent_types);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_children_counts_single_parent() {
+        let mut parent_types: HashMap<String, String> = HashMap::new();
+        parent_types.insert("Child1".to_string(), "Parent".to_string());
+        parent_types.insert("Child2".to_string(), "Parent".to_string());
+        let result = children_counts(&parent_types);
+        assert_eq!(result.get("Parent"), Some(&2));
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_children_counts_multiple_parents() {
+        let mut parent_types: HashMap<String, String> = HashMap::new();
+        parent_types.insert("Child1".to_string(), "ParentA".to_string());
+        parent_types.insert("Child2".to_string(), "ParentA".to_string());
+        parent_types.insert("Child3".to_string(), "ParentB".to_string());
+        let result = children_counts(&parent_types);
+        assert_eq!(result.get("ParentA"), Some(&2));
+        assert_eq!(result.get("ParentB"), Some(&1));
+        assert_eq!(result.len(), 2);
+    }
+
+    // ── bubble_capabilities tests ────────────────────────────────────────
+
+    #[test]
+    fn test_bubble_capabilities_no_children() {
+        let mut caps: HashMap<String, TypeCapabilities> = HashMap::new();
+        caps.insert(
+            "Parent".to_string(),
+            TypeCapabilities {
+                has_timeseries: false,
+                has_geometry: false,
+                has_location: false,
+                has_embeddings: false,
+            },
+        );
+        let parent_types: HashMap<String, String> = HashMap::new();
+        bubble_capabilities(&mut caps, &parent_types);
+        assert!(!caps.get("Parent").unwrap().has_timeseries);
+    }
+
+    #[test]
+    fn test_bubble_capabilities_single_child() {
+        let mut caps: HashMap<String, TypeCapabilities> = HashMap::new();
+        caps.insert(
+            "Child".to_string(),
+            TypeCapabilities {
+                has_timeseries: true,
+                has_geometry: false,
+                has_location: false,
+                has_embeddings: false,
+            },
+        );
+        caps.insert(
+            "Parent".to_string(),
+            TypeCapabilities {
+                has_timeseries: false,
+                has_geometry: false,
+                has_location: false,
+                has_embeddings: false,
+            },
+        );
+        let mut parent_types: HashMap<String, String> = HashMap::new();
+        parent_types.insert("Child".to_string(), "Parent".to_string());
+
+        bubble_capabilities(&mut caps, &parent_types);
+        assert!(caps.get("Parent").unwrap().has_timeseries);
+    }
+
+    #[test]
+    fn test_bubble_capabilities_multiple_children() {
+        let mut caps: HashMap<String, TypeCapabilities> = HashMap::new();
+        caps.insert(
+            "Child1".to_string(),
+            TypeCapabilities {
+                has_timeseries: true,
+                has_geometry: false,
+                has_location: false,
+                has_embeddings: false,
+            },
+        );
+        caps.insert(
+            "Child2".to_string(),
+            TypeCapabilities {
+                has_timeseries: false,
+                has_geometry: true,
+                has_location: false,
+                has_embeddings: false,
+            },
+        );
+        caps.insert(
+            "Parent".to_string(),
+            TypeCapabilities {
+                has_timeseries: false,
+                has_geometry: false,
+                has_location: false,
+                has_embeddings: false,
+            },
+        );
+        let mut parent_types: HashMap<String, String> = HashMap::new();
+        parent_types.insert("Child1".to_string(), "Parent".to_string());
+        parent_types.insert("Child2".to_string(), "Parent".to_string());
+
+        bubble_capabilities(&mut caps, &parent_types);
+        let parent_cap = caps.get("Parent").unwrap();
+        assert!(parent_cap.has_timeseries);
+        assert!(parent_cap.has_geometry);
+    }
+
+    // ── is_null_value tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_is_null_value_null() {
+        assert!(is_null_value(&Value::Null));
+    }
+
+    #[test]
+    fn test_is_null_value_nan() {
+        assert!(is_null_value(&Value::Float64(f64::NAN)));
+    }
+
+    #[test]
+    fn test_is_null_value_normal_float() {
+        assert!(!is_null_value(&Value::Float64(1.0)));
+        assert!(!is_null_value(&Value::Float64(0.0)));
+        assert!(!is_null_value(&Value::Float64(-1.5)));
+    }
+
+    #[test]
+    fn test_is_null_value_string() {
+        assert!(!is_null_value(&Value::String("hello".to_string())));
+        assert!(!is_null_value(&Value::String("".to_string())));
+    }
+
+    #[test]
+    fn test_is_null_value_int() {
+        assert!(!is_null_value(&Value::Int64(0)));
+        assert!(!is_null_value(&Value::Int64(42)));
+        assert!(!is_null_value(&Value::Int64(-1)));
+    }
+
+    #[test]
+    fn test_is_null_value_bool() {
+        assert!(!is_null_value(&Value::Boolean(true)));
+        assert!(!is_null_value(&Value::Boolean(false)));
+    }
+
+    // ── value_type_name tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_value_type_name_string() {
+        assert_eq!(value_type_name(&Value::String("test".to_string())), "str");
+    }
+
+    #[test]
+    fn test_value_type_name_int() {
+        assert_eq!(value_type_name(&Value::Int64(42)), "int");
+    }
+
+    #[test]
+    fn test_value_type_name_float() {
+        assert_eq!(value_type_name(&Value::Float64(3.14)), "float");
+    }
+
+    #[test]
+    fn test_value_type_name_bool() {
+        assert_eq!(value_type_name(&Value::Boolean(true)), "bool");
+    }
+
+    #[test]
+    fn test_value_type_name_null() {
+        assert_eq!(value_type_name(&Value::Null), "unknown");
+    }
+
+    #[test]
+    fn test_value_type_name_noderef() {
+        // NodeRef takes a u32 index
+        assert_eq!(value_type_name(&Value::NodeRef(0)), "noderef");
+    }
+
+    // ── value_display_compact tests ──────────────────────────────────────
+
+    #[test]
+    fn test_value_display_compact_string_short() {
+        let val = Value::String("hello".to_string());
+        assert_eq!(value_display_compact(&val), "hello");
+    }
+
+    #[test]
+    fn test_value_display_compact_string_long() {
+        let long_str = "a".repeat(50);
+        let val = Value::String(long_str);
+        let result = value_display_compact(&val);
+        assert!(result.ends_with("..."));
+        assert_eq!(result.len(), 40); // 37 chars + "..."
+    }
+
+    #[test]
+    fn test_value_display_compact_string_exactly_40() {
+        let str_40 = "a".repeat(40);
+        let val = Value::String(str_40);
+        let result = value_display_compact(&val);
+        assert_eq!(result, "a".repeat(40));
+    }
+
+    #[test]
+    fn test_value_display_compact_int() {
+        assert_eq!(value_display_compact(&Value::Int64(42)), "42");
+        assert_eq!(value_display_compact(&Value::Int64(-100)), "-100");
+        assert_eq!(value_display_compact(&Value::Int64(0)), "0");
+    }
+
+    #[test]
+    fn test_value_display_compact_float() {
+        let result = value_display_compact(&Value::Float64(3.14));
+        assert!(result.contains("3.14"));
+    }
+
+    #[test]
+    fn test_value_display_compact_bool() {
+        assert_eq!(value_display_compact(&Value::Boolean(true)), "true");
+        assert_eq!(value_display_compact(&Value::Boolean(false)), "false");
+    }
+
+    #[test]
+    fn test_value_display_compact_null() {
+        assert_eq!(value_display_compact(&Value::Null), "");
+    }
+
+    #[test]
+    fn test_value_display_compact_noderef() {
+        let val = Value::NodeRef(123);
+        assert_eq!(value_display_compact(&val), "node#123");
+    }
+
+    #[test]
+    fn test_value_display_compact_point() {
+        let val = Value::Point {
+            lat: 40.7128,
+            lon: -74.0060,
+        };
+        let result = value_display_compact(&val);
+        assert!(result.contains("40.7128"));
+        assert!(result.contains("-74.006"));
+    }
+
+    // ── xml_escape tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_xml_escape_ampersand() {
+        assert_eq!(xml_escape("A&B"), "A&amp;B");
+    }
+
+    #[test]
+    fn test_xml_escape_less_than() {
+        assert_eq!(xml_escape("A<B"), "A&lt;B");
+    }
+
+    #[test]
+    fn test_xml_escape_greater_than() {
+        assert_eq!(xml_escape("A>B"), "A&gt;B");
+    }
+
+    #[test]
+    fn test_xml_escape_quote() {
+        assert_eq!(xml_escape("A\"B"), "A&quot;B");
+    }
+
+    #[test]
+    fn test_xml_escape_multiple() {
+        assert_eq!(
+            xml_escape("A&B<C>D\"E"),
+            "A&amp;B&lt;C&gt;D&quot;E"
+        );
+    }
+
+    #[test]
+    fn test_xml_escape_empty() {
+        assert_eq!(xml_escape(""), "");
+    }
+
+    #[test]
+    fn test_xml_escape_no_special_chars() {
+        assert_eq!(xml_escape("HelloWorld"), "HelloWorld");
+    }
+
+    #[test]
+    fn test_xml_escape_ampersand_order() {
+        // Make sure & is replaced first, not turning &amp; into &amp;amp;
+        assert_eq!(xml_escape("&amp;"), "&amp;amp;");
+    }
+
+    // ── mcp_quickstart tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_mcp_quickstart_returns_non_empty() {
+        let result = mcp_quickstart();
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_mcp_quickstart_contains_xml_header() {
+        let result = mcp_quickstart();
+        assert!(result.contains("<mcp_quickstart version="));
+    }
+
+    #[test]
+    fn test_mcp_quickstart_contains_setup() {
+        let result = mcp_quickstart();
+        assert!(result.contains("<setup>"));
+        assert!(result.contains("</setup>"));
+    }
+
+    #[test]
+    fn test_mcp_quickstart_contains_install() {
+        let result = mcp_quickstart();
+        assert!(result.contains("pip install kglite fastmcp"));
+    }
+
+    #[test]
+    fn test_mcp_quickstart_contains_version() {
+        let result = mcp_quickstart();
+        // Version is embedded from Cargo.toml
+        assert!(result.contains("version="));
+    }
+
+    #[test]
+    fn test_mcp_quickstart_contains_closing_tag() {
+        let result = mcp_quickstart();
+        assert!(result.contains("</mcp_quickstart>"));
+    }
+
+    // ── Enum tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_cypher_detail_off() {
+        let _detail = CypherDetail::Off;
+        // Just test that variants can be created
+    }
+
+    #[test]
+    fn test_cypher_detail_overview() {
+        let _detail = CypherDetail::Overview;
+    }
+
+    #[test]
+    fn test_cypher_detail_topics() {
+        let topics = vec!["MATCH".to_string(), "WHERE".to_string()];
+        let _detail = CypherDetail::Topics(topics);
+    }
+
+    #[test]
+    fn test_fluent_detail_off() {
+        let _detail = FluentDetail::Off;
+    }
+
+    #[test]
+    fn test_fluent_detail_overview() {
+        let _detail = FluentDetail::Overview;
+    }
+
+    #[test]
+    fn test_fluent_detail_topics() {
+        let topics = vec!["filter".to_string()];
+        let _detail = FluentDetail::Topics(topics);
+    }
+
+    #[test]
+    fn test_connection_detail_off() {
+        let _detail = ConnectionDetail::Off;
+    }
+
+    #[test]
+    fn test_connection_detail_overview() {
+        let _detail = ConnectionDetail::Overview;
+    }
+
+    #[test]
+    fn test_connection_detail_topics() {
+        let topics = vec!["BELONGS_TO".to_string()];
+        let _detail = ConnectionDetail::Topics(topics);
+    }
+
+    // ── NeighborConnection tests ────────────────────────────────────────
+
+    #[test]
+    fn test_neighbor_connection_creation() {
+        let conn = NeighborConnection {
+            connection_type: "RELATES_TO".to_string(),
+            other_type: "Person".to_string(),
+            count: 42,
+        };
+        assert_eq!(conn.connection_type, "RELATES_TO");
+        assert_eq!(conn.other_type, "Person");
+        assert_eq!(conn.count, 42);
+    }
+
+    // ── NeighborsSchema tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_neighbors_schema_empty() {
+        let schema = NeighborsSchema {
+            outgoing: vec![],
+            incoming: vec![],
+        };
+        assert!(schema.outgoing.is_empty());
+        assert!(schema.incoming.is_empty());
+    }
+
+    #[test]
+    fn test_neighbors_schema_with_connections() {
+        let outgoing = vec![NeighborConnection {
+            connection_type: "KNOWS".to_string(),
+            other_type: "Person".to_string(),
+            count: 5,
+        }];
+        let incoming = vec![NeighborConnection {
+            connection_type: "KNOWS".to_string(),
+            other_type: "Person".to_string(),
+            count: 3,
+        }];
+        let schema = NeighborsSchema { outgoing, incoming };
+        assert_eq!(schema.outgoing.len(), 1);
+        assert_eq!(schema.incoming.len(), 1);
+    }
+
+    // ── ConnectionTypeStats tests ────────────────────────────────────────
+
+    #[test]
+    fn test_connection_type_stats_creation() {
+        let stats = ConnectionTypeStats {
+            connection_type: "FOLLOWS".to_string(),
+            count: 100,
+            source_types: vec!["Person".to_string()],
+            target_types: vec!["Person".to_string()],
+            property_names: vec!["since".to_string()],
+        };
+        assert_eq!(stats.connection_type, "FOLLOWS");
+        assert_eq!(stats.count, 100);
+        assert_eq!(stats.source_types.len(), 1);
+        assert_eq!(stats.target_types.len(), 1);
+        assert_eq!(stats.property_names.len(), 1);
+    }
+
+    #[test]
+    fn test_connection_type_stats_multiple_types() {
+        let stats = ConnectionTypeStats {
+            connection_type: "INTERACTS".to_string(),
+            count: 500,
+            source_types: vec!["Person".to_string(), "Organization".to_string()],
+            target_types: vec!["Person".to_string(), "Event".to_string()],
+            property_names: vec!["date".to_string(), "weight".to_string()],
+        };
+        assert_eq!(stats.source_types.len(), 2);
+        assert_eq!(stats.target_types.len(), 2);
+        assert_eq!(stats.property_names.len(), 2);
+    }
+
+    // ── NodeTypeOverview tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_node_type_overview_creation() {
+        let mut properties: HashMap<String, String> = HashMap::new();
+        properties.insert("name".to_string(), "str".to_string());
+        properties.insert("age".to_string(), "int".to_string());
+        let overview = NodeTypeOverview {
+            count: 50,
+            properties,
+        };
+        assert_eq!(overview.count, 50);
+        assert_eq!(overview.properties.len(), 2);
+    }
+
+    // ── PropertyStatInfo tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_property_stat_info_creation() {
+        let stat = PropertyStatInfo {
+            property_name: "email".to_string(),
+            type_string: "str".to_string(),
+            non_null: 45,
+            unique: 45,
+            values: Some(vec![Value::String("test@example.com".to_string())]),
+        };
+        assert_eq!(stat.property_name, "email");
+        assert_eq!(stat.type_string, "str");
+        assert_eq!(stat.non_null, 45);
+        assert_eq!(stat.unique, 45);
+        assert!(stat.values.is_some());
+    }
+
+    #[test]
+    fn test_property_stat_info_no_values() {
+        let stat = PropertyStatInfo {
+            property_name: "description".to_string(),
+            type_string: "str".to_string(),
+            non_null: 100,
+            unique: 95,
+            values: None,
+        };
+        assert_eq!(stat.property_name, "description");
+        assert!(stat.values.is_none());
+    }
+}
