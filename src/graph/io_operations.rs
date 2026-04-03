@@ -738,3 +738,1329 @@ pub fn import_embeddings_from_file(graph: &mut DirGraph, path: &str) -> io::Resu
         skipped: total_skipped,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::datatypes::values::Value;
+    use crate::graph::schema::{DirGraph, EmbeddingStore, NodeData};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tempfile::NamedTempFile;
+
+    /// Helper: extract the error string from a Result, panicking if Ok.
+    fn expect_err_msg<T>(result: io::Result<T>) -> String {
+        match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected an error but got Ok"),
+        }
+    }
+
+    /// Helper: unwrap an Arc with a single strong reference.
+    fn unwrap_arc(arc: Arc<DirGraph>) -> DirGraph {
+        match Arc::try_unwrap(arc) {
+            Ok(g) => g,
+            Err(_) => panic!("Arc has multiple strong references"),
+        }
+    }
+
+    /// Helper: create a DirGraph with a few nodes of a given type.
+    fn make_test_graph() -> DirGraph {
+        let mut g = DirGraph::new();
+
+        // Add nodes manually via petgraph
+        let mut props1 = HashMap::new();
+        props1.insert("name".to_string(), Value::String("Alice".into()));
+        props1.insert("age".to_string(), Value::Int64(30));
+        let node1 = NodeData::new(
+            Value::Int64(1),
+            Value::String("Alice".into()),
+            "Person".to_string(),
+            props1,
+            &mut g.interner,
+        );
+        let idx1 = g.graph.add_node(node1);
+
+        let mut props2 = HashMap::new();
+        props2.insert("name".to_string(), Value::String("Bob".into()));
+        props2.insert("age".to_string(), Value::Int64(25));
+        let node2 = NodeData::new(
+            Value::Int64(2),
+            Value::String("Bob".into()),
+            "Person".to_string(),
+            props2,
+            &mut g.interner,
+        );
+        let idx2 = g.graph.add_node(node2);
+
+        // Add an edge
+        let conn_key = g.interner.get_or_intern("KNOWS");
+        g.graph.add_edge(
+            idx1,
+            idx2,
+            crate::graph::schema::EdgeData {
+                connection_type: conn_key,
+                properties: Vec::new(),
+            },
+        );
+
+        // Build type metadata (needed for columnar)
+        let mut person_meta = HashMap::new();
+        person_meta.insert("name".to_string(), "String".to_string());
+        person_meta.insert("age".to_string(), "Int64".to_string());
+        g.node_type_metadata
+            .insert("Person".to_string(), person_meta);
+
+        // Rebuild indices
+        g.rebuild_type_indices_and_compact();
+        g.build_connection_types_cache();
+
+        g
+    }
+
+    // ========================================================================
+    // zstd compression roundtrip
+    // ========================================================================
+
+    #[test]
+    fn test_zstd_roundtrip_empty() {
+        let data = b"";
+        let compressed = zstd_compress(data).unwrap();
+        let decompressed = zstd_decompress(&compressed).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    #[test]
+    fn test_zstd_roundtrip_small() {
+        let data = b"hello world this is a test of zstd compression";
+        let compressed = zstd_compress(data).unwrap();
+        let decompressed = zstd_decompress(&compressed).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    #[test]
+    fn test_zstd_roundtrip_large() {
+        let data: Vec<u8> = (0..100_000).map(|i| (i % 256) as u8).collect();
+        let compressed = zstd_compress(&data).unwrap();
+        assert!(
+            compressed.len() < data.len(),
+            "compression should reduce size"
+        );
+        let decompressed = zstd_decompress(&compressed).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    #[test]
+    fn test_zstd_decompress_invalid() {
+        let garbage = b"this is not valid zstd data";
+        assert!(zstd_decompress(garbage).is_err());
+    }
+
+    // ========================================================================
+    // bincode serialization roundtrip
+    // ========================================================================
+
+    #[test]
+    fn test_bincode_roundtrip_simple_types() {
+        let val: i64 = 42;
+        let bytes = bincode_ser(&val).unwrap();
+        let restored: i64 = bincode_deser(&bytes).unwrap();
+        assert_eq!(val, restored);
+    }
+
+    #[test]
+    fn test_bincode_roundtrip_string() {
+        let val = "hello world".to_string();
+        let bytes = bincode_ser(&val).unwrap();
+        let restored: String = bincode_deser(&bytes).unwrap();
+        assert_eq!(val, restored);
+    }
+
+    #[test]
+    fn test_bincode_roundtrip_hashmap() {
+        let mut map: HashMap<String, i32> = HashMap::new();
+        map.insert("a".to_string(), 1);
+        map.insert("b".to_string(), 2);
+        let bytes = bincode_ser(&map).unwrap();
+        let restored: HashMap<String, i32> = bincode_deser(&bytes).unwrap();
+        assert_eq!(map, restored);
+    }
+
+    #[test]
+    fn test_bincode_roundtrip_vec() {
+        let val = vec![1u8, 2, 3, 4, 5];
+        let bytes = bincode_ser(&val).unwrap();
+        let restored: Vec<u8> = bincode_deser(&bytes).unwrap();
+        assert_eq!(val, restored);
+    }
+
+    #[test]
+    fn test_bincode_deser_invalid() {
+        // empty buffer cannot deserialize an i64
+        let result: io::Result<i64> = bincode_deser(&[]);
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // Default helpers
+    // ========================================================================
+
+    #[test]
+    fn test_default_auto_vacuum_threshold() {
+        assert_eq!(default_auto_vacuum_threshold(), Some(0.3));
+    }
+
+    #[test]
+    fn test_default_ts_data_version() {
+        assert_eq!(default_ts_data_version(), 2);
+    }
+
+    // ========================================================================
+    // FileMetadata
+    // ========================================================================
+
+    #[test]
+    fn test_file_metadata_from_graph_basic() {
+        let g = make_test_graph();
+        let meta = FileMetadata::from_graph(&g);
+
+        assert_eq!(meta.core_data_version, CURRENT_CORE_DATA_VERSION);
+        assert!(!meta.library_version.is_empty());
+        assert_eq!(meta.auto_vacuum_threshold, Some(0.3));
+        assert_eq!(meta.timeseries_data_version, 2);
+        // Section sizes should be zero (caller fills in)
+        assert_eq!(meta.topology_compressed_size, 0);
+        assert!(meta.column_sections.is_empty());
+        assert_eq!(meta.embeddings_compressed_size, 0);
+        assert_eq!(meta.timeseries_compressed_size, 0);
+    }
+
+    #[test]
+    fn test_file_metadata_preserves_node_type_metadata() {
+        let g = make_test_graph();
+        let meta = FileMetadata::from_graph(&g);
+        assert!(meta.node_type_metadata.contains_key("Person"));
+        let person = &meta.node_type_metadata["Person"];
+        assert_eq!(person.get("name").unwrap(), "String");
+        assert_eq!(person.get("age").unwrap(), "Int64");
+    }
+
+    #[test]
+    fn test_file_metadata_preserves_id_field_aliases() {
+        let mut g = make_test_graph();
+        g.id_field_aliases
+            .insert("Person".to_string(), "npdid".to_string());
+        g.title_field_aliases
+            .insert("Person".to_string(), "prospect_name".to_string());
+
+        let meta = FileMetadata::from_graph(&g);
+        assert_eq!(meta.id_field_aliases.get("Person").unwrap(), "npdid");
+        assert_eq!(
+            meta.title_field_aliases.get("Person").unwrap(),
+            "prospect_name"
+        );
+    }
+
+    #[test]
+    fn test_file_metadata_apply_to() {
+        let g = make_test_graph();
+        let meta = FileMetadata::from_graph(&g);
+        let lib_version = meta.library_version.clone();
+        let node_meta = meta.node_type_metadata.clone();
+
+        let mut new_graph = DirGraph::new();
+        meta.apply_to(&mut new_graph);
+
+        assert_eq!(new_graph.save_metadata.format_version, 3);
+        assert_eq!(new_graph.save_metadata.library_version, lib_version);
+        assert_eq!(new_graph.node_type_metadata, node_meta);
+        assert_eq!(new_graph.auto_vacuum_threshold, Some(0.3));
+    }
+
+    #[test]
+    fn test_file_metadata_json_roundtrip() {
+        let g = make_test_graph();
+        let meta = FileMetadata::from_graph(&g);
+
+        let json = serde_json::to_vec(&meta).unwrap();
+        let restored: FileMetadata = serde_json::from_slice(&json).unwrap();
+
+        assert_eq!(restored.core_data_version, meta.core_data_version);
+        assert_eq!(restored.library_version, meta.library_version);
+        assert_eq!(
+            restored.node_type_metadata.len(),
+            meta.node_type_metadata.len()
+        );
+        assert_eq!(restored.auto_vacuum_threshold, meta.auto_vacuum_threshold);
+    }
+
+    #[test]
+    fn test_file_metadata_json_with_unknown_fields() {
+        // Simulate loading metadata from a newer version with extra fields
+        let json = r#"{
+            "core_data_version": 1,
+            "library_version": "99.0.0",
+            "future_field": "should be ignored",
+            "timeseries_data_version": 2
+        }"#;
+        let meta: FileMetadata = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.core_data_version, 1);
+        assert_eq!(meta.library_version, "99.0.0");
+        // defaults should be applied for missing fields
+        assert_eq!(meta.auto_vacuum_threshold, Some(0.3));
+        assert!(meta.node_type_metadata.is_empty());
+    }
+
+    #[test]
+    fn test_file_metadata_json_empty_object() {
+        // All defaults should apply
+        let meta: FileMetadata = serde_json::from_str("{}").unwrap();
+        assert_eq!(meta.core_data_version, 0);
+        assert!(meta.library_version.is_empty());
+        assert_eq!(meta.auto_vacuum_threshold, Some(0.3));
+        assert_eq!(meta.timeseries_data_version, 2);
+    }
+
+    // ========================================================================
+    // V3ColumnSection serde
+    // ========================================================================
+
+    #[test]
+    fn test_v3_column_section_roundtrip() {
+        let mut cols = HashMap::new();
+        cols.insert("name".to_string(), "String".to_string());
+        cols.insert("age".to_string(), "Int64".to_string());
+
+        let section = V3ColumnSection {
+            type_name: "Person".to_string(),
+            compressed_size: 1234,
+            row_count: 42,
+            columns: cols,
+        };
+
+        let json = serde_json::to_string(&section).unwrap();
+        let restored: V3ColumnSection = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.type_name, "Person");
+        assert_eq!(restored.compressed_size, 1234);
+        assert_eq!(restored.row_count, 42);
+        assert_eq!(restored.columns.len(), 2);
+    }
+
+    // ========================================================================
+    // prepare_save
+    // ========================================================================
+
+    #[test]
+    fn test_prepare_save() {
+        let g = make_test_graph();
+        let mut arc = Arc::new(g);
+        prepare_save(&mut arc);
+
+        assert_eq!(arc.save_metadata.format_version, 3);
+        assert!(!arc.save_metadata.library_version.is_empty());
+    }
+
+    // ========================================================================
+    // Constants
+    // ========================================================================
+
+    #[test]
+    fn test_v3_magic() {
+        assert_eq!(&V3_MAGIC, b"RGF\x03");
+    }
+
+    #[test]
+    fn test_current_format_version() {
+        assert_eq!(CURRENT_FORMAT_VERSION, 3);
+    }
+
+    #[test]
+    fn test_kgle_magic() {
+        assert_eq!(&KGLE_MAGIC, b"KGLE");
+    }
+
+    // ========================================================================
+    // load_file error paths
+    // ========================================================================
+
+    #[test]
+    fn test_load_file_nonexistent() {
+        let result = load_file("/tmp/does_not_exist_kglite_test.kgl");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_file_too_small() {
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"AB").unwrap();
+        let err_msg = expect_err_msg(load_file(tmp.path().to_str().unwrap()));
+        assert!(
+            err_msg.contains("too small"),
+            "unexpected error: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_load_file_bad_magic() {
+        let tmp = NamedTempFile::new().unwrap();
+        // 4 bytes that are not a recognized magic
+        std::fs::write(tmp.path(), b"XXXX_extra_data_here").unwrap();
+        let err_msg = expect_err_msg(load_file(tmp.path().to_str().unwrap()));
+        assert!(
+            err_msg.contains("Unrecognized file format"),
+            "unexpected error: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_load_file_empty() {
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"").unwrap();
+        let err_msg = expect_err_msg(load_file(tmp.path().to_str().unwrap()));
+        assert!(
+            err_msg.contains("too small"),
+            "unexpected error: {}",
+            err_msg
+        );
+    }
+
+    // ========================================================================
+    // load_v3 error paths
+    // ========================================================================
+
+    #[test]
+    fn test_load_v3_truncated_header() {
+        // Valid magic but not enough bytes for header
+        let mut buf = V3_MAGIC.to_vec();
+        buf.extend_from_slice(&[0u8; 4]); // only 8 bytes total, need 12
+        let err_msg = expect_err_msg(load_v3(&buf));
+        assert!(
+            err_msg.contains("truncated") || err_msg.contains("header incomplete"),
+            "unexpected error: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_load_v3_future_core_version() {
+        let mut buf = V3_MAGIC.to_vec();
+        // core_data_version = 999
+        buf.extend_from_slice(&999u32.to_le_bytes());
+        // metadata_length = 0
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        let err_msg = expect_err_msg(load_v3(&buf));
+        assert!(
+            err_msg.contains("upgrade kglite"),
+            "unexpected error: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_load_v3_truncated_metadata() {
+        let mut buf = V3_MAGIC.to_vec();
+        buf.extend_from_slice(&CURRENT_CORE_DATA_VERSION.to_le_bytes());
+        // metadata_length = 1000, but we don't provide that many bytes
+        buf.extend_from_slice(&1000u32.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 10]); // only 10 bytes of metadata
+        let err_msg = expect_err_msg(load_v3(&buf));
+        assert!(
+            err_msg.contains("truncated") || err_msg.contains("metadata incomplete"),
+            "unexpected error: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_load_v3_invalid_json_metadata() {
+        let mut buf = V3_MAGIC.to_vec();
+        buf.extend_from_slice(&CURRENT_CORE_DATA_VERSION.to_le_bytes());
+        let bad_json = b"this is not json{{{";
+        buf.extend_from_slice(&(bad_json.len() as u32).to_le_bytes());
+        buf.extend_from_slice(bad_json);
+        let err_msg = expect_err_msg(load_v3(&buf));
+        assert!(
+            err_msg.contains("parse") || err_msg.contains("metadata"),
+            "unexpected error: {}",
+            err_msg
+        );
+    }
+
+    // ========================================================================
+    // v3 write + load roundtrip
+    // ========================================================================
+
+    #[test]
+    fn test_write_and_load_v3_roundtrip() {
+        let mut g = make_test_graph();
+        // Enable columnar (required for v3 write)
+        g.enable_columnar();
+
+        // Prepare save (stamps metadata, snapshots index keys)
+        let mut arc = Arc::new(g);
+        prepare_save(&mut arc);
+        let g = unwrap_arc(arc);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+
+        write_graph_v3(&g, path).unwrap();
+
+        // Verify file starts with v3 magic
+        let file_bytes = std::fs::read(path).unwrap();
+        assert_eq!(&file_bytes[..4], &V3_MAGIC);
+
+        // Load it back
+        let kg = load_file(path).unwrap();
+        let loaded = &*kg.inner;
+
+        // Check node count
+        assert_eq!(loaded.graph.node_count(), 2);
+        // Check edge count
+        assert_eq!(loaded.graph.edge_count(), 1);
+
+        // Check node type metadata was preserved
+        assert!(loaded.node_type_metadata.contains_key("Person"));
+
+        // Check save metadata
+        assert_eq!(loaded.save_metadata.format_version, 3);
+    }
+
+    #[test]
+    fn test_write_and_load_v3_preserves_node_data() {
+        let mut g = make_test_graph();
+        g.enable_columnar();
+        let mut arc = Arc::new(g);
+        prepare_save(&mut arc);
+        let g = unwrap_arc(arc);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&g, path).unwrap();
+
+        let kg = load_file(path).unwrap();
+        let loaded = &*kg.inner;
+
+        // Find node with id=1 and check title
+        let mut found_alice = false;
+        for idx in loaded.graph.node_indices() {
+            if let Some(node) = loaded.graph.node_weight(idx) {
+                if node.id == Value::Int64(1) {
+                    assert_eq!(node.title, Value::String("Alice".into()));
+                    assert_eq!(node.node_type, "Person");
+                    found_alice = true;
+                }
+            }
+        }
+        assert!(found_alice, "Alice node not found after roundtrip");
+    }
+
+    #[test]
+    fn test_write_and_load_v3_with_aliases() {
+        let mut g = make_test_graph();
+        g.id_field_aliases
+            .insert("Person".to_string(), "person_id".to_string());
+        g.title_field_aliases
+            .insert("Person".to_string(), "full_name".to_string());
+        g.enable_columnar();
+
+        let mut arc = Arc::new(g);
+        prepare_save(&mut arc);
+        let g = unwrap_arc(arc);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&g, path).unwrap();
+
+        let kg = load_file(path).unwrap();
+        let loaded = &*kg.inner;
+        assert_eq!(loaded.id_field_aliases.get("Person").unwrap(), "person_id");
+        assert_eq!(
+            loaded.title_field_aliases.get("Person").unwrap(),
+            "full_name"
+        );
+    }
+
+    #[test]
+    fn test_write_and_load_v3_empty_graph() {
+        let mut g = DirGraph::new();
+        g.rebuild_type_indices_and_compact();
+        g.enable_columnar();
+
+        let mut arc = Arc::new(g);
+        prepare_save(&mut arc);
+        let g = unwrap_arc(arc);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&g, path).unwrap();
+
+        let kg = load_file(path).unwrap();
+        assert_eq!(kg.inner.graph.node_count(), 0);
+        assert_eq!(kg.inner.graph.edge_count(), 0);
+    }
+
+    #[test]
+    fn test_write_and_load_v3_with_embeddings() {
+        let mut g = make_test_graph();
+
+        // Add embedding store
+        let mut store = EmbeddingStore::new(3);
+        // Use node index 0 (first node added)
+        store.set_embedding(0, &[1.0, 2.0, 3.0]);
+        store.set_embedding(1, &[4.0, 5.0, 6.0]);
+        g.embeddings
+            .insert(("Person".to_string(), "desc_emb".to_string()), store);
+
+        g.enable_columnar();
+
+        let mut arc = Arc::new(g);
+        prepare_save(&mut arc);
+        let g = unwrap_arc(arc);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&g, path).unwrap();
+
+        let kg = load_file(path).unwrap();
+        let loaded = &*kg.inner;
+
+        let key = ("Person".to_string(), "desc_emb".to_string());
+        assert!(
+            loaded.embeddings.contains_key(&key),
+            "embedding store not found after roundtrip"
+        );
+        let loaded_store = &loaded.embeddings[&key];
+        assert_eq!(loaded_store.dimension, 3);
+        assert_eq!(loaded_store.get_embedding(0).unwrap(), &[1.0, 2.0, 3.0]);
+        assert_eq!(loaded_store.get_embedding(1).unwrap(), &[4.0, 5.0, 6.0]);
+    }
+
+    // ========================================================================
+    // load_file mmap vs direct read path
+    // ========================================================================
+
+    #[test]
+    fn test_load_file_large_file_uses_mmap_path() {
+        // Write a valid v3 file larger than FILE_MMAP_THRESHOLD (64KB)
+        let mut g = DirGraph::new();
+        // Add enough nodes to produce a file > 64KB
+        for i in 0..500 {
+            let mut props = HashMap::new();
+            props.insert(
+                "data".to_string(),
+                Value::String(format!("value_{:0>100}", i)),
+            );
+            let node = NodeData::new(
+                Value::Int64(i),
+                Value::String(format!("Node {}", i)),
+                "BigType".to_string(),
+                props,
+                &mut g.interner,
+            );
+            g.graph.add_node(node);
+        }
+
+        let mut big_meta = HashMap::new();
+        big_meta.insert("data".to_string(), "String".to_string());
+        g.node_type_metadata.insert("BigType".to_string(), big_meta);
+
+        g.rebuild_type_indices_and_compact();
+        g.enable_columnar();
+
+        let mut arc = Arc::new(g);
+        prepare_save(&mut arc);
+        let g = unwrap_arc(arc);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&g, path).unwrap();
+
+        // Verify file is large enough to trigger mmap
+        let file_size = std::fs::metadata(path).unwrap().len();
+        assert!(
+            file_size >= FILE_MMAP_THRESHOLD,
+            "file too small to test mmap path: {} bytes",
+            file_size
+        );
+
+        let kg = load_file(path).unwrap();
+        assert_eq!(kg.inner.graph.node_count(), 500);
+    }
+
+    #[test]
+    fn test_load_file_bad_magic_large_file() {
+        // Write a file larger than mmap threshold but with bad magic
+        let tmp = NamedTempFile::new().unwrap();
+        let data = vec![0x42u8; FILE_MMAP_THRESHOLD as usize + 100];
+        std::fs::write(tmp.path(), &data).unwrap();
+        let err_msg = expect_err_msg(load_file(tmp.path().to_str().unwrap()));
+        assert!(
+            err_msg.contains("Unrecognized"),
+            "unexpected error: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_load_file_too_small_large_mmap() {
+        // 4 bytes of magic-like data via mmap path — need >= FILE_MMAP_THRESHOLD
+        // but only 3 bytes of content after mmap
+        // Actually this won't trigger mmap since file_len < threshold.
+        // For mmap path: write exactly FILE_MMAP_THRESHOLD bytes but first 4 = v3 magic,
+        // then truncated content
+        let tmp = NamedTempFile::new().unwrap();
+        let mut data = V3_MAGIC.to_vec();
+        // Just enough to trigger mmap but not enough for full header (need 12)
+        data.resize(FILE_MMAP_THRESHOLD as usize, 0);
+        // Only 8 bytes beyond magic (need 8 more for core_version + meta_len but metadata
+        // will point to data that doesn't exist)
+        std::fs::write(tmp.path(), &data).unwrap();
+        let result = load_file(tmp.path().to_str().unwrap());
+        // This should fail during v3 parsing (truncated metadata or bad topology)
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // Embedding export/import
+    // ========================================================================
+
+    #[test]
+    fn test_export_import_embeddings_roundtrip() {
+        let mut g = make_test_graph();
+        g.rebuild_type_indices();
+
+        // Add embedding store
+        let idx0 = g.type_indices["Person"][0];
+        let idx1 = g.type_indices["Person"][1];
+
+        let mut store = EmbeddingStore::new(2);
+        store.set_embedding(idx0.index(), &[1.0, 2.0]);
+        store.set_embedding(idx1.index(), &[3.0, 4.0]);
+        g.embeddings
+            .insert(("Person".to_string(), "desc_emb".to_string()), store);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+
+        // Export
+        let export_stats = export_embeddings_to_file(&g, path, None).unwrap();
+        assert_eq!(export_stats.stores, 1);
+        assert_eq!(export_stats.embeddings, 2);
+
+        // Verify file starts with KGLE magic
+        let file_bytes = std::fs::read(path).unwrap();
+        assert_eq!(&file_bytes[..4], &KGLE_MAGIC);
+
+        // Import into a copy of the graph
+        let mut g2 = make_test_graph();
+        g2.rebuild_type_indices();
+        let import_stats = import_embeddings_from_file(&mut g2, path).unwrap();
+        assert_eq!(import_stats.stores, 1);
+        assert_eq!(import_stats.imported, 2);
+        assert_eq!(import_stats.skipped, 0);
+    }
+
+    #[test]
+    fn test_export_embeddings_with_type_filter() {
+        let mut g = make_test_graph();
+        g.rebuild_type_indices();
+
+        let idx0 = g.type_indices["Person"][0];
+        let mut store = EmbeddingStore::new(2);
+        store.set_embedding(idx0.index(), &[1.0, 2.0]);
+        g.embeddings
+            .insert(("Person".to_string(), "desc_emb".to_string()), store);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+
+        // Filter for a type that doesn't exist — should export 0 stores
+        let filter = EmbeddingExportFilter::Types(vec!["Animal".to_string()]);
+        let stats = export_embeddings_to_file(&g, path, Some(&filter)).unwrap();
+        assert_eq!(stats.stores, 0);
+        assert_eq!(stats.embeddings, 0);
+
+        // Filter for Person — should export 1 store
+        let filter = EmbeddingExportFilter::Types(vec!["Person".to_string()]);
+        let stats = export_embeddings_to_file(&g, path, Some(&filter)).unwrap();
+        assert_eq!(stats.stores, 1);
+        assert_eq!(stats.embeddings, 1);
+    }
+
+    #[test]
+    fn test_export_embeddings_with_property_filter() {
+        let mut g = make_test_graph();
+        g.rebuild_type_indices();
+
+        let idx0 = g.type_indices["Person"][0];
+        let mut store = EmbeddingStore::new(2);
+        store.set_embedding(idx0.index(), &[1.0, 2.0]);
+        g.embeddings
+            .insert(("Person".to_string(), "desc_emb".to_string()), store);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+
+        // Filter for specific property that doesn't match
+        let mut map = HashMap::new();
+        map.insert("Person".to_string(), vec!["summary".to_string()]);
+        let filter = EmbeddingExportFilter::TypeProperties(map);
+        let stats = export_embeddings_to_file(&g, path, Some(&filter)).unwrap();
+        assert_eq!(stats.stores, 0);
+
+        // Filter matching property "desc"
+        let mut map = HashMap::new();
+        map.insert("Person".to_string(), vec!["desc".to_string()]);
+        let filter = EmbeddingExportFilter::TypeProperties(map);
+        let stats = export_embeddings_to_file(&g, path, Some(&filter)).unwrap();
+        assert_eq!(stats.stores, 1);
+
+        // Empty property list = all properties for that type
+        let mut map = HashMap::new();
+        map.insert("Person".to_string(), vec![]);
+        let filter = EmbeddingExportFilter::TypeProperties(map);
+        let stats = export_embeddings_to_file(&g, path, Some(&filter)).unwrap();
+        assert_eq!(stats.stores, 1);
+
+        // Type not in filter map
+        let mut map = HashMap::new();
+        map.insert("Animal".to_string(), vec![]);
+        let filter = EmbeddingExportFilter::TypeProperties(map);
+        let stats = export_embeddings_to_file(&g, path, Some(&filter)).unwrap();
+        assert_eq!(stats.stores, 0);
+    }
+
+    #[test]
+    fn test_export_embeddings_no_stores() {
+        let g = make_test_graph();
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+
+        let stats = export_embeddings_to_file(&g, path, None).unwrap();
+        assert_eq!(stats.stores, 0);
+        assert_eq!(stats.embeddings, 0);
+    }
+
+    #[test]
+    fn test_import_embeddings_bad_magic() {
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"XXXX_not_kgle_data_here").unwrap();
+
+        let mut g = make_test_graph();
+        let err_msg = expect_err_msg(import_embeddings_from_file(
+            &mut g,
+            tmp.path().to_str().unwrap(),
+        ));
+        assert!(
+            err_msg.contains("bad magic"),
+            "unexpected error: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_import_embeddings_too_small() {
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"KGLE").unwrap(); // only 4 bytes, need 8
+
+        let mut g = make_test_graph();
+        let err_msg = expect_err_msg(import_embeddings_from_file(
+            &mut g,
+            tmp.path().to_str().unwrap(),
+        ));
+        assert!(
+            err_msg.contains("too small"),
+            "unexpected error: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_import_embeddings_future_version() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut data = KGLE_MAGIC.to_vec();
+        data.extend_from_slice(&999u32.to_le_bytes());
+        data.extend_from_slice(&[0u8; 100]); // junk payload
+        std::fs::write(tmp.path(), &data).unwrap();
+
+        let mut g = make_test_graph();
+        let err_msg = expect_err_msg(import_embeddings_from_file(
+            &mut g,
+            tmp.path().to_str().unwrap(),
+        ));
+        assert!(
+            err_msg.contains("upgrade kglite"),
+            "unexpected error: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_import_embeddings_with_missing_nodes() {
+        // Export from a graph, import into a different graph with fewer nodes
+        let mut g = make_test_graph();
+        g.rebuild_type_indices();
+
+        let idx0 = g.type_indices["Person"][0];
+        let idx1 = g.type_indices["Person"][1];
+        let mut store = EmbeddingStore::new(2);
+        store.set_embedding(idx0.index(), &[1.0, 2.0]);
+        store.set_embedding(idx1.index(), &[3.0, 4.0]);
+        g.embeddings
+            .insert(("Person".to_string(), "desc_emb".to_string()), store);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        export_embeddings_to_file(&g, path, None).unwrap();
+
+        // Import into a graph with only one Person node
+        let mut g2 = DirGraph::new();
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), Value::String("Alice".into()));
+        let node = NodeData::new(
+            Value::Int64(1),
+            Value::String("Alice".into()),
+            "Person".to_string(),
+            props,
+            &mut g2.interner,
+        );
+        g2.graph.add_node(node);
+        let mut person_meta = HashMap::new();
+        person_meta.insert("name".to_string(), "String".to_string());
+        g2.node_type_metadata
+            .insert("Person".to_string(), person_meta);
+        g2.rebuild_type_indices_and_compact();
+
+        let stats = import_embeddings_from_file(&mut g2, path).unwrap();
+        assert_eq!(stats.stores, 1);
+        assert_eq!(stats.imported, 1); // Alice found
+        assert_eq!(stats.skipped, 1); // Bob not found
+    }
+
+    // ========================================================================
+    // ExportedEmbeddingStore serde
+    // ========================================================================
+
+    #[test]
+    fn test_exported_embedding_store_bincode_roundtrip() {
+        let store = ExportedEmbeddingStore {
+            node_type: "Person".to_string(),
+            text_column: "summary".to_string(),
+            dimension: 3,
+            entries: vec![
+                (Value::Int64(1), vec![0.1, 0.2, 0.3]),
+                (Value::String("abc".into()), vec![0.4, 0.5, 0.6]),
+            ],
+        };
+        let bytes = bincode_ser(&store).unwrap();
+        let restored: ExportedEmbeddingStore = bincode_deser(&bytes).unwrap();
+        assert_eq!(restored.node_type, "Person");
+        assert_eq!(restored.text_column, "summary");
+        assert_eq!(restored.dimension, 3);
+        assert_eq!(restored.entries.len(), 2);
+    }
+
+    // ========================================================================
+    // write_graph_v3 file structure validation
+    // ========================================================================
+
+    #[test]
+    fn test_v3_file_header_structure() {
+        let mut g = make_test_graph();
+        g.enable_columnar();
+        let mut arc = Arc::new(g);
+        prepare_save(&mut arc);
+        let g = unwrap_arc(arc);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&g, path).unwrap();
+
+        let bytes = std::fs::read(path).unwrap();
+        // Check magic
+        assert_eq!(&bytes[..4], &V3_MAGIC);
+        // Check core_data_version
+        let cdv = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        assert_eq!(cdv, CURRENT_CORE_DATA_VERSION);
+        // Check metadata_length is reasonable
+        let meta_len = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+        assert!(meta_len > 0, "metadata should not be empty");
+        assert!(
+            (meta_len as usize) < bytes.len(),
+            "metadata_length should not exceed file size"
+        );
+
+        // Check embedded metadata is valid JSON
+        let meta_end = 12 + meta_len as usize;
+        let meta: FileMetadata = serde_json::from_slice(&bytes[12..meta_end]).unwrap();
+        assert_eq!(meta.core_data_version, CURRENT_CORE_DATA_VERSION);
+        assert!(meta.topology_compressed_size > 0);
+    }
+
+    // ========================================================================
+    // Multiple node types
+    // ========================================================================
+
+    #[test]
+    fn test_v3_roundtrip_multiple_types() {
+        let mut g = DirGraph::new();
+
+        // Add Person nodes
+        for i in 0..3 {
+            let mut props = HashMap::new();
+            props.insert("name".to_string(), Value::String(format!("Person_{}", i)));
+            let node = NodeData::new(
+                Value::Int64(i),
+                Value::String(format!("P{}", i)),
+                "Person".to_string(),
+                props,
+                &mut g.interner,
+            );
+            g.graph.add_node(node);
+        }
+
+        // Add Company nodes
+        for i in 0..2 {
+            let mut props = HashMap::new();
+            props.insert(
+                "company_name".to_string(),
+                Value::String(format!("Corp_{}", i)),
+            );
+            let node = NodeData::new(
+                Value::Int64(100 + i),
+                Value::String(format!("C{}", i)),
+                "Company".to_string(),
+                props,
+                &mut g.interner,
+            );
+            g.graph.add_node(node);
+        }
+
+        let mut person_meta = HashMap::new();
+        person_meta.insert("name".to_string(), "String".to_string());
+        g.node_type_metadata
+            .insert("Person".to_string(), person_meta);
+        let mut company_meta = HashMap::new();
+        company_meta.insert("company_name".to_string(), "String".to_string());
+        g.node_type_metadata
+            .insert("Company".to_string(), company_meta);
+
+        g.rebuild_type_indices_and_compact();
+        g.enable_columnar();
+
+        let mut arc = Arc::new(g);
+        prepare_save(&mut arc);
+        let g = unwrap_arc(arc);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&g, path).unwrap();
+
+        let kg = load_file(path).unwrap();
+        assert_eq!(kg.inner.graph.node_count(), 5);
+        assert!(kg.inner.node_type_metadata.contains_key("Person"));
+        assert!(kg.inner.node_type_metadata.contains_key("Company"));
+    }
+
+    // ========================================================================
+    // Columnar property retrieval after load
+    // ========================================================================
+
+    // ========================================================================
+    // write_graph_v3 error paths
+    // ========================================================================
+
+    #[test]
+    fn test_write_graph_v3_invalid_path() {
+        let mut g = make_test_graph();
+        g.enable_columnar();
+        let mut arc = Arc::new(g);
+        prepare_save(&mut arc);
+        let g = unwrap_arc(arc);
+
+        let result = write_graph_v3(&g, "/nonexistent_dir_abc123/file.kgl");
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // v3 roundtrip with timeseries data
+    // ========================================================================
+
+    #[test]
+    fn test_v3_roundtrip_with_timeseries() {
+        use crate::graph::timeseries::NodeTimeseries;
+        use chrono::NaiveDate;
+
+        let mut g = make_test_graph();
+
+        // Add timeseries data for node index 0
+        let mut channels = HashMap::new();
+        channels.insert("temperature".to_string(), vec![20.0, 21.5, 22.0]);
+        let ts = NodeTimeseries {
+            keys: vec![
+                NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 1, 2).unwrap(),
+                NaiveDate::from_ymd_opt(2024, 1, 3).unwrap(),
+            ],
+            channels,
+        };
+        g.timeseries_store.insert(0, ts);
+
+        g.enable_columnar();
+        let mut arc = Arc::new(g);
+        prepare_save(&mut arc);
+        let g = unwrap_arc(arc);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&g, path).unwrap();
+
+        let kg = load_file(path).unwrap();
+        let loaded = &*kg.inner;
+
+        assert!(loaded.timeseries_store.contains_key(&0));
+        let loaded_ts = &loaded.timeseries_store[&0];
+        assert_eq!(loaded_ts.keys.len(), 3);
+        assert_eq!(loaded_ts.channels["temperature"], vec![20.0, 21.5, 22.0]);
+    }
+
+    // ========================================================================
+    // load_v3 truncated section errors
+    // ========================================================================
+
+    #[test]
+    fn test_load_v3_truncated_topology() {
+        // Create a valid header + metadata that claims a large topology,
+        // but the actual data is truncated.
+        let meta = FileMetadata {
+            core_data_version: CURRENT_CORE_DATA_VERSION,
+            topology_compressed_size: 99999, // claims huge topology
+            ..Default::default()
+        };
+        let meta_json = serde_json::to_vec(&meta).unwrap();
+
+        let mut buf = V3_MAGIC.to_vec();
+        buf.extend_from_slice(&CURRENT_CORE_DATA_VERSION.to_le_bytes());
+        buf.extend_from_slice(&(meta_json.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&meta_json);
+        // Only add a few bytes of "topology" — not enough
+        buf.extend_from_slice(&[0u8; 10]);
+
+        let result = load_v3(&buf);
+        // Should fail because topology data is truncated (slice will panic or
+        // zstd will fail to decompress)
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // bincode_options trailing bytes
+    // ========================================================================
+
+    #[test]
+    fn test_bincode_allows_trailing_bytes() {
+        let val: i64 = 42;
+        let mut bytes = bincode_ser(&val).unwrap();
+        // Add trailing garbage — should still deserialize OK
+        bytes.extend_from_slice(b"trailing garbage");
+        let restored: i64 = bincode_deser(&bytes).unwrap();
+        assert_eq!(val, restored);
+    }
+
+    // ========================================================================
+    // FileMetadata edge cases
+    // ========================================================================
+
+    #[test]
+    fn test_file_metadata_custom_auto_vacuum_threshold() {
+        let mut g = make_test_graph();
+        g.auto_vacuum_threshold = Some(0.5);
+        let meta = FileMetadata::from_graph(&g);
+        assert_eq!(meta.auto_vacuum_threshold, Some(0.5));
+
+        let mut new_g = DirGraph::new();
+        meta.apply_to(&mut new_g);
+        assert_eq!(new_g.auto_vacuum_threshold, Some(0.5));
+    }
+
+    #[test]
+    fn test_file_metadata_disabled_auto_vacuum() {
+        let mut g = make_test_graph();
+        g.auto_vacuum_threshold = None;
+        let meta = FileMetadata::from_graph(&g);
+        assert_eq!(meta.auto_vacuum_threshold, None);
+
+        // JSON roundtrip preserves None
+        let json = serde_json::to_vec(&meta).unwrap();
+        let restored: FileMetadata = serde_json::from_slice(&json).unwrap();
+        assert_eq!(restored.auto_vacuum_threshold, None);
+    }
+
+    #[test]
+    fn test_file_metadata_with_connection_type_metadata() {
+        let mut g = make_test_graph();
+        // The connection type cache is built from edges in make_test_graph
+        g.build_connection_types_cache();
+        let meta = FileMetadata::from_graph(&g);
+        // connection_type_metadata should be transferred
+        let mut new_g = DirGraph::new();
+        let conn_meta_len = meta.connection_type_metadata.len();
+        meta.apply_to(&mut new_g);
+        assert_eq!(new_g.connection_type_metadata.len(), conn_meta_len);
+    }
+
+    #[test]
+    fn test_file_metadata_schema_definition_none() {
+        let g = make_test_graph();
+        let meta = FileMetadata::from_graph(&g);
+        assert!(meta.schema_definition.is_none());
+    }
+
+    // ========================================================================
+    // Embedding import error paths
+    // ========================================================================
+
+    #[test]
+    fn test_import_embeddings_nonexistent_file() {
+        let mut g = make_test_graph();
+        let result = import_embeddings_from_file(&mut g, "/tmp/nonexistent_kglite_test_12345.kgle");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_import_embeddings_corrupt_gzip_data() {
+        let tmp = NamedTempFile::new().unwrap();
+        let mut data = KGLE_MAGIC.to_vec();
+        data.extend_from_slice(&KGLE_VERSION.to_le_bytes());
+        // Invalid gzip data after valid header
+        data.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00, 0x00, 0x00]);
+        std::fs::write(tmp.path(), &data).unwrap();
+
+        let mut g = make_test_graph();
+        let result = import_embeddings_from_file(&mut g, tmp.path().to_str().unwrap());
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // Export to unwritable path
+    // ========================================================================
+
+    #[test]
+    fn test_export_embeddings_invalid_path() {
+        let g = make_test_graph();
+        let result = export_embeddings_to_file(&g, "/nonexistent_dir_abc123/out.kgle", None);
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // v3 roundtrip preserves auto_vacuum_threshold
+    // ========================================================================
+
+    #[test]
+    fn test_v3_roundtrip_preserves_auto_vacuum_threshold() {
+        let mut g = make_test_graph();
+        g.auto_vacuum_threshold = Some(0.7);
+        g.enable_columnar();
+
+        let mut arc = Arc::new(g);
+        prepare_save(&mut arc);
+        let g = unwrap_arc(arc);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&g, path).unwrap();
+
+        let kg = load_file(path).unwrap();
+        assert_eq!(kg.inner.auto_vacuum_threshold, Some(0.7));
+    }
+
+    // ========================================================================
+    // v3 roundtrip with edges preserves connection types
+    // ========================================================================
+
+    #[test]
+    fn test_v3_roundtrip_preserves_edges() {
+        let mut g = make_test_graph();
+        g.enable_columnar();
+
+        let mut arc = Arc::new(g);
+        prepare_save(&mut arc);
+        let g = unwrap_arc(arc);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&g, path).unwrap();
+
+        let kg = load_file(path).unwrap();
+        let loaded = &*kg.inner;
+
+        // Should have KNOWS edge
+        assert_eq!(loaded.graph.edge_count(), 1);
+        let edge = loaded.graph.edge_indices().next().unwrap();
+        let edge_data = loaded.graph.edge_weight(edge).unwrap();
+        let conn_type = loaded.interner.resolve(edge_data.connection_type);
+        assert_eq!(conn_type, "KNOWS");
+    }
+
+    // ========================================================================
+    // zstd compress then decompress large repetitive data
+    // ========================================================================
+
+    #[test]
+    fn test_zstd_compression_ratio() {
+        // Highly repetitive data should compress well
+        let data: Vec<u8> = "abcdefgh".repeat(10_000).into_bytes();
+        let compressed = zstd_compress(&data).unwrap();
+        let ratio = compressed.len() as f64 / data.len() as f64;
+        assert!(
+            ratio < 0.1,
+            "expected good compression ratio, got {:.2}",
+            ratio
+        );
+        let decompressed = zstd_decompress(&compressed).unwrap();
+        assert_eq!(decompressed, data);
+    }
+
+    // ========================================================================
+    // Columnar property retrieval after load
+    // ========================================================================
+
+    #[test]
+    fn test_v3_roundtrip_columnar_properties_accessible() {
+        let mut g = make_test_graph();
+        g.enable_columnar();
+        let mut arc = Arc::new(g);
+        prepare_save(&mut arc);
+        let g = unwrap_arc(arc);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&g, path).unwrap();
+
+        let kg = load_file(path).unwrap();
+        let loaded = &*kg.inner;
+
+        // Check that column stores were loaded
+        assert!(
+            loaded.column_stores.contains_key("Person"),
+            "column store for Person not found"
+        );
+
+        // Verify nodes use Columnar property storage
+        for idx in loaded.graph.node_indices() {
+            if let Some(node) = loaded.graph.node_weight(idx) {
+                if node.node_type == "Person" {
+                    match &node.properties {
+                        PropertyStorage::Columnar { .. } => {} // expected
+                        other => panic!(
+                            "Expected Columnar storage, got {:?}",
+                            std::mem::discriminant(other)
+                        ),
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1508,3 +1508,2713 @@ fn compute_aggregate(expr: &str, values: &[f64], count: usize) -> Value {
         Value::Null
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::datatypes::values::{ColumnData, ColumnType};
+    use crate::datatypes::{DataFrame, Value};
+    use crate::graph::schema::{CurrentSelection, DirGraph, NodeData, SpatialConfig};
+    use petgraph::graph::NodeIndex;
+    use std::collections::{HashMap, HashSet};
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+
+    /// Build a minimal DirGraph with nodes of a given type, returning node indices.
+    fn make_graph_with_nodes(
+        node_type: &str,
+        nodes: Vec<(Value, &str, HashMap<String, Value>)>,
+    ) -> (DirGraph, Vec<NodeIndex>) {
+        let mut graph = DirGraph::new();
+        let mut indices = Vec::new();
+        for (id, title, props) in nodes {
+            let node = NodeData::new(
+                id.clone(),
+                Value::String(title.to_string()),
+                node_type.to_string(),
+                props,
+                &mut graph.interner,
+            );
+            let idx = graph.graph.add_node(node);
+            graph
+                .type_indices
+                .entry(node_type.to_string())
+                .or_default()
+                .push(idx);
+            graph
+                .id_indices
+                .entry(node_type.to_string())
+                .or_default()
+                .insert(id, idx);
+            indices.push(idx);
+        }
+        (graph, indices)
+    }
+
+    /// Build a simple DataFrame from column definitions and row data.
+    fn make_dataframe(columns: Vec<(&str, ColumnType, Vec<Option<Value>>)>) -> DataFrame {
+        // Create empty DataFrame (no pre-defined columns)
+        let mut df = DataFrame::new(vec![]);
+        for (name, col_type, values) in columns {
+            let data = match col_type {
+                ColumnType::UniqueId => ColumnData::UniqueId(
+                    values
+                        .into_iter()
+                        .map(|v| match v {
+                            Some(Value::UniqueId(u)) => Some(u),
+                            _ => None,
+                        })
+                        .collect(),
+                ),
+                ColumnType::Int64 => ColumnData::Int64(
+                    values
+                        .into_iter()
+                        .map(|v| match v {
+                            Some(Value::Int64(i)) => Some(i),
+                            _ => None,
+                        })
+                        .collect(),
+                ),
+                ColumnType::Float64 => ColumnData::Float64(
+                    values
+                        .into_iter()
+                        .map(|v| match v {
+                            Some(Value::Float64(f)) => Some(f),
+                            _ => None,
+                        })
+                        .collect(),
+                ),
+                ColumnType::String => ColumnData::String(
+                    values
+                        .into_iter()
+                        .map(|v| match v {
+                            Some(Value::String(s)) => Some(s),
+                            _ => None,
+                        })
+                        .collect(),
+                ),
+                _ => panic!("unsupported column type in test helper"),
+            };
+            df.add_column(name.to_string(), col_type, data).unwrap();
+        }
+        df
+    }
+
+    /// Build a graph with Person and City node types for connection tests.
+    fn make_graph_with_two_types() -> DirGraph {
+        let mut graph = DirGraph::new();
+        let df_persons = make_dataframe(vec![
+            (
+                "id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(1)), Some(Value::UniqueId(2))],
+            ),
+            (
+                "name",
+                ColumnType::String,
+                vec![
+                    Some(Value::String("Alice".into())),
+                    Some(Value::String("Bob".into())),
+                ],
+            ),
+        ]);
+        add_nodes(
+            &mut graph,
+            df_persons,
+            "Person".to_string(),
+            "id".to_string(),
+            Some("name".to_string()),
+            None,
+        )
+        .unwrap();
+
+        let df_cities = make_dataframe(vec![
+            (
+                "id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(10)), Some(Value::UniqueId(20))],
+            ),
+            (
+                "name",
+                ColumnType::String,
+                vec![
+                    Some(Value::String("NYC".into())),
+                    Some(Value::String("LA".into())),
+                ],
+            ),
+        ]);
+        add_nodes(
+            &mut graph,
+            df_cities,
+            "City".to_string(),
+            "id".to_string(),
+            Some("name".to_string()),
+            None,
+        )
+        .unwrap();
+        graph
+    }
+
+    // ====================================================================
+    // check_data_validity
+    // ====================================================================
+
+    #[test]
+    fn test_check_data_validity_column_exists() {
+        let df = make_dataframe(vec![(
+            "id",
+            ColumnType::UniqueId,
+            vec![Some(Value::UniqueId(1))],
+        )]);
+        assert!(check_data_validity(&df, "id").is_ok());
+    }
+
+    #[test]
+    fn test_check_data_validity_column_missing() {
+        let df = make_dataframe(vec![(
+            "name",
+            ColumnType::String,
+            vec![Some(Value::String("Alice".into()))],
+        )]);
+        let err = check_data_validity(&df, "id").unwrap_err();
+        assert!(err.contains("Column 'id' not found"));
+        assert!(err.contains("name"));
+    }
+
+    // ====================================================================
+    // get_column_types
+    // ====================================================================
+
+    #[test]
+    fn test_get_column_types() {
+        let df = make_dataframe(vec![
+            ("id", ColumnType::UniqueId, vec![Some(Value::UniqueId(1))]),
+            ("age", ColumnType::Int64, vec![Some(Value::Int64(30))]),
+            (
+                "name",
+                ColumnType::String,
+                vec![Some(Value::String("A".into()))],
+            ),
+        ]);
+        let types = get_column_types(&df);
+        assert_eq!(types.get("id").unwrap(), "UniqueId");
+        assert_eq!(types.get("age").unwrap(), "Int64");
+        assert_eq!(types.get("name").unwrap(), "String");
+    }
+
+    #[test]
+    fn test_get_column_types_includes_float() {
+        let df = make_dataframe(vec![(
+            "score",
+            ColumnType::Float64,
+            vec![Some(Value::Float64(1.5))],
+        )]);
+        let types = get_column_types(&df);
+        assert_eq!(types.get("score").unwrap(), "Float64");
+    }
+
+    // ====================================================================
+    // add_nodes
+    // ====================================================================
+
+    #[test]
+    fn test_add_nodes_basic() {
+        let mut graph = DirGraph::new();
+        let df = make_dataframe(vec![
+            (
+                "id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(1)), Some(Value::UniqueId(2))],
+            ),
+            (
+                "name",
+                ColumnType::String,
+                vec![
+                    Some(Value::String("Alice".into())),
+                    Some(Value::String("Bob".into())),
+                ],
+            ),
+        ]);
+        let report = add_nodes(
+            &mut graph,
+            df,
+            "Person".to_string(),
+            "id".to_string(),
+            Some("name".to_string()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.nodes_created, 2);
+        assert_eq!(report.nodes_updated, 0);
+        assert_eq!(report.nodes_skipped, 0);
+        assert_eq!(graph.graph.node_count(), 2);
+    }
+
+    #[test]
+    fn test_add_nodes_skips_null_ids() {
+        let mut graph = DirGraph::new();
+        let df = make_dataframe(vec![
+            (
+                "id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(1)), None],
+            ),
+            (
+                "name",
+                ColumnType::String,
+                vec![
+                    Some(Value::String("Alice".into())),
+                    Some(Value::String("Bob".into())),
+                ],
+            ),
+        ]);
+        let report = add_nodes(
+            &mut graph,
+            df,
+            "Person".to_string(),
+            "id".to_string(),
+            Some("name".to_string()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.nodes_created, 1);
+        assert_eq!(report.nodes_skipped, 1);
+    }
+
+    #[test]
+    fn test_add_nodes_updates_existing() {
+        let mut graph = DirGraph::new();
+        let df1 = make_dataframe(vec![
+            ("id", ColumnType::UniqueId, vec![Some(Value::UniqueId(1))]),
+            (
+                "name",
+                ColumnType::String,
+                vec![Some(Value::String("Alice".into()))],
+            ),
+        ]);
+        add_nodes(
+            &mut graph,
+            df1,
+            "Person".to_string(),
+            "id".to_string(),
+            Some("name".to_string()),
+            None,
+        )
+        .unwrap();
+
+        let df2 = make_dataframe(vec![
+            ("id", ColumnType::UniqueId, vec![Some(Value::UniqueId(1))]),
+            (
+                "name",
+                ColumnType::String,
+                vec![Some(Value::String("Alice Updated".into()))],
+            ),
+        ]);
+        let report = add_nodes(
+            &mut graph,
+            df2,
+            "Person".to_string(),
+            "id".to_string(),
+            Some("name".to_string()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.nodes_created, 0);
+        assert_eq!(report.nodes_updated, 1);
+        assert_eq!(graph.graph.node_count(), 1);
+    }
+
+    #[test]
+    fn test_add_nodes_invalid_conflict_handling() {
+        let mut graph = DirGraph::new();
+        let df = make_dataframe(vec![(
+            "id",
+            ColumnType::UniqueId,
+            vec![Some(Value::UniqueId(1))],
+        )]);
+        let err = add_nodes(
+            &mut graph,
+            df,
+            "Person".to_string(),
+            "id".to_string(),
+            None,
+            Some("invalid_mode".to_string()),
+        )
+        .unwrap_err();
+        assert!(err.contains("Unknown conflict handling mode"));
+    }
+
+    #[test]
+    fn test_add_nodes_records_id_field_alias() {
+        let mut graph = DirGraph::new();
+        let df = make_dataframe(vec![(
+            "person_id",
+            ColumnType::UniqueId,
+            vec![Some(Value::UniqueId(1))],
+        )]);
+        add_nodes(
+            &mut graph,
+            df,
+            "Person".to_string(),
+            "person_id".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(graph.id_field_aliases.get("Person").unwrap(), "person_id");
+    }
+
+    #[test]
+    fn test_add_nodes_records_title_field_alias() {
+        let mut graph = DirGraph::new();
+        let df = make_dataframe(vec![
+            ("id", ColumnType::UniqueId, vec![Some(Value::UniqueId(1))]),
+            (
+                "full_name",
+                ColumnType::String,
+                vec![Some(Value::String("Alice".into()))],
+            ),
+        ]);
+        add_nodes(
+            &mut graph,
+            df,
+            "Person".to_string(),
+            "id".to_string(),
+            Some("full_name".to_string()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            graph.title_field_aliases.get("Person").unwrap(),
+            "full_name"
+        );
+    }
+
+    #[test]
+    fn test_add_nodes_no_alias_for_standard_fields() {
+        let mut graph = DirGraph::new();
+        let df = make_dataframe(vec![
+            ("id", ColumnType::UniqueId, vec![Some(Value::UniqueId(1))]),
+            (
+                "title",
+                ColumnType::String,
+                vec![Some(Value::String("Alice".into()))],
+            ),
+        ]);
+        add_nodes(
+            &mut graph,
+            df,
+            "Person".to_string(),
+            "id".to_string(),
+            Some("title".to_string()),
+            None,
+        )
+        .unwrap();
+        // "id" and "title" are standard names, so no alias should be recorded
+        assert!(!graph.id_field_aliases.contains_key("Person"));
+        assert!(!graph.title_field_aliases.contains_key("Person"));
+    }
+
+    #[test]
+    fn test_add_nodes_with_properties() {
+        let mut graph = DirGraph::new();
+        let df = make_dataframe(vec![
+            ("id", ColumnType::UniqueId, vec![Some(Value::UniqueId(1))]),
+            (
+                "name",
+                ColumnType::String,
+                vec![Some(Value::String("Alice".into()))],
+            ),
+            ("age", ColumnType::Int64, vec![Some(Value::Int64(30))]),
+        ]);
+        add_nodes(
+            &mut graph,
+            df,
+            "Person".to_string(),
+            "id".to_string(),
+            Some("name".to_string()),
+            None,
+        )
+        .unwrap();
+        let node = graph.graph.node_weight(NodeIndex::new(0)).unwrap();
+        assert_eq!(node.get_property("age").as_deref(), Some(&Value::Int64(30)));
+    }
+
+    #[test]
+    fn test_add_nodes_conflict_skip() {
+        let mut graph = DirGraph::new();
+        let df1 = make_dataframe(vec![
+            ("id", ColumnType::UniqueId, vec![Some(Value::UniqueId(1))]),
+            ("val", ColumnType::Int64, vec![Some(Value::Int64(100))]),
+        ]);
+        add_nodes(
+            &mut graph,
+            df1,
+            "Item".to_string(),
+            "id".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let df2 = make_dataframe(vec![
+            ("id", ColumnType::UniqueId, vec![Some(Value::UniqueId(1))]),
+            ("val", ColumnType::Int64, vec![Some(Value::Int64(200))]),
+        ]);
+        let report = add_nodes(
+            &mut graph,
+            df2,
+            "Item".to_string(),
+            "id".to_string(),
+            None,
+            Some("skip".to_string()),
+        )
+        .unwrap();
+        assert_eq!(report.nodes_created, 0);
+    }
+
+    #[test]
+    fn test_add_nodes_conflict_replace() {
+        let mut graph = DirGraph::new();
+        let df1 = make_dataframe(vec![
+            ("id", ColumnType::UniqueId, vec![Some(Value::UniqueId(1))]),
+            ("val", ColumnType::Int64, vec![Some(Value::Int64(100))]),
+        ]);
+        add_nodes(
+            &mut graph,
+            df1,
+            "Item".to_string(),
+            "id".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let df2 = make_dataframe(vec![
+            ("id", ColumnType::UniqueId, vec![Some(Value::UniqueId(1))]),
+            ("val", ColumnType::Int64, vec![Some(Value::Int64(200))]),
+        ]);
+        let report = add_nodes(
+            &mut graph,
+            df2,
+            "Item".to_string(),
+            "id".to_string(),
+            None,
+            Some("replace".to_string()),
+        )
+        .unwrap();
+        assert_eq!(report.nodes_updated, 1);
+        assert_eq!(graph.graph.node_count(), 1);
+    }
+
+    #[test]
+    fn test_add_nodes_conflict_preserve() {
+        let mut graph = DirGraph::new();
+        let df1 = make_dataframe(vec![
+            ("id", ColumnType::UniqueId, vec![Some(Value::UniqueId(1))]),
+            ("val", ColumnType::Int64, vec![Some(Value::Int64(100))]),
+        ]);
+        add_nodes(
+            &mut graph,
+            df1,
+            "Item".to_string(),
+            "id".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let df2 = make_dataframe(vec![
+            ("id", ColumnType::UniqueId, vec![Some(Value::UniqueId(1))]),
+            ("val", ColumnType::Int64, vec![Some(Value::Int64(200))]),
+        ]);
+        let report = add_nodes(
+            &mut graph,
+            df2,
+            "Item".to_string(),
+            "id".to_string(),
+            None,
+            Some("preserve".to_string()),
+        )
+        .unwrap();
+        // preserve keeps existing value
+        assert_eq!(report.nodes_created, 0);
+    }
+
+    #[test]
+    fn test_add_nodes_conflict_sum() {
+        let mut graph = DirGraph::new();
+        let df1 = make_dataframe(vec![
+            ("id", ColumnType::UniqueId, vec![Some(Value::UniqueId(1))]),
+            ("val", ColumnType::Int64, vec![Some(Value::Int64(100))]),
+        ]);
+        add_nodes(
+            &mut graph,
+            df1,
+            "Item".to_string(),
+            "id".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let df2 = make_dataframe(vec![
+            ("id", ColumnType::UniqueId, vec![Some(Value::UniqueId(1))]),
+            ("val", ColumnType::Int64, vec![Some(Value::Int64(200))]),
+        ]);
+        let report = add_nodes(
+            &mut graph,
+            df2,
+            "Item".to_string(),
+            "id".to_string(),
+            None,
+            Some("sum".to_string()),
+        )
+        .unwrap();
+        // sum should update the node
+        assert_eq!(report.nodes_created, 0);
+    }
+
+    #[test]
+    fn test_add_nodes_missing_column() {
+        let mut graph = DirGraph::new();
+        let df = make_dataframe(vec![(
+            "name",
+            ColumnType::String,
+            vec![Some(Value::String("Alice".into()))],
+        )]);
+        let err = add_nodes(
+            &mut graph,
+            df,
+            "Person".to_string(),
+            "id".to_string(),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("Column 'id' not found"));
+    }
+
+    #[test]
+    fn test_add_nodes_upserts_metadata() {
+        let mut graph = DirGraph::new();
+        let df = make_dataframe(vec![
+            ("id", ColumnType::UniqueId, vec![Some(Value::UniqueId(1))]),
+            ("age", ColumnType::Int64, vec![Some(Value::Int64(30))]),
+        ]);
+        add_nodes(
+            &mut graph,
+            df,
+            "Person".to_string(),
+            "id".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let meta = graph.get_node_type_metadata("Person").unwrap();
+        assert!(meta.contains_key("id"));
+        assert!(meta.contains_key("age"));
+    }
+
+    #[test]
+    fn test_add_nodes_type_mismatch_error() {
+        let mut graph = DirGraph::new();
+        // First add with Int64 column
+        let df1 = make_dataframe(vec![
+            ("id", ColumnType::UniqueId, vec![Some(Value::UniqueId(1))]),
+            ("score", ColumnType::Int64, vec![Some(Value::Int64(100))]),
+        ]);
+        add_nodes(
+            &mut graph,
+            df1,
+            "Item".to_string(),
+            "id".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Second add with same column but different type (Float64)
+        let df2 = make_dataframe(vec![
+            ("id", ColumnType::UniqueId, vec![Some(Value::UniqueId(2))]),
+            (
+                "score",
+                ColumnType::Float64,
+                vec![Some(Value::Float64(1.5))],
+            ),
+        ]);
+        let report = add_nodes(
+            &mut graph,
+            df2,
+            "Item".to_string(),
+            "id".to_string(),
+            None,
+            None,
+        )
+        .unwrap();
+        // Should produce a type mismatch error in report
+        assert!(report.errors.iter().any(|e| e.contains("Type mismatch")));
+    }
+
+    #[test]
+    fn test_add_nodes_without_title_field() {
+        let mut graph = DirGraph::new();
+        let df = make_dataframe(vec![(
+            "id",
+            ColumnType::UniqueId,
+            vec![Some(Value::UniqueId(1))],
+        )]);
+        let report = add_nodes(
+            &mut graph,
+            df,
+            "Item".to_string(),
+            "id".to_string(),
+            None, // no title field
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.nodes_created, 1);
+    }
+
+    #[test]
+    fn test_add_nodes_multiple_properties() {
+        let mut graph = DirGraph::new();
+        let df = make_dataframe(vec![
+            ("id", ColumnType::UniqueId, vec![Some(Value::UniqueId(1))]),
+            (
+                "name",
+                ColumnType::String,
+                vec![Some(Value::String("Alice".into()))],
+            ),
+            ("age", ColumnType::Int64, vec![Some(Value::Int64(30))]),
+            (
+                "score",
+                ColumnType::Float64,
+                vec![Some(Value::Float64(9.5))],
+            ),
+        ]);
+        add_nodes(
+            &mut graph,
+            df,
+            "Person".to_string(),
+            "id".to_string(),
+            Some("name".to_string()),
+            None,
+        )
+        .unwrap();
+        let node = graph.graph.node_weight(NodeIndex::new(0)).unwrap();
+        assert_eq!(node.get_property("age").as_deref(), Some(&Value::Int64(30)));
+        assert_eq!(
+            node.get_property("score").as_deref(),
+            Some(&Value::Float64(9.5))
+        );
+    }
+
+    // ====================================================================
+    // add_connections
+    // ====================================================================
+
+    #[test]
+    fn test_add_connections_basic() {
+        let mut graph = make_graph_with_two_types();
+        let df = make_dataframe(vec![
+            (
+                "person_id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(1)), Some(Value::UniqueId(2))],
+            ),
+            (
+                "city_id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(10)), Some(Value::UniqueId(20))],
+            ),
+        ]);
+        let report = add_connections(
+            &mut graph,
+            df,
+            "LIVES_IN".to_string(),
+            "Person".to_string(),
+            "person_id".to_string(),
+            "City".to_string(),
+            "city_id".to_string(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.connections_created, 2);
+        assert_eq!(report.connections_skipped, 0);
+        assert_eq!(graph.graph.edge_count(), 2);
+    }
+
+    #[test]
+    fn test_add_connections_missing_source_column() {
+        let mut graph = make_graph_with_two_types();
+        let df = make_dataframe(vec![(
+            "city_id",
+            ColumnType::UniqueId,
+            vec![Some(Value::UniqueId(10))],
+        )]);
+        let err = add_connections(
+            &mut graph,
+            df,
+            "LIVES_IN".to_string(),
+            "Person".to_string(),
+            "person_id".to_string(),
+            "City".to_string(),
+            "city_id".to_string(),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("Source ID column 'person_id' not found"));
+    }
+
+    #[test]
+    fn test_add_connections_missing_target_column() {
+        let mut graph = make_graph_with_two_types();
+        let df = make_dataframe(vec![(
+            "person_id",
+            ColumnType::UniqueId,
+            vec![Some(Value::UniqueId(1))],
+        )]);
+        let err = add_connections(
+            &mut graph,
+            df,
+            "LIVES_IN".to_string(),
+            "Person".to_string(),
+            "person_id".to_string(),
+            "City".to_string(),
+            "city_id".to_string(),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("Target ID column 'city_id' not found"));
+    }
+
+    #[test]
+    fn test_add_connections_null_source_skipped() {
+        let mut graph = make_graph_with_two_types();
+        let df = make_dataframe(vec![
+            (
+                "person_id",
+                ColumnType::UniqueId,
+                vec![None, Some(Value::UniqueId(2))],
+            ),
+            (
+                "city_id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(10)), Some(Value::UniqueId(20))],
+            ),
+        ]);
+        let report = add_connections(
+            &mut graph,
+            df,
+            "LIVES_IN".to_string(),
+            "Person".to_string(),
+            "person_id".to_string(),
+            "City".to_string(),
+            "city_id".to_string(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.connections_created, 1);
+        assert_eq!(report.connections_skipped, 1);
+    }
+
+    #[test]
+    fn test_add_connections_null_target_skipped() {
+        let mut graph = make_graph_with_two_types();
+        let df = make_dataframe(vec![
+            (
+                "person_id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(1)), Some(Value::UniqueId(2))],
+            ),
+            (
+                "city_id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(10)), None],
+            ),
+        ]);
+        let report = add_connections(
+            &mut graph,
+            df,
+            "LIVES_IN".to_string(),
+            "Person".to_string(),
+            "person_id".to_string(),
+            "City".to_string(),
+            "city_id".to_string(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.connections_created, 1);
+        assert_eq!(report.connections_skipped, 1);
+    }
+
+    #[test]
+    fn test_add_connections_missing_source_node_skipped() {
+        let mut graph = make_graph_with_two_types();
+        let df = make_dataframe(vec![
+            (
+                "person_id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(999))], // does not exist
+            ),
+            (
+                "city_id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(10))],
+            ),
+        ]);
+        let report = add_connections(
+            &mut graph,
+            df,
+            "LIVES_IN".to_string(),
+            "Person".to_string(),
+            "person_id".to_string(),
+            "City".to_string(),
+            "city_id".to_string(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.connections_created, 0);
+        assert_eq!(report.connections_skipped, 1);
+    }
+
+    #[test]
+    fn test_add_connections_missing_target_node_skipped() {
+        let mut graph = make_graph_with_two_types();
+        let df = make_dataframe(vec![
+            (
+                "person_id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(1))],
+            ),
+            (
+                "city_id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(999))], // does not exist
+            ),
+        ]);
+        let report = add_connections(
+            &mut graph,
+            df,
+            "LIVES_IN".to_string(),
+            "Person".to_string(),
+            "person_id".to_string(),
+            "City".to_string(),
+            "city_id".to_string(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.connections_created, 0);
+        assert_eq!(report.connections_skipped, 1);
+    }
+
+    #[test]
+    fn test_add_connections_both_nodes_missing_skipped() {
+        let mut graph = make_graph_with_two_types();
+        let df = make_dataframe(vec![
+            (
+                "person_id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(999))],
+            ),
+            (
+                "city_id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(888))],
+            ),
+        ]);
+        let report = add_connections(
+            &mut graph,
+            df,
+            "LIVES_IN".to_string(),
+            "Person".to_string(),
+            "person_id".to_string(),
+            "City".to_string(),
+            "city_id".to_string(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.connections_created, 0);
+        assert_eq!(report.connections_skipped, 1);
+    }
+
+    #[test]
+    fn test_add_connections_invalid_conflict_handling() {
+        let mut graph = make_graph_with_two_types();
+        let df = make_dataframe(vec![
+            (
+                "person_id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(1))],
+            ),
+            (
+                "city_id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(10))],
+            ),
+        ]);
+        let err = add_connections(
+            &mut graph,
+            df,
+            "LIVES_IN".to_string(),
+            "Person".to_string(),
+            "person_id".to_string(),
+            "City".to_string(),
+            "city_id".to_string(),
+            None,
+            None,
+            Some("bad_mode".to_string()),
+        )
+        .unwrap_err();
+        assert!(err.contains("Unknown conflict handling mode"));
+    }
+
+    #[test]
+    fn test_add_connections_with_edge_properties() {
+        let mut graph = make_graph_with_two_types();
+        let df = make_dataframe(vec![
+            (
+                "person_id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(1))],
+            ),
+            (
+                "city_id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(10))],
+            ),
+            ("since", ColumnType::Int64, vec![Some(Value::Int64(2020))]),
+        ]);
+        let report = add_connections(
+            &mut graph,
+            df,
+            "LIVES_IN".to_string(),
+            "Person".to_string(),
+            "person_id".to_string(),
+            "City".to_string(),
+            "city_id".to_string(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.connections_created, 1);
+        assert_eq!(graph.graph.edge_count(), 1);
+    }
+
+    #[test]
+    fn test_add_connections_with_title_fields() {
+        let mut graph = make_graph_with_two_types();
+        let df = make_dataframe(vec![
+            (
+                "person_id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(1))],
+            ),
+            (
+                "city_id",
+                ColumnType::UniqueId,
+                vec![Some(Value::UniqueId(10))],
+            ),
+            (
+                "person_name",
+                ColumnType::String,
+                vec![Some(Value::String("Alice Updated".into()))],
+            ),
+            (
+                "city_name",
+                ColumnType::String,
+                vec![Some(Value::String("New York City".into()))],
+            ),
+        ]);
+        let report = add_connections(
+            &mut graph,
+            df,
+            "LIVES_IN".to_string(),
+            "Person".to_string(),
+            "person_id".to_string(),
+            "City".to_string(),
+            "city_id".to_string(),
+            Some("person_name".to_string()),
+            Some("city_name".to_string()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.connections_created, 1);
+    }
+
+    // ====================================================================
+    // update_node_titles
+    // ====================================================================
+
+    #[test]
+    fn test_update_node_titles_source_only() {
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![
+                (Value::UniqueId(1), "Alice", HashMap::new()),
+                (Value::UniqueId(2), "Bob", HashMap::new()),
+            ],
+        );
+        let df = make_dataframe(vec![(
+            "new_title",
+            ColumnType::String,
+            vec![Some(Value::String("Alice Updated".into()))],
+        )]);
+        let title_idx = df.get_column_index("new_title");
+        update_node_titles(&mut graph, indices[0], indices[1], 0, title_idx, None, &df).unwrap();
+        assert_eq!(
+            graph.get_node(indices[0]).unwrap().title,
+            Value::String("Alice Updated".into())
+        );
+        assert_eq!(
+            graph.get_node(indices[1]).unwrap().title,
+            Value::String("Bob".into())
+        );
+    }
+
+    #[test]
+    fn test_update_node_titles_both() {
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![
+                (Value::UniqueId(1), "Alice", HashMap::new()),
+                (Value::UniqueId(2), "Bob", HashMap::new()),
+            ],
+        );
+        let df = make_dataframe(vec![
+            (
+                "src_title",
+                ColumnType::String,
+                vec![Some(Value::String("A".into()))],
+            ),
+            (
+                "tgt_title",
+                ColumnType::String,
+                vec![Some(Value::String("B".into()))],
+            ),
+        ]);
+        update_node_titles(
+            &mut graph,
+            indices[0],
+            indices[1],
+            0,
+            df.get_column_index("src_title"),
+            df.get_column_index("tgt_title"),
+            &df,
+        )
+        .unwrap();
+        assert_eq!(
+            graph.get_node(indices[0]).unwrap().title,
+            Value::String("A".into())
+        );
+        assert_eq!(
+            graph.get_node(indices[1]).unwrap().title,
+            Value::String("B".into())
+        );
+    }
+
+    #[test]
+    fn test_update_node_titles_none() {
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![(Value::UniqueId(1), "Alice", HashMap::new())],
+        );
+        let df = make_dataframe(vec![("x", ColumnType::Int64, vec![Some(Value::Int64(1))])]);
+        update_node_titles(&mut graph, indices[0], indices[0], 0, None, None, &df).unwrap();
+        assert_eq!(
+            graph.get_node(indices[0]).unwrap().title,
+            Value::String("Alice".into())
+        );
+    }
+
+    // ====================================================================
+    // update_schema_node
+    // ====================================================================
+
+    #[test]
+    fn test_update_schema_node_basic() {
+        let (mut graph, _) = make_graph_with_nodes(
+            "Person",
+            vec![(Value::UniqueId(1), "Alice", HashMap::new())],
+        );
+        let node = NodeData::new(
+            Value::UniqueId(10),
+            Value::String("NYC".into()),
+            "City".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        let idx = graph.graph.add_node(node);
+        graph
+            .type_indices
+            .entry("City".to_string())
+            .or_default()
+            .push(idx);
+
+        let mut props = HashSet::new();
+        props.insert("weight".to_string());
+        let result = update_schema_node(&mut graph, "LIVES_IN", "Person", "City", &props);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_update_schema_node_missing_source_type() {
+        let (mut graph, _) =
+            make_graph_with_nodes("City", vec![(Value::UniqueId(10), "NYC", HashMap::new())]);
+        let err = update_schema_node(&mut graph, "LIVES_IN", "Person", "City", &HashSet::new())
+            .unwrap_err();
+        assert!(err.contains("Source type 'Person' does not exist"));
+    }
+
+    #[test]
+    fn test_update_schema_node_missing_target_type() {
+        let (mut graph, _) = make_graph_with_nodes(
+            "Person",
+            vec![(Value::UniqueId(1), "Alice", HashMap::new())],
+        );
+        let err = update_schema_node(&mut graph, "LIVES_IN", "Person", "City", &HashSet::new())
+            .unwrap_err();
+        assert!(err.contains("Target type 'City' does not exist"));
+    }
+
+    #[test]
+    fn test_update_schema_node_empty_properties() {
+        let (mut graph, _) = make_graph_with_nodes(
+            "Person",
+            vec![(Value::UniqueId(1), "Alice", HashMap::new())],
+        );
+        let node = NodeData::new(
+            Value::UniqueId(10),
+            Value::String("NYC".into()),
+            "City".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        let idx = graph.graph.add_node(node);
+        graph
+            .type_indices
+            .entry("City".to_string())
+            .or_default()
+            .push(idx);
+
+        let result = update_schema_node(&mut graph, "LIVES_IN", "Person", "City", &HashSet::new());
+        assert!(result.is_ok());
+    }
+
+    // ====================================================================
+    // update_node_properties
+    // ====================================================================
+
+    #[test]
+    fn test_update_node_properties_basic() {
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![
+                (Value::UniqueId(1), "Alice", HashMap::new()),
+                (Value::UniqueId(2), "Bob", HashMap::new()),
+            ],
+        );
+        let nodes = vec![
+            (Some(indices[0]), Value::Int64(30)),
+            (Some(indices[1]), Value::Int64(25)),
+        ];
+        let report = update_node_properties(&mut graph, &nodes, "age").unwrap();
+        assert_eq!(report.nodes_updated, 2);
+        assert_eq!(report.nodes_skipped, 0);
+        assert_eq!(
+            graph
+                .get_node(indices[0])
+                .unwrap()
+                .get_property("age")
+                .as_deref(),
+            Some(&Value::Int64(30))
+        );
+    }
+
+    #[test]
+    fn test_update_node_properties_empty() {
+        let (mut graph, _) = make_graph_with_nodes(
+            "Person",
+            vec![(Value::UniqueId(1), "Alice", HashMap::new())],
+        );
+        let err = update_node_properties(&mut graph, &[], "age").unwrap_err();
+        assert!(err.contains("No nodes to update"));
+    }
+
+    #[test]
+    fn test_update_node_properties_skips_none_indices() {
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![(Value::UniqueId(1), "Alice", HashMap::new())],
+        );
+        let nodes = vec![
+            (Some(indices[0]), Value::Int64(30)),
+            (None, Value::Int64(25)),
+        ];
+        let report = update_node_properties(&mut graph, &nodes, "age").unwrap();
+        // Verify the valid node was updated
+        assert_eq!(
+            graph
+                .get_node(indices[0])
+                .unwrap()
+                .get_property("age")
+                .as_deref(),
+            Some(&Value::Int64(30))
+        );
+        // None index is counted as skipped in both the info-gathering pass and the batch pass
+        assert!(report.nodes_skipped >= 1);
+    }
+
+    #[test]
+    fn test_update_node_properties_with_float() {
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![(Value::UniqueId(1), "Alice", HashMap::new())],
+        );
+        let nodes = vec![(Some(indices[0]), Value::Float64(3.14))];
+        let report = update_node_properties(&mut graph, &nodes, "pi").unwrap();
+        assert_eq!(report.nodes_updated, 1);
+        assert_eq!(
+            graph
+                .get_node(indices[0])
+                .unwrap()
+                .get_property("pi")
+                .as_deref(),
+            Some(&Value::Float64(3.14))
+        );
+    }
+
+    #[test]
+    fn test_update_node_properties_with_string() {
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![(Value::UniqueId(1), "Alice", HashMap::new())],
+        );
+        let nodes = vec![(Some(indices[0]), Value::String("active".into()))];
+        let report = update_node_properties(&mut graph, &nodes, "status").unwrap();
+        assert_eq!(report.nodes_updated, 1);
+        assert_eq!(
+            graph
+                .get_node(indices[0])
+                .unwrap()
+                .get_property("status")
+                .as_deref(),
+            Some(&Value::String("active".into()))
+        );
+    }
+
+    #[test]
+    fn test_update_node_properties_updates_metadata() {
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![(Value::UniqueId(1), "Alice", HashMap::new())],
+        );
+        // Ensure node type metadata is set up
+        graph.upsert_node_type_metadata("Person", HashMap::new());
+
+        let nodes = vec![(Some(indices[0]), Value::Int64(30))];
+        update_node_properties(&mut graph, &nodes, "age").unwrap();
+
+        let meta = graph.get_node_type_metadata("Person").unwrap();
+        assert!(meta.contains_key("age"));
+    }
+
+    // ====================================================================
+    // walk_to_ancestor
+    // ====================================================================
+
+    #[test]
+    fn test_walk_to_ancestor_same_level() {
+        let parent_maps = vec![HashMap::new()];
+        let node = NodeIndex::new(5);
+        assert_eq!(walk_to_ancestor(node, 0, 0, &parent_maps), Some(node));
+    }
+
+    #[test]
+    fn test_walk_to_ancestor_one_level() {
+        let parent = NodeIndex::new(0);
+        let child = NodeIndex::new(1);
+        let mut parent_maps = vec![HashMap::new(), HashMap::new()];
+        parent_maps[1].insert(child, parent);
+        assert_eq!(walk_to_ancestor(child, 1, 0, &parent_maps), Some(parent));
+    }
+
+    #[test]
+    fn test_walk_to_ancestor_two_levels() {
+        let grandparent = NodeIndex::new(0);
+        let parent = NodeIndex::new(1);
+        let child = NodeIndex::new(2);
+        let mut parent_maps = vec![HashMap::new(), HashMap::new(), HashMap::new()];
+        parent_maps[1].insert(parent, grandparent);
+        parent_maps[2].insert(child, parent);
+        assert_eq!(
+            walk_to_ancestor(child, 2, 0, &parent_maps),
+            Some(grandparent)
+        );
+    }
+
+    #[test]
+    fn test_walk_to_ancestor_orphan() {
+        let child = NodeIndex::new(2);
+        let parent_maps = vec![HashMap::new(), HashMap::new(), HashMap::new()];
+        assert_eq!(walk_to_ancestor(child, 2, 0, &parent_maps), None);
+    }
+
+    #[test]
+    fn test_walk_to_ancestor_target_after_start() {
+        let node = NodeIndex::new(0);
+        let parent_maps = vec![HashMap::new(), HashMap::new()];
+        assert_eq!(walk_to_ancestor(node, 0, 1, &parent_maps), None);
+    }
+
+    #[test]
+    fn test_walk_to_ancestor_mid_level() {
+        // Walk from level 3 to level 1 (skip level 0)
+        let level1_node = NodeIndex::new(10);
+        let level2_node = NodeIndex::new(20);
+        let level3_node = NodeIndex::new(30);
+        let mut parent_maps = vec![
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+        ];
+        parent_maps[2].insert(level2_node, level1_node);
+        parent_maps[3].insert(level3_node, level2_node);
+        assert_eq!(
+            walk_to_ancestor(level3_node, 3, 1, &parent_maps),
+            Some(level1_node)
+        );
+    }
+
+    // ====================================================================
+    // is_aggregate_expr
+    // ====================================================================
+
+    #[test]
+    fn test_is_aggregate_expr_count_star() {
+        assert!(is_aggregate_expr("count(*)"));
+        assert!(is_aggregate_expr("  count(*)  "));
+    }
+
+    #[test]
+    fn test_is_aggregate_expr_functions() {
+        assert!(is_aggregate_expr("sum(value)"));
+        assert!(is_aggregate_expr("mean(score)"));
+        assert!(is_aggregate_expr("avg(score)"));
+        assert!(is_aggregate_expr("min(x)"));
+        assert!(is_aggregate_expr("max(x)"));
+        assert!(is_aggregate_expr("std(x)"));
+        assert!(is_aggregate_expr("collect(x)"));
+    }
+
+    #[test]
+    fn test_is_aggregate_expr_non_aggregate() {
+        assert!(!is_aggregate_expr("name"));
+        assert!(!is_aggregate_expr("some_property"));
+        assert!(!is_aggregate_expr(""));
+    }
+
+    #[test]
+    fn test_is_aggregate_expr_partial_match() {
+        // These should NOT match: the prefix check requires starts_with
+        assert!(!is_aggregate_expr("not_sum(x)"));
+        assert!(!is_aggregate_expr("xsum(y)"));
+    }
+
+    // ====================================================================
+    // is_spatial_compute
+    // ====================================================================
+
+    #[test]
+    fn test_is_spatial_compute_valid() {
+        assert!(is_spatial_compute("distance"));
+        assert!(is_spatial_compute("area"));
+        assert!(is_spatial_compute("perimeter"));
+        assert!(is_spatial_compute("centroid_lat"));
+        assert!(is_spatial_compute("centroid_lon"));
+        assert!(is_spatial_compute("  distance  "));
+    }
+
+    #[test]
+    fn test_is_spatial_compute_invalid() {
+        assert!(!is_spatial_compute("name"));
+        assert!(!is_spatial_compute(""));
+        assert!(!is_spatial_compute("distance_km"));
+    }
+
+    // ====================================================================
+    // extract_agg_property
+    // ====================================================================
+
+    #[test]
+    fn test_extract_agg_property_count_star() {
+        assert_eq!(extract_agg_property("count(*)"), None);
+    }
+
+    #[test]
+    fn test_extract_agg_property_sum() {
+        assert_eq!(extract_agg_property("sum(value)"), Some("value"));
+    }
+
+    #[test]
+    fn test_extract_agg_property_mean() {
+        assert_eq!(extract_agg_property("mean(score)"), Some("score"));
+    }
+
+    #[test]
+    fn test_extract_agg_property_with_spaces() {
+        assert_eq!(extract_agg_property("  sum( total )  "), Some("total"));
+    }
+
+    #[test]
+    fn test_extract_agg_property_no_parens() {
+        assert_eq!(extract_agg_property("no_parens"), None);
+    }
+
+    #[test]
+    fn test_extract_agg_property_empty_parens() {
+        assert_eq!(extract_agg_property("func()"), None);
+    }
+
+    #[test]
+    fn test_extract_agg_property_nested() {
+        // "fn(inner(x))" — start at first '(' and end at last ')'
+        assert_eq!(extract_agg_property("fn(inner(x))"), Some("inner(x)"));
+    }
+
+    // ====================================================================
+    // mg_value_to_f64
+    // ====================================================================
+
+    #[test]
+    fn test_mg_value_to_f64_float() {
+        assert_eq!(mg_value_to_f64(&Value::Float64(3.14)), Some(3.14));
+    }
+
+    #[test]
+    fn test_mg_value_to_f64_int() {
+        assert_eq!(mg_value_to_f64(&Value::Int64(42)), Some(42.0));
+    }
+
+    #[test]
+    fn test_mg_value_to_f64_string() {
+        assert_eq!(
+            mg_value_to_f64(&Value::String("2.5".to_string())),
+            Some(2.5)
+        );
+    }
+
+    #[test]
+    fn test_mg_value_to_f64_bad_string() {
+        assert_eq!(
+            mg_value_to_f64(&Value::String("not_a_number".to_string())),
+            None
+        );
+    }
+
+    #[test]
+    fn test_mg_value_to_f64_null() {
+        assert_eq!(mg_value_to_f64(&Value::Null), None);
+    }
+
+    #[test]
+    fn test_mg_value_to_f64_unique_id() {
+        assert_eq!(mg_value_to_f64(&Value::UniqueId(7)), None);
+    }
+
+    #[test]
+    fn test_mg_value_to_f64_negative() {
+        assert_eq!(mg_value_to_f64(&Value::Int64(-10)), Some(-10.0));
+        assert_eq!(mg_value_to_f64(&Value::Float64(-0.5)), Some(-0.5));
+    }
+
+    #[test]
+    fn test_mg_value_to_f64_zero() {
+        assert_eq!(mg_value_to_f64(&Value::Int64(0)), Some(0.0));
+        assert_eq!(mg_value_to_f64(&Value::Float64(0.0)), Some(0.0));
+        assert_eq!(mg_value_to_f64(&Value::String("0".to_string())), Some(0.0));
+    }
+
+    // ====================================================================
+    // compute_aggregate
+    // ====================================================================
+
+    #[test]
+    fn test_compute_aggregate_count() {
+        let result = compute_aggregate("count(*)", &[], 5);
+        assert_eq!(result, Value::Int64(5));
+    }
+
+    #[test]
+    fn test_compute_aggregate_count_zero() {
+        let result = compute_aggregate("count(*)", &[], 0);
+        assert_eq!(result, Value::Int64(0));
+    }
+
+    #[test]
+    fn test_compute_aggregate_sum() {
+        let result = compute_aggregate("sum(x)", &[1.0, 2.0, 3.0], 3);
+        assert_eq!(result, Value::Float64(6.0));
+    }
+
+    #[test]
+    fn test_compute_aggregate_sum_single() {
+        let result = compute_aggregate("sum(x)", &[42.0], 1);
+        assert_eq!(result, Value::Float64(42.0));
+    }
+
+    #[test]
+    fn test_compute_aggregate_mean() {
+        let result = compute_aggregate("mean(x)", &[2.0, 4.0, 6.0], 3);
+        assert_eq!(result, Value::Float64(4.0));
+    }
+
+    #[test]
+    fn test_compute_aggregate_avg() {
+        let result = compute_aggregate("avg(x)", &[10.0, 20.0], 2);
+        assert_eq!(result, Value::Float64(15.0));
+    }
+
+    #[test]
+    fn test_compute_aggregate_min() {
+        let result = compute_aggregate("min(x)", &[5.0, 2.0, 8.0], 3);
+        assert_eq!(result, Value::Float64(2.0));
+    }
+
+    #[test]
+    fn test_compute_aggregate_min_negative() {
+        let result = compute_aggregate("min(x)", &[-5.0, 2.0, -8.0], 3);
+        assert_eq!(result, Value::Float64(-8.0));
+    }
+
+    #[test]
+    fn test_compute_aggregate_max() {
+        let result = compute_aggregate("max(x)", &[5.0, 2.0, 8.0], 3);
+        assert_eq!(result, Value::Float64(8.0));
+    }
+
+    #[test]
+    fn test_compute_aggregate_max_negative() {
+        let result = compute_aggregate("max(x)", &[-5.0, -2.0, -8.0], 3);
+        assert_eq!(result, Value::Float64(-2.0));
+    }
+
+    #[test]
+    fn test_compute_aggregate_std_single_value() {
+        let result = compute_aggregate("std(x)", &[5.0], 1);
+        assert_eq!(result, Value::Float64(0.0));
+    }
+
+    #[test]
+    fn test_compute_aggregate_std_multiple() {
+        let result = compute_aggregate("std(x)", &[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0], 8);
+        if let Value::Float64(v) = result {
+            // Sample std dev: sqrt(variance) where variance = sum((x-mean)^2) / (n-1)
+            // mean = 5.0, variance = 32/7 = 4.571..., std = 2.138...
+            assert!((v - 2.138).abs() < 0.01, "Got std = {}", v);
+        } else {
+            panic!("Expected Float64");
+        }
+    }
+
+    #[test]
+    fn test_compute_aggregate_collect() {
+        let result = compute_aggregate("collect(x)", &[1.0, 2.0, 3.0], 3);
+        if let Value::String(s) = result {
+            assert!(s.contains("1"));
+            assert!(s.contains("2"));
+            assert!(s.contains("3"));
+        } else {
+            panic!("Expected String");
+        }
+    }
+
+    #[test]
+    fn test_compute_aggregate_empty_values() {
+        assert_eq!(compute_aggregate("sum(x)", &[], 0), Value::Null);
+        assert_eq!(compute_aggregate("mean(x)", &[], 0), Value::Null);
+        assert_eq!(compute_aggregate("min(x)", &[], 0), Value::Null);
+        assert_eq!(compute_aggregate("max(x)", &[], 0), Value::Null);
+        assert_eq!(compute_aggregate("std(x)", &[], 0), Value::Null);
+    }
+
+    #[test]
+    fn test_compute_aggregate_unknown_function() {
+        let result = compute_aggregate("unknown(x)", &[1.0], 1);
+        assert_eq!(result, Value::Null);
+    }
+
+    #[test]
+    fn test_compute_aggregate_collect_empty() {
+        let result = compute_aggregate("collect(x)", &[], 0);
+        assert_eq!(result, Value::String("".to_string()));
+    }
+
+    // ====================================================================
+    // create_connections (via selection)
+    // ====================================================================
+
+    #[test]
+    fn test_create_connections_single_level_returns_error() {
+        // CurrentSelection::new() creates 1 level, so source_level == target_level == 0
+        // which triggers "source level must be before target level" error
+        let mut graph = DirGraph::new();
+        let selection = CurrentSelection::new();
+        let result = create_connections(
+            &mut graph,
+            &selection,
+            "CONNECTED_TO".to_string(),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_connections_empty_target_level() {
+        // Two levels, but target level is empty -- should return 0 connections
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![(Value::UniqueId(1), "Alice", HashMap::new())],
+        );
+        let mut selection = CurrentSelection::new();
+        selection
+            .get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![indices[0]]);
+        selection.add_level(); // Empty level 1
+
+        let report = create_connections(
+            &mut graph,
+            &selection,
+            "CONNECTED_TO".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.connections_created, 0);
+    }
+
+    #[test]
+    fn test_create_connections_source_after_target_error() {
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![
+                (Value::UniqueId(1), "Alice", HashMap::new()),
+                (Value::UniqueId(2), "Bob", HashMap::new()),
+            ],
+        );
+        let city = NodeData::new(
+            Value::UniqueId(10),
+            Value::String("NYC".into()),
+            "City".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        let city_idx = graph.graph.add_node(city);
+        graph
+            .type_indices
+            .entry("City".to_string())
+            .or_default()
+            .push(city_idx);
+
+        let mut selection = CurrentSelection::new();
+        selection
+            .get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![city_idx]);
+        selection.add_level();
+        selection
+            .get_level_mut(1)
+            .unwrap()
+            .add_selection(Some(city_idx), vec![indices[0], indices[1]]);
+
+        let err = create_connections(
+            &mut graph,
+            &selection,
+            "FROM".to_string(),
+            None,
+            None,
+            Some("Person".to_string()),
+            Some("City".to_string()),
+        )
+        .unwrap_err();
+        assert!(err.contains("source level"));
+        assert!(err.contains("must be before target level"));
+    }
+
+    #[test]
+    fn test_create_connections_two_levels() {
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![(Value::UniqueId(1), "Alice", HashMap::new())],
+        );
+        let city = NodeData::new(
+            Value::UniqueId(10),
+            Value::String("NYC".into()),
+            "City".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        let city_idx = graph.graph.add_node(city);
+        graph
+            .type_indices
+            .entry("City".to_string())
+            .or_default()
+            .push(city_idx);
+
+        let mut selection = CurrentSelection::new();
+        selection
+            .get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![indices[0]]);
+        selection.add_level();
+        selection
+            .get_level_mut(1)
+            .unwrap()
+            .add_selection(Some(indices[0]), vec![city_idx]);
+
+        let report = create_connections(
+            &mut graph,
+            &selection,
+            "HAS_CITY".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.connections_created, 1);
+        assert_eq!(graph.graph.edge_count(), 1);
+    }
+
+    #[test]
+    fn test_create_connections_invalid_conflict() {
+        let mut graph = DirGraph::new();
+        let selection = CurrentSelection::new();
+        let err = create_connections(
+            &mut graph,
+            &selection,
+            "X".to_string(),
+            Some("bad_mode".to_string()),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("Unknown conflict handling mode"));
+    }
+
+    #[test]
+    fn test_create_connections_nonexistent_source_type_filter() {
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![(Value::UniqueId(1), "Alice", HashMap::new())],
+        );
+        let mut selection = CurrentSelection::new();
+        selection
+            .get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![indices[0]]);
+
+        let err = create_connections(
+            &mut graph,
+            &selection,
+            "X".to_string(),
+            None,
+            None,
+            Some("NonExistent".to_string()),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("source_type 'NonExistent' not found"));
+    }
+
+    #[test]
+    fn test_create_connections_nonexistent_target_type_filter() {
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![(Value::UniqueId(1), "Alice", HashMap::new())],
+        );
+        let city = NodeData::new(
+            Value::UniqueId(10),
+            Value::String("NYC".into()),
+            "City".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        let city_idx = graph.graph.add_node(city);
+        graph
+            .type_indices
+            .entry("City".to_string())
+            .or_default()
+            .push(city_idx);
+
+        let mut selection = CurrentSelection::new();
+        selection
+            .get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![indices[0]]);
+        selection.add_level();
+        selection
+            .get_level_mut(1)
+            .unwrap()
+            .add_selection(Some(indices[0]), vec![city_idx]);
+
+        let err = create_connections(
+            &mut graph,
+            &selection,
+            "X".to_string(),
+            None,
+            None,
+            None,
+            Some("NonExistent".to_string()),
+        )
+        .unwrap_err();
+        assert!(err.contains("target_type 'NonExistent' not found"));
+    }
+
+    #[test]
+    fn test_create_connections_three_levels() {
+        // Country -> Person -> City: 3 levels, connect Country to City
+        let (mut graph, person_indices) = make_graph_with_nodes(
+            "Person",
+            vec![(Value::UniqueId(1), "Alice", HashMap::new())],
+        );
+
+        let country = NodeData::new(
+            Value::UniqueId(100),
+            Value::String("USA".into()),
+            "Country".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        let country_idx = graph.graph.add_node(country);
+        graph
+            .type_indices
+            .entry("Country".to_string())
+            .or_default()
+            .push(country_idx);
+        graph
+            .id_indices
+            .entry("Country".to_string())
+            .or_default()
+            .insert(Value::UniqueId(100), country_idx);
+
+        let city = NodeData::new(
+            Value::UniqueId(10),
+            Value::String("NYC".into()),
+            "City".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        let city_idx = graph.graph.add_node(city);
+        graph
+            .type_indices
+            .entry("City".to_string())
+            .or_default()
+            .push(city_idx);
+
+        // Level 0: Country, Level 1: Person, Level 2: City
+        let mut selection = CurrentSelection::new();
+        selection
+            .get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![country_idx]);
+        selection.add_level();
+        selection
+            .get_level_mut(1)
+            .unwrap()
+            .add_selection(Some(country_idx), vec![person_indices[0]]);
+        selection.add_level();
+        selection
+            .get_level_mut(2)
+            .unwrap()
+            .add_selection(Some(person_indices[0]), vec![city_idx]);
+
+        let report = create_connections(
+            &mut graph,
+            &selection,
+            "IN_COUNTRY".to_string(),
+            None,
+            None,
+            Some("Country".to_string()),
+            Some("City".to_string()),
+        )
+        .unwrap();
+        assert_eq!(report.connections_created, 1);
+    }
+
+    #[test]
+    fn test_create_connections_with_copy_properties() {
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![(
+                Value::UniqueId(1),
+                "Alice",
+                HashMap::from([("status".to_string(), Value::String("active".into()))]),
+            )],
+        );
+        let city = NodeData::new(
+            Value::UniqueId(10),
+            Value::String("NYC".into()),
+            "City".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        let city_idx = graph.graph.add_node(city);
+        graph
+            .type_indices
+            .entry("City".to_string())
+            .or_default()
+            .push(city_idx);
+
+        let mut selection = CurrentSelection::new();
+        selection
+            .get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![indices[0]]);
+        selection.add_level();
+        selection
+            .get_level_mut(1)
+            .unwrap()
+            .add_selection(Some(indices[0]), vec![city_idx]);
+
+        // Copy "status" from Person onto the edge
+        let copy_props = HashMap::from([("Person".to_string(), vec!["status".to_string()])]);
+
+        let report = create_connections(
+            &mut graph,
+            &selection,
+            "HAS_CITY".to_string(),
+            None,
+            Some(copy_props),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.connections_created, 1);
+    }
+
+    #[test]
+    fn test_create_connections_copy_all_properties() {
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![(
+                Value::UniqueId(1),
+                "Alice",
+                HashMap::from([
+                    ("a".to_string(), Value::Int64(1)),
+                    ("b".to_string(), Value::Int64(2)),
+                ]),
+            )],
+        );
+        let city = NodeData::new(
+            Value::UniqueId(10),
+            Value::String("NYC".into()),
+            "City".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        let city_idx = graph.graph.add_node(city);
+        graph
+            .type_indices
+            .entry("City".to_string())
+            .or_default()
+            .push(city_idx);
+
+        let mut selection = CurrentSelection::new();
+        selection
+            .get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![indices[0]]);
+        selection.add_level();
+        selection
+            .get_level_mut(1)
+            .unwrap()
+            .add_selection(Some(indices[0]), vec![city_idx]);
+
+        // Empty vec means copy all properties
+        let copy_props = HashMap::from([("Person".to_string(), vec![])]);
+
+        let report = create_connections(
+            &mut graph,
+            &selection,
+            "HAS_CITY".to_string(),
+            None,
+            Some(copy_props),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(report.connections_created, 1);
+    }
+
+    // ====================================================================
+    // PropertySpec enum
+    // ====================================================================
+
+    #[test]
+    fn test_property_spec_debug() {
+        let spec = PropertySpec::CopyAll;
+        let _ = format!("{:?}", spec);
+        let spec2 = PropertySpec::CopyList(vec!["a".into()]);
+        let _ = format!("{:?}", spec2);
+        let spec3 = PropertySpec::RenameMap(HashMap::from([("new".into(), "old".into())]));
+        let _ = format!("{:?}", spec3);
+    }
+
+    // ====================================================================
+    // add_properties
+    // ====================================================================
+
+    #[test]
+    fn test_add_properties_empty_selection() {
+        let mut graph = DirGraph::new();
+        let selection = CurrentSelection::new();
+        let report = add_properties(&mut graph, &selection, HashMap::new()).unwrap();
+        assert_eq!(report.nodes_updated, 0);
+        assert_eq!(report.properties_set, 0);
+    }
+
+    #[test]
+    fn test_add_properties_copy_list() {
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![(
+                Value::UniqueId(1),
+                "Alice",
+                HashMap::from([("status".to_string(), Value::String("active".into()))]),
+            )],
+        );
+        let city = NodeData::new(
+            Value::UniqueId(10),
+            Value::String("NYC".into()),
+            "City".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        let city_idx = graph.graph.add_node(city);
+        graph
+            .type_indices
+            .entry("City".to_string())
+            .or_default()
+            .push(city_idx);
+
+        let mut selection = CurrentSelection::new();
+        selection
+            .get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![indices[0]]);
+        selection.add_level();
+        selection
+            .get_level_mut(1)
+            .unwrap()
+            .add_selection(Some(indices[0]), vec![city_idx]);
+
+        let spec = HashMap::from([(
+            "Person".to_string(),
+            PropertySpec::CopyList(vec!["status".to_string()]),
+        )]);
+        let report = add_properties(&mut graph, &selection, spec).unwrap();
+        assert_eq!(report.nodes_updated, 1);
+        assert_eq!(report.properties_set, 1);
+        assert_eq!(
+            graph
+                .get_node(city_idx)
+                .unwrap()
+                .get_property("status")
+                .as_deref(),
+            Some(&Value::String("active".into()))
+        );
+    }
+
+    #[test]
+    fn test_add_properties_copy_all() {
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![(
+                Value::UniqueId(1),
+                "Alice",
+                HashMap::from([
+                    ("a".to_string(), Value::Int64(1)),
+                    ("b".to_string(), Value::Int64(2)),
+                ]),
+            )],
+        );
+        let city = NodeData::new(
+            Value::UniqueId(10),
+            Value::String("NYC".into()),
+            "City".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        let city_idx = graph.graph.add_node(city);
+        graph
+            .type_indices
+            .entry("City".to_string())
+            .or_default()
+            .push(city_idx);
+
+        let mut selection = CurrentSelection::new();
+        selection
+            .get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![indices[0]]);
+        selection.add_level();
+        selection
+            .get_level_mut(1)
+            .unwrap()
+            .add_selection(Some(indices[0]), vec![city_idx]);
+
+        let spec = HashMap::from([("Person".to_string(), PropertySpec::CopyAll)]);
+        let report = add_properties(&mut graph, &selection, spec).unwrap();
+        assert_eq!(report.nodes_updated, 1);
+        assert!(report.properties_set >= 2);
+    }
+
+    #[test]
+    fn test_add_properties_rename_map() {
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![(
+                Value::UniqueId(1),
+                "Alice",
+                HashMap::from([("name".to_string(), Value::String("Alice".into()))]),
+            )],
+        );
+        let city = NodeData::new(
+            Value::UniqueId(10),
+            Value::String("NYC".into()),
+            "City".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        let city_idx = graph.graph.add_node(city);
+        graph
+            .type_indices
+            .entry("City".to_string())
+            .or_default()
+            .push(city_idx);
+
+        let mut selection = CurrentSelection::new();
+        selection
+            .get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![indices[0]]);
+        selection.add_level();
+        selection
+            .get_level_mut(1)
+            .unwrap()
+            .add_selection(Some(indices[0]), vec![city_idx]);
+
+        let spec = HashMap::from([(
+            "Person".to_string(),
+            PropertySpec::RenameMap(HashMap::from([(
+                "person_name".to_string(),
+                "name".to_string(),
+            )])),
+        )]);
+        let report = add_properties(&mut graph, &selection, spec).unwrap();
+        assert_eq!(report.nodes_updated, 1);
+        assert_eq!(
+            graph
+                .get_node(city_idx)
+                .unwrap()
+                .get_property("person_name")
+                .as_deref(),
+            Some(&Value::String("Alice".into()))
+        );
+    }
+
+    #[test]
+    fn test_add_properties_invalid_source_type() {
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![(Value::UniqueId(1), "Alice", HashMap::new())],
+        );
+        let mut selection = CurrentSelection::new();
+        selection
+            .get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![indices[0]]);
+
+        let spec = HashMap::from([("NonExistentType".to_string(), PropertySpec::CopyAll)]);
+        let result = add_properties(&mut graph, &selection, spec);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.contains("Source type 'NonExistentType' not found"));
+    }
+
+    #[test]
+    fn test_add_properties_copy_nonexistent_property() {
+        let (mut graph, indices) = make_graph_with_nodes(
+            "Person",
+            vec![(Value::UniqueId(1), "Alice", HashMap::new())],
+        );
+        let city = NodeData::new(
+            Value::UniqueId(10),
+            Value::String("NYC".into()),
+            "City".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        let city_idx = graph.graph.add_node(city);
+        graph
+            .type_indices
+            .entry("City".to_string())
+            .or_default()
+            .push(city_idx);
+
+        let mut selection = CurrentSelection::new();
+        selection
+            .get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![indices[0]]);
+        selection.add_level();
+        selection
+            .get_level_mut(1)
+            .unwrap()
+            .add_selection(Some(indices[0]), vec![city_idx]);
+
+        let spec = HashMap::from([(
+            "Person".to_string(),
+            PropertySpec::CopyList(vec!["nonexistent".to_string()]),
+        )]);
+        let report = add_properties(&mut graph, &selection, spec).unwrap();
+        // No properties copied, so nodes_updated should be 0
+        assert_eq!(report.nodes_updated, 0);
+    }
+
+    // ====================================================================
+    // add_properties with aggregation
+    // ====================================================================
+
+    #[test]
+    fn test_add_properties_aggregate_count() {
+        // Aggregation groups leaf nodes (Task at level 1) by their ancestor
+        // at source_level. Using source_type="Person" (level 0) means we group
+        // tasks by person ancestor and write the aggregate onto Person.
+        let (mut graph, person_indices) = make_graph_with_nodes(
+            "Person",
+            vec![(Value::UniqueId(1), "Alice", HashMap::new())],
+        );
+        let task1 = NodeData::new(
+            Value::UniqueId(100),
+            Value::String("T1".into()),
+            "Task".to_string(),
+            HashMap::from([("score".to_string(), Value::Float64(10.0))]),
+            &mut graph.interner,
+        );
+        let task2 = NodeData::new(
+            Value::UniqueId(101),
+            Value::String("T2".into()),
+            "Task".to_string(),
+            HashMap::from([("score".to_string(), Value::Float64(20.0))]),
+            &mut graph.interner,
+        );
+        let t1_idx = graph.graph.add_node(task1);
+        let t2_idx = graph.graph.add_node(task2);
+        graph
+            .type_indices
+            .entry("Task".to_string())
+            .or_default()
+            .extend([t1_idx, t2_idx]);
+
+        let mut selection = CurrentSelection::new();
+        selection
+            .get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![person_indices[0]]);
+        selection.add_level();
+        selection
+            .get_level_mut(1)
+            .unwrap()
+            .add_selection(Some(person_indices[0]), vec![t1_idx, t2_idx]);
+
+        // source_type = "Person" (level 0): group tasks by person, write to person
+        let spec = HashMap::from([(
+            "Person".to_string(),
+            PropertySpec::RenameMap(HashMap::from([
+                ("task_count".to_string(), "count(*)".to_string()),
+                ("total_score".to_string(), "sum(score)".to_string()),
+            ])),
+        )]);
+        let report = add_properties(&mut graph, &selection, spec).unwrap();
+        assert!(report.nodes_updated > 0);
+
+        let person = graph.get_node(person_indices[0]).unwrap();
+        assert_eq!(
+            person.get_property("task_count").as_deref(),
+            Some(&Value::Int64(2))
+        );
+        assert_eq!(
+            person.get_property("total_score").as_deref(),
+            Some(&Value::Float64(30.0))
+        );
+    }
+
+    #[test]
+    fn test_add_properties_aggregate_mean() {
+        let (mut graph, person_indices) = make_graph_with_nodes(
+            "Person",
+            vec![(Value::UniqueId(1), "Alice", HashMap::new())],
+        );
+        let task1 = NodeData::new(
+            Value::UniqueId(100),
+            Value::String("T1".into()),
+            "Task".to_string(),
+            HashMap::from([("score".to_string(), Value::Float64(10.0))]),
+            &mut graph.interner,
+        );
+        let task2 = NodeData::new(
+            Value::UniqueId(101),
+            Value::String("T2".into()),
+            "Task".to_string(),
+            HashMap::from([("score".to_string(), Value::Float64(30.0))]),
+            &mut graph.interner,
+        );
+        let t1_idx = graph.graph.add_node(task1);
+        let t2_idx = graph.graph.add_node(task2);
+        graph
+            .type_indices
+            .entry("Task".to_string())
+            .or_default()
+            .extend([t1_idx, t2_idx]);
+
+        let mut selection = CurrentSelection::new();
+        selection
+            .get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![person_indices[0]]);
+        selection.add_level();
+        selection
+            .get_level_mut(1)
+            .unwrap()
+            .add_selection(Some(person_indices[0]), vec![t1_idx, t2_idx]);
+
+        // source_type = "Person" (level 0): group tasks by person, write mean to person
+        let spec = HashMap::from([(
+            "Person".to_string(),
+            PropertySpec::RenameMap(HashMap::from([(
+                "avg_score".to_string(),
+                "mean(score)".to_string(),
+            )])),
+        )]);
+        let report = add_properties(&mut graph, &selection, spec).unwrap();
+        assert!(report.nodes_updated > 0);
+
+        let person = graph.get_node(person_indices[0]).unwrap();
+        assert_eq!(
+            person.get_property("avg_score").as_deref(),
+            Some(&Value::Float64(20.0))
+        );
+    }
+
+    #[test]
+    fn test_add_properties_aggregate_with_copy_list() {
+        // Aggregation mode also handles CopyList from ancestors
+        let (mut graph, person_indices) = make_graph_with_nodes(
+            "Person",
+            vec![(
+                Value::UniqueId(1),
+                "Alice",
+                HashMap::from([("role".to_string(), Value::String("admin".into()))]),
+            )],
+        );
+        let task1 = NodeData::new(
+            Value::UniqueId(100),
+            Value::String("T1".into()),
+            "Task".to_string(),
+            HashMap::from([("score".to_string(), Value::Float64(10.0))]),
+            &mut graph.interner,
+        );
+        let t1_idx = graph.graph.add_node(task1);
+        graph
+            .type_indices
+            .entry("Task".to_string())
+            .or_default()
+            .push(t1_idx);
+
+        let mut selection = CurrentSelection::new();
+        selection
+            .get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![person_indices[0]]);
+        selection.add_level();
+        selection
+            .get_level_mut(1)
+            .unwrap()
+            .add_selection(Some(person_indices[0]), vec![t1_idx]);
+
+        // Mix: aggregate (source=Person groups tasks by person) + copy from Person
+        let spec = HashMap::from([(
+            "Person".to_string(),
+            PropertySpec::RenameMap(HashMap::from([(
+                "task_count".to_string(),
+                "count(*)".to_string(),
+            )])),
+        )]);
+        let report = add_properties(&mut graph, &selection, spec).unwrap();
+        assert!(report.nodes_updated > 0);
+    }
+
+    #[test]
+    fn test_add_properties_aggregate_empty_target_level() {
+        let (mut graph, person_indices) = make_graph_with_nodes(
+            "Person",
+            vec![(Value::UniqueId(1), "Alice", HashMap::new())],
+        );
+        // Create a selection with Person at level 0, but empty level 1
+        let mut selection = CurrentSelection::new();
+        selection
+            .get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![person_indices[0]]);
+        selection.add_level(); // Empty level 1
+
+        // Even though spec references Task aggregation, the empty target level
+        // means nothing should be updated
+        let spec = HashMap::from([(
+            "Person".to_string(),
+            PropertySpec::RenameMap(HashMap::from([("x".to_string(), "count(*)".to_string())])),
+        )]);
+        let report = add_properties(&mut graph, &selection, spec).unwrap();
+        assert_eq!(report.nodes_updated, 0);
+    }
+
+    // ====================================================================
+    // resolve_location / compute_spatial_property
+    // ====================================================================
+
+    #[test]
+    fn test_resolve_location_no_spatial_config() {
+        let mut graph = DirGraph::new();
+        let node = NodeData::new(
+            Value::UniqueId(1),
+            Value::String("Test".into()),
+            "Place".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        assert!(resolve_location(&node, None).is_none());
+    }
+
+    #[test]
+    fn test_resolve_location_with_lat_lon() {
+        let mut graph = DirGraph::new();
+        let node = NodeData::new(
+            Value::UniqueId(1),
+            Value::String("Test".into()),
+            "Place".to_string(),
+            HashMap::from([
+                ("lat".to_string(), Value::Float64(40.7128)),
+                ("lon".to_string(), Value::Float64(-74.0060)),
+            ]),
+            &mut graph.interner,
+        );
+        let config = SpatialConfig {
+            location: Some(("lat".to_string(), "lon".to_string())),
+            geometry: None,
+            points: HashMap::new(),
+            shapes: HashMap::new(),
+        };
+        let result = resolve_location(&node, Some(&config));
+        assert!(result.is_some());
+        let (lat, lon) = result.unwrap();
+        assert!((lat - 40.7128).abs() < 0.0001);
+        assert!((lon - (-74.0060)).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_resolve_location_missing_lat_field() {
+        let mut graph = DirGraph::new();
+        let node = NodeData::new(
+            Value::UniqueId(1),
+            Value::String("Test".into()),
+            "Place".to_string(),
+            HashMap::from([("lon".to_string(), Value::Float64(-74.0060))]),
+            &mut graph.interner,
+        );
+        let config = SpatialConfig {
+            location: Some(("lat".to_string(), "lon".to_string())),
+            geometry: None,
+            points: HashMap::new(),
+            shapes: HashMap::new(),
+        };
+        assert!(resolve_location(&node, Some(&config)).is_none());
+    }
+
+    #[test]
+    fn test_resolve_geometry_no_config() {
+        let mut graph = DirGraph::new();
+        let node = NodeData::new(
+            Value::UniqueId(1),
+            Value::String("Test".into()),
+            "Place".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        assert!(resolve_geometry(&node, None).is_none());
+    }
+
+    #[test]
+    fn test_resolve_geometry_no_geometry_field_in_config() {
+        let mut graph = DirGraph::new();
+        let node = NodeData::new(
+            Value::UniqueId(1),
+            Value::String("Test".into()),
+            "Place".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        let config = SpatialConfig {
+            location: None,
+            geometry: None,
+            points: HashMap::new(),
+            shapes: HashMap::new(),
+        };
+        assert!(resolve_geometry(&node, Some(&config)).is_none());
+    }
+
+    #[test]
+    fn test_resolve_geometry_with_wkt() {
+        let mut graph = DirGraph::new();
+        let node = NodeData::new(
+            Value::UniqueId(1),
+            Value::String("Test".into()),
+            "Place".to_string(),
+            HashMap::from([("geom".to_string(), Value::String("POINT(0 0)".into()))]),
+            &mut graph.interner,
+        );
+        let config = SpatialConfig {
+            location: None,
+            geometry: Some("geom".to_string()),
+            points: HashMap::new(),
+            shapes: HashMap::new(),
+        };
+        let result = resolve_geometry(&node, Some(&config));
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_resolve_geometry_invalid_wkt() {
+        let mut graph = DirGraph::new();
+        let node = NodeData::new(
+            Value::UniqueId(1),
+            Value::String("Test".into()),
+            "Place".to_string(),
+            HashMap::from([("geom".to_string(), Value::String("NOT_WKT".into()))]),
+            &mut graph.interner,
+        );
+        let config = SpatialConfig {
+            location: None,
+            geometry: Some("geom".to_string()),
+            points: HashMap::new(),
+            shapes: HashMap::new(),
+        };
+        assert!(resolve_geometry(&node, Some(&config)).is_none());
+    }
+
+    #[test]
+    fn test_compute_spatial_property_distance() {
+        let mut graph = DirGraph::new();
+        let node1 = NodeData::new(
+            Value::UniqueId(1),
+            Value::String("A".into()),
+            "Place".to_string(),
+            HashMap::from([
+                ("lat".to_string(), Value::Float64(0.0)),
+                ("lon".to_string(), Value::Float64(0.0)),
+            ]),
+            &mut graph.interner,
+        );
+        let node2 = NodeData::new(
+            Value::UniqueId(2),
+            Value::String("B".into()),
+            "Place".to_string(),
+            HashMap::from([
+                ("lat".to_string(), Value::Float64(1.0)),
+                ("lon".to_string(), Value::Float64(1.0)),
+            ]),
+            &mut graph.interner,
+        );
+        let idx1 = graph.graph.add_node(node1);
+        let idx2 = graph.graph.add_node(node2);
+        graph
+            .type_indices
+            .entry("Place".to_string())
+            .or_default()
+            .extend([idx1, idx2]);
+        graph.spatial_configs.insert(
+            "Place".to_string(),
+            SpatialConfig {
+                location: Some(("lat".to_string(), "lon".to_string())),
+                geometry: None,
+                points: HashMap::new(),
+                shapes: HashMap::new(),
+            },
+        );
+
+        let result = compute_spatial_property(&graph, idx1, idx2, "distance");
+        assert!(result.is_some());
+        if let Some(Value::Float64(d)) = result {
+            assert!(d > 0.0);
+        } else {
+            panic!("Expected Float64 distance");
+        }
+    }
+
+    #[test]
+    fn test_compute_spatial_property_unknown_fn() {
+        let mut graph = DirGraph::new();
+        let node = NodeData::new(
+            Value::UniqueId(1),
+            Value::String("A".into()),
+            "Place".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        let idx = graph.graph.add_node(node);
+        assert!(compute_spatial_property(&graph, idx, idx, "unknown_fn").is_none());
+    }
+
+    #[test]
+    fn test_compute_spatial_property_no_spatial_config() {
+        let mut graph = DirGraph::new();
+        let node = NodeData::new(
+            Value::UniqueId(1),
+            Value::String("A".into()),
+            "NoSpatial".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        let idx = graph.graph.add_node(node);
+        // No spatial config registered for "NoSpatial" type
+        assert!(compute_spatial_property(&graph, idx, idx, "distance").is_none());
+    }
+}

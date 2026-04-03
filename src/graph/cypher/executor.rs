@@ -8,8 +8,8 @@ use crate::graph::clustering;
 use crate::graph::filtering_methods;
 use crate::graph::graph_algorithms;
 use crate::graph::pattern_matching::{
-    EdgeDirection, MatchBinding, Pattern, PatternElement, PatternExecutor, PatternMatch,
-    PropertyMatcher,
+    EdgeDirection, MatchBinding, NodePattern, Pattern, PatternElement, PatternExecutor,
+    PatternMatch, PropertyMatcher,
 };
 use crate::graph::schema::{DirGraph, EdgeData, InternedKey, NodeData, TypeSchema};
 use crate::graph::spatial;
@@ -279,6 +279,25 @@ impl<'a> CypherExecutor<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Resolve node indices from a pushed-down id() param (e.g. "p0"/"p1"),
+    /// falling back to pattern matching if the param is absent or non-numeric.
+    fn resolve_nodes_from_param(
+        &self,
+        param_key: &str,
+        pattern: &NodePattern,
+    ) -> Result<Vec<NodeIndex>, String> {
+        if let Some(val) = self.params.get(param_key) {
+            match val {
+                Value::Int64(i) => return Ok(vec![NodeIndex::new(*i as usize)]),
+                Value::Float64(f) => return Ok(vec![NodeIndex::new(*f as usize)]),
+                _ => {}
+            }
+        }
+        let executor = PatternExecutor::new_lightweight_with_params(self.graph, None, self.params)
+            .set_deadline(self.deadline);
+        executor.find_matching_nodes_pub(pattern)
     }
 
     /// Execute a parsed Cypher query (read-only)
@@ -1007,44 +1026,10 @@ impl<'a> CypherExecutor<'a> {
 
         let connection_types: Option<&[String]> = connection_types_vec.as_deref();
 
-        // Optimization: if params contain p0/p1 (the standard id() constraint params
-        // from the WHERE clause), use them directly instead of scanning all nodes.
-        // This avoids 1500×1 BFS calls for queries like:
-        // allShortestPaths((s)-[r:...*]->(e)) WHERE id(s) = $p0 AND id(e) = $p1
-        let source_nodes = if let Some(val) = self.params.get("p0") {
-            match val {
-                Value::Int64(i) => vec![NodeIndex::new(*i as usize)],
-                Value::Float64(f) => vec![NodeIndex::new(*f as usize)],
-                _ => {
-                    let executor =
-                        PatternExecutor::new_lightweight_with_params(self.graph, None, self.params)
-                            .set_deadline(self.deadline);
-                    executor.find_matching_nodes_pub(source_pattern)?
-                }
-            }
-        } else {
-            let executor =
-                PatternExecutor::new_lightweight_with_params(self.graph, None, self.params)
-                    .set_deadline(self.deadline);
-            executor.find_matching_nodes_pub(source_pattern)?
-        };
-        let target_nodes = if let Some(val) = self.params.get("p1") {
-            match val {
-                Value::Int64(i) => vec![NodeIndex::new(*i as usize)],
-                Value::Float64(f) => vec![NodeIndex::new(*f as usize)],
-                _ => {
-                    let executor =
-                        PatternExecutor::new_lightweight_with_params(self.graph, None, self.params)
-                            .set_deadline(self.deadline);
-                    executor.find_matching_nodes_pub(target_pattern)?
-                }
-            }
-        } else {
-            let executor =
-                PatternExecutor::new_lightweight_with_params(self.graph, None, self.params)
-                    .set_deadline(self.deadline);
-            executor.find_matching_nodes_pub(target_pattern)?
-        };
+        // If the optimizer pushed id() constraints as p0/p1 params, use them
+        // directly instead of scanning all nodes matching the pattern.
+        let source_nodes = self.resolve_nodes_from_param("p0", source_pattern)?;
+        let target_nodes = self.resolve_nodes_from_param("p1", target_pattern)?;
 
         let mut all_rows = Vec::new();
 

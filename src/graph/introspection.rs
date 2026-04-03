@@ -36,6 +36,7 @@ pub struct SchemaOverview {
 }
 
 /// Per-property statistics: data type, non-null count, unique count, and optional value list.
+#[derive(Debug)]
 pub struct PropertyStatInfo {
     pub property_name: String,
     pub type_string: String,
@@ -3205,4 +3206,2667 @@ if __name__ == "__main__":
 "##,
         version = env!("CARGO_PKG_VERSION"),
     )
+}
+
+// ── Unit tests ─────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::datatypes::values::Value;
+    use crate::graph::schema::{ConnectionTypeInfo, DirGraph, EdgeData, NodeData};
+    use std::collections::{HashMap, HashSet};
+
+    // ── Test helpers ───────────────────────────────────────────────────────
+
+    /// Build a minimal graph with one or more node types.
+    /// Returns the DirGraph with nodes registered in type_indices.
+    fn make_graph_with_nodes(types: &[(&str, Vec<(&str, &str, Vec<(&str, Value)>)>)]) -> DirGraph {
+        let mut g = DirGraph::new();
+        for (node_type, nodes) in types {
+            for (id, title, props) in nodes {
+                let mut prop_map: HashMap<String, Value> = HashMap::new();
+                for (k, v) in props {
+                    prop_map.insert(k.to_string(), v.clone());
+                }
+                let node = NodeData::new(
+                    Value::String(id.to_string()),
+                    Value::String(title.to_string()),
+                    node_type.to_string(),
+                    prop_map,
+                    &mut g.interner,
+                );
+                let idx = g.graph.add_node(node);
+                g.type_indices
+                    .entry(node_type.to_string())
+                    .or_default()
+                    .push(idx);
+            }
+        }
+        g
+    }
+
+    /// Add an edge between the first node of `src_type` and the first node of `tgt_type`.
+    fn add_edge(
+        g: &mut DirGraph,
+        src_type: &str,
+        tgt_type: &str,
+        conn_type: &str,
+        props: Vec<(&str, Value)>,
+    ) {
+        let src_idx = g.type_indices[src_type][0];
+        let tgt_idx = g.type_indices[tgt_type][0];
+        let mut prop_map: HashMap<String, Value> = HashMap::new();
+        for (k, v) in props {
+            prop_map.insert(k.to_string(), v.clone());
+        }
+        let edge = EdgeData::new(conn_type.to_string(), prop_map, &mut g.interner);
+        g.graph.add_edge(src_idx, tgt_idx, edge);
+    }
+
+    /// Add an edge between specific node indices within types.
+    fn add_edge_indexed(
+        g: &mut DirGraph,
+        src_type: &str,
+        src_idx: usize,
+        tgt_type: &str,
+        tgt_idx: usize,
+        conn_type: &str,
+    ) {
+        let src = g.type_indices[src_type][src_idx];
+        let tgt = g.type_indices[tgt_type][tgt_idx];
+        let edge = EdgeData::new(conn_type.to_string(), HashMap::new(), &mut g.interner);
+        g.graph.add_edge(src, tgt, edge);
+    }
+
+    // ── xml_escape ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_xml_escape_plain_string() {
+        assert_eq!(xml_escape("hello"), "hello");
+    }
+
+    #[test]
+    fn test_xml_escape_ampersand() {
+        assert_eq!(xml_escape("a&b"), "a&amp;b");
+    }
+
+    #[test]
+    fn test_xml_escape_angle_brackets() {
+        assert_eq!(xml_escape("<tag>"), "&lt;tag&gt;");
+    }
+
+    #[test]
+    fn test_xml_escape_quotes() {
+        assert_eq!(xml_escape("say \"hi\""), "say &quot;hi&quot;");
+    }
+
+    #[test]
+    fn test_xml_escape_all_special() {
+        assert_eq!(xml_escape("<a & \"b\">"), "&lt;a &amp; &quot;b&quot;&gt;");
+    }
+
+    #[test]
+    fn test_xml_escape_empty_string() {
+        assert_eq!(xml_escape(""), "");
+    }
+
+    // ── property_complexity ────────────────────────────────────────────────
+
+    #[test]
+    fn test_property_complexity_ranges() {
+        assert_eq!(property_complexity(0), "vl");
+        assert_eq!(property_complexity(3), "vl");
+        assert_eq!(property_complexity(4), "l");
+        assert_eq!(property_complexity(8), "l");
+        assert_eq!(property_complexity(9), "m");
+        assert_eq!(property_complexity(15), "m");
+        assert_eq!(property_complexity(16), "h");
+        assert_eq!(property_complexity(30), "h");
+        assert_eq!(property_complexity(31), "vh");
+        assert_eq!(property_complexity(100), "vh");
+    }
+
+    // ── size_tier ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_size_tier_ranges() {
+        assert_eq!(size_tier(0), "vs");
+        assert_eq!(size_tier(9), "vs");
+        assert_eq!(size_tier(10), "s");
+        assert_eq!(size_tier(99), "s");
+        assert_eq!(size_tier(100), "m");
+        assert_eq!(size_tier(999), "m");
+        assert_eq!(size_tier(1000), "l");
+        assert_eq!(size_tier(9999), "l");
+        assert_eq!(size_tier(10000), "vl");
+        assert_eq!(size_tier(100000), "vl");
+    }
+
+    // ── TypeCapabilities ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_flags_csv_empty() {
+        let tc = TypeCapabilities {
+            has_timeseries: false,
+            has_location: false,
+            has_geometry: false,
+            has_embeddings: false,
+        };
+        assert_eq!(tc.flags_csv(), "");
+    }
+
+    #[test]
+    fn test_flags_csv_all() {
+        let tc = TypeCapabilities {
+            has_timeseries: true,
+            has_location: true,
+            has_geometry: true,
+            has_embeddings: true,
+        };
+        // When geometry is present, location is suppressed
+        assert_eq!(tc.flags_csv(), "ts,geo,vec");
+    }
+
+    #[test]
+    fn test_flags_csv_location_only() {
+        let tc = TypeCapabilities {
+            has_timeseries: false,
+            has_location: true,
+            has_geometry: false,
+            has_embeddings: false,
+        };
+        assert_eq!(tc.flags_csv(), "loc");
+    }
+
+    #[test]
+    fn test_flags_csv_location_suppressed_by_geometry() {
+        let tc = TypeCapabilities {
+            has_timeseries: false,
+            has_location: true,
+            has_geometry: true,
+            has_embeddings: false,
+        };
+        // location is suppressed when geometry is present
+        assert_eq!(tc.flags_csv(), "geo");
+    }
+
+    #[test]
+    fn test_merge_capabilities() {
+        let mut parent = TypeCapabilities {
+            has_timeseries: false,
+            has_location: false,
+            has_geometry: false,
+            has_embeddings: true,
+        };
+        let child = TypeCapabilities {
+            has_timeseries: true,
+            has_location: true,
+            has_geometry: false,
+            has_embeddings: false,
+        };
+        parent.merge(&child);
+        assert!(parent.has_timeseries);
+        assert!(parent.has_location);
+        assert!(!parent.has_geometry);
+        assert!(parent.has_embeddings);
+    }
+
+    // ── format_type_descriptor ─────────────────────────────────────────────
+
+    #[test]
+    fn test_format_type_descriptor_no_flags() {
+        let caps = TypeCapabilities {
+            has_timeseries: false,
+            has_location: false,
+            has_geometry: false,
+            has_embeddings: false,
+        };
+        let result = format_type_descriptor("Person", 50, 5, &caps);
+        assert_eq!(result, "Person[s,l]");
+    }
+
+    #[test]
+    fn test_format_type_descriptor_with_flags() {
+        let caps = TypeCapabilities {
+            has_timeseries: true,
+            has_location: false,
+            has_geometry: false,
+            has_embeddings: true,
+        };
+        let result = format_type_descriptor("Sensor", 1500, 20, &caps);
+        assert_eq!(result, "Sensor[l,h,ts,vec]");
+    }
+
+    #[test]
+    fn test_format_type_descriptor_special_chars() {
+        let caps = TypeCapabilities {
+            has_timeseries: false,
+            has_location: false,
+            has_geometry: false,
+            has_embeddings: false,
+        };
+        let result = format_type_descriptor("Type<A>", 5, 2, &caps);
+        assert_eq!(result, "Type&lt;A&gt;[vs,vl]");
+    }
+
+    // ── is_null_value ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_is_null_value() {
+        assert!(is_null_value(&Value::Null));
+        assert!(is_null_value(&Value::Float64(f64::NAN)));
+        assert!(!is_null_value(&Value::Int64(0)));
+        assert!(!is_null_value(&Value::String(String::new())));
+        assert!(!is_null_value(&Value::Float64(0.0)));
+        assert!(!is_null_value(&Value::Boolean(false)));
+    }
+
+    // ── value_type_name ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_value_type_name() {
+        assert_eq!(value_type_name(&Value::String("hi".into())), "str");
+        assert_eq!(value_type_name(&Value::Int64(42)), "int");
+        assert_eq!(value_type_name(&Value::Float64(3.14)), "float");
+        assert_eq!(value_type_name(&Value::Boolean(true)), "bool");
+        assert_eq!(value_type_name(&Value::Null), "unknown");
+        assert_eq!(
+            value_type_name(&Value::Point { lat: 0.0, lon: 0.0 }),
+            "point"
+        );
+    }
+
+    // ── value_display_compact ──────────────────────────────────────────────
+
+    #[test]
+    fn test_value_display_compact_string_short() {
+        let v = Value::String("hello".into());
+        assert_eq!(value_display_compact(&v), "hello");
+    }
+
+    #[test]
+    fn test_value_display_compact_string_truncation() {
+        let long_str = "a".repeat(50);
+        let v = Value::String(long_str);
+        let result = value_display_compact(&v);
+        assert!(result.ends_with("..."));
+        // 37 chars + "..." = 40 chars
+        assert_eq!(result.len(), 40);
+    }
+
+    #[test]
+    fn test_value_display_compact_int() {
+        assert_eq!(value_display_compact(&Value::Int64(42)), "42");
+    }
+
+    #[test]
+    fn test_value_display_compact_float() {
+        let result = value_display_compact(&Value::Float64(3.14));
+        assert!(result.contains("3.14"));
+    }
+
+    #[test]
+    fn test_value_display_compact_bool() {
+        assert_eq!(value_display_compact(&Value::Boolean(true)), "true");
+        assert_eq!(value_display_compact(&Value::Boolean(false)), "false");
+    }
+
+    #[test]
+    fn test_value_display_compact_point() {
+        let v = Value::Point {
+            lat: 59.9,
+            lon: 10.7,
+        };
+        assert_eq!(value_display_compact(&v), "(59.9,10.7)");
+    }
+
+    #[test]
+    fn test_value_display_compact_null() {
+        assert_eq!(value_display_compact(&Value::Null), "");
+    }
+
+    // ── types_compatible ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_types_compatible_strings() {
+        assert!(types_compatible("String", "String"));
+        assert!(types_compatible("String", "UniqueId"));
+        assert!(types_compatible("UniqueId", "str"));
+        assert!(types_compatible("str", "String"));
+    }
+
+    #[test]
+    fn test_types_compatible_numbers() {
+        assert!(types_compatible("Int64", "Float64"));
+        assert!(types_compatible("float", "int"));
+        assert!(types_compatible("Int64", "int"));
+    }
+
+    #[test]
+    fn test_types_compatible_mismatches() {
+        assert!(!types_compatible("String", "Int64"));
+        assert!(!types_compatible("float", "str"));
+        assert!(!types_compatible("bool", "int"));
+        assert!(!types_compatible("unknown", "String"));
+    }
+
+    // ── children_counts ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_children_counts_empty() {
+        let parent_types: HashMap<String, String> = HashMap::new();
+        let counts = children_counts(&parent_types);
+        assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn test_children_counts_multiple() {
+        let mut parent_types: HashMap<String, String> = HashMap::new();
+        parent_types.insert("ChildA".into(), "Parent".into());
+        parent_types.insert("ChildB".into(), "Parent".into());
+        parent_types.insert("ChildC".into(), "Other".into());
+        let counts = children_counts(&parent_types);
+        assert_eq!(counts["Parent"], 2);
+        assert_eq!(counts["Other"], 1);
+    }
+
+    // ── compute_connected_types ────────────────────────────────────────────
+
+    #[test]
+    fn test_compute_connected_types_empty() {
+        let stats: Vec<ConnectionTypeStats> = Vec::new();
+        let connected = compute_connected_types(&stats);
+        assert!(connected.is_empty());
+    }
+
+    #[test]
+    fn test_compute_connected_types() {
+        let stats = vec![ConnectionTypeStats {
+            connection_type: "KNOWS".into(),
+            count: 5,
+            source_types: vec!["Person".into()],
+            target_types: vec!["Person".into(), "Company".into()],
+            property_names: vec![],
+        }];
+        let connected = compute_connected_types(&stats);
+        assert!(connected.contains("Person"));
+        assert!(connected.contains("Company"));
+        assert_eq!(connected.len(), 2);
+    }
+
+    // ── compute_connected_type_pairs ───────────────────────────────────────
+
+    #[test]
+    fn test_compute_connected_type_pairs() {
+        let stats = vec![ConnectionTypeStats {
+            connection_type: "BELONGS_TO".into(),
+            count: 10,
+            source_types: vec!["Well".into()],
+            target_types: vec!["Field".into()],
+            property_names: vec![],
+        }];
+        let pairs = compute_connected_type_pairs(&stats);
+        assert!(pairs.contains(&("Well".into(), "Field".into())));
+        assert!(pairs.contains(&("Field".into(), "Well".into())));
+    }
+
+    // ── bubble_capabilities ────────────────────────────────────────────────
+
+    #[test]
+    fn test_bubble_capabilities() {
+        let mut caps: HashMap<String, TypeCapabilities> = HashMap::new();
+        caps.insert(
+            "Parent".into(),
+            TypeCapabilities {
+                has_timeseries: false,
+                has_location: false,
+                has_geometry: false,
+                has_embeddings: false,
+            },
+        );
+        caps.insert(
+            "Child".into(),
+            TypeCapabilities {
+                has_timeseries: true,
+                has_location: false,
+                has_geometry: false,
+                has_embeddings: true,
+            },
+        );
+
+        let mut parent_types: HashMap<String, String> = HashMap::new();
+        parent_types.insert("Child".into(), "Parent".into());
+
+        bubble_capabilities(&mut caps, &parent_types);
+        let parent = &caps["Parent"];
+        assert!(parent.has_timeseries);
+        assert!(parent.has_embeddings);
+        assert!(!parent.has_location);
+    }
+
+    // ── Empty graph ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_compute_schema_empty_graph() {
+        let g = DirGraph::new();
+        let schema = compute_schema(&g);
+        assert_eq!(schema.node_count, 0);
+        assert_eq!(schema.edge_count, 0);
+        assert!(schema.node_types.is_empty());
+        assert!(schema.connection_types.is_empty());
+        assert!(schema.indexes.is_empty());
+    }
+
+    #[test]
+    fn test_compute_connection_type_stats_empty() {
+        let g = DirGraph::new();
+        let stats = compute_connection_type_stats(&g);
+        assert!(stats.is_empty());
+    }
+
+    // ── Graph with nodes only ──────────────────────────────────────────────
+
+    #[test]
+    fn test_compute_schema_nodes_only() {
+        let g = make_graph_with_nodes(&[(
+            "Person",
+            vec![
+                ("p1", "Alice", vec![("age", Value::Int64(30))]),
+                ("p2", "Bob", vec![("age", Value::Int64(25))]),
+            ],
+        )]);
+        let schema = compute_schema(&g);
+        assert_eq!(schema.node_count, 2);
+        assert_eq!(schema.edge_count, 0);
+        assert_eq!(schema.node_types.len(), 1);
+        assert_eq!(schema.node_types[0].0, "Person");
+        assert_eq!(schema.node_types[0].1.count, 2);
+    }
+
+    // ── Graph with edges ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_compute_connection_type_stats_fallback() {
+        // Without connection_type_metadata, uses the fallback scan path
+        let mut g = make_graph_with_nodes(&[
+            (
+                "Person",
+                vec![("p1", "Alice", vec![]), ("p2", "Bob", vec![])],
+            ),
+            ("City", vec![("c1", "London", vec![])]),
+        ]);
+        add_edge(&mut g, "Person", "City", "LIVES_IN", vec![]);
+        add_edge_indexed(&mut g, "Person", 1, "City", 0, "LIVES_IN");
+
+        let stats = compute_connection_type_stats(&g);
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].connection_type, "LIVES_IN");
+        assert_eq!(stats[0].count, 2);
+        assert_eq!(stats[0].source_types, vec!["Person".to_string()]);
+        assert_eq!(stats[0].target_types, vec!["City".to_string()]);
+    }
+
+    #[test]
+    fn test_compute_connection_type_stats_fast_path() {
+        // With connection_type_metadata populated, uses the fast path
+        let mut g = make_graph_with_nodes(&[
+            ("Person", vec![("p1", "Alice", vec![])]),
+            ("City", vec![("c1", "London", vec![])]),
+        ]);
+        add_edge(
+            &mut g,
+            "Person",
+            "City",
+            "LIVES_IN",
+            vec![("since", Value::Int64(2020))],
+        );
+
+        // Populate metadata
+        let mut sources = HashSet::new();
+        sources.insert("Person".to_string());
+        let mut targets = HashSet::new();
+        targets.insert("City".to_string());
+        let mut prop_types = HashMap::new();
+        prop_types.insert("since".to_string(), "Int64".to_string());
+        g.connection_type_metadata.insert(
+            "LIVES_IN".to_string(),
+            ConnectionTypeInfo {
+                source_types: sources,
+                target_types: targets,
+                property_types: prop_types,
+            },
+        );
+
+        let stats = compute_connection_type_stats(&g);
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].connection_type, "LIVES_IN");
+        assert_eq!(stats[0].property_names, vec!["since".to_string()]);
+    }
+
+    // ── compute_property_stats ─────────────────────────────────────────────
+
+    #[test]
+    fn test_compute_property_stats_basic() {
+        let g = make_graph_with_nodes(&[(
+            "Person",
+            vec![
+                ("p1", "Alice", vec![("age", Value::Int64(30))]),
+                (
+                    "p2",
+                    "Bob",
+                    vec![
+                        ("age", Value::Int64(25)),
+                        ("city", Value::String("NYC".into())),
+                    ],
+                ),
+            ],
+        )]);
+        let stats = compute_property_stats(&g, "Person", 15, None).unwrap();
+
+        // Should contain type, title, id, age, city
+        let names: Vec<&str> = stats.iter().map(|s| s.property_name.as_str()).collect();
+        assert!(names.contains(&"type"));
+        assert!(names.contains(&"title"));
+        assert!(names.contains(&"id"));
+        assert!(names.contains(&"age"));
+        assert!(names.contains(&"city"));
+
+        // The "type" property should always be synthetic with count = total nodes
+        let type_stat = stats.iter().find(|s| s.property_name == "type").unwrap();
+        assert_eq!(type_stat.non_null, 2);
+        assert_eq!(type_stat.unique, 1);
+        assert!(type_stat.values.is_some());
+    }
+
+    #[test]
+    fn test_compute_property_stats_unknown_type() {
+        let g = DirGraph::new();
+        let result = compute_property_stats(&g, "NonExistent", 15, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_compute_property_stats_with_nulls() {
+        let g = make_graph_with_nodes(&[(
+            "Item",
+            vec![
+                ("i1", "A", vec![("val", Value::Int64(1))]),
+                ("i2", "B", vec![("val", Value::Null)]),
+            ],
+        )]);
+        let stats = compute_property_stats(&g, "Item", 15, None).unwrap();
+        let val_stat = stats.iter().find(|s| s.property_name == "val").unwrap();
+        assert_eq!(val_stat.non_null, 1);
+        assert_eq!(val_stat.unique, 1);
+    }
+
+    #[test]
+    fn test_compute_property_stats_with_sampling() {
+        // Create enough nodes that sampling kicks in
+        let nodes: Vec<(&str, &str, Vec<(&str, Value)>)> = (0..20)
+            .map(|i| {
+                // Leak the strings so they have 'static lifetime for the tuple
+                let id: &'static str = Box::leak(format!("id{}", i).into_boxed_str());
+                let title: &'static str = Box::leak(format!("title{}", i).into_boxed_str());
+                let props: Vec<(&str, Value)> = vec![("x", Value::Int64(i))];
+                (id, title, props)
+            })
+            .collect();
+        let g = make_graph_with_nodes(&[("Batch", nodes)]);
+
+        // Sample 5 out of 20
+        let stats = compute_property_stats(&g, "Batch", 0, Some(5)).unwrap();
+        let x_stat = stats.iter().find(|s| s.property_name == "x").unwrap();
+        // Sampled non_null should be scaled up to approximate total
+        assert!(x_stat.non_null >= 15); // 5 * 4.0 = 20, or close
+    }
+
+    // ── compute_neighbors_schema ───────────────────────────────────────────
+
+    #[test]
+    fn test_compute_neighbors_schema() {
+        let mut g = make_graph_with_nodes(&[
+            ("Person", vec![("p1", "Alice", vec![])]),
+            ("City", vec![("c1", "London", vec![])]),
+        ]);
+        add_edge(&mut g, "Person", "City", "LIVES_IN", vec![]);
+
+        let schema = compute_neighbors_schema(&g, "Person").unwrap();
+        assert_eq!(schema.outgoing.len(), 1);
+        assert_eq!(schema.outgoing[0].connection_type, "LIVES_IN");
+        assert_eq!(schema.outgoing[0].other_type, "City");
+        assert_eq!(schema.outgoing[0].count, 1);
+        assert!(schema.incoming.is_empty());
+
+        let city_schema = compute_neighbors_schema(&g, "City").unwrap();
+        assert!(city_schema.outgoing.is_empty());
+        assert_eq!(city_schema.incoming.len(), 1);
+        assert_eq!(city_schema.incoming[0].connection_type, "LIVES_IN");
+        assert_eq!(city_schema.incoming[0].other_type, "Person");
+    }
+
+    #[test]
+    fn test_compute_neighbors_schema_unknown_type() {
+        let g = DirGraph::new();
+        let result = compute_neighbors_schema(&g, "NonExistent");
+        assert!(result.is_err());
+    }
+
+    // ── compute_all_neighbors_schemas ──────────────────────────────────────
+
+    #[test]
+    fn test_compute_all_neighbors_schemas() {
+        let mut g = make_graph_with_nodes(&[
+            ("A", vec![("a1", "a", vec![])]),
+            ("B", vec![("b1", "b", vec![])]),
+            ("C", vec![("c1", "c", vec![])]),
+        ]);
+        add_edge(&mut g, "A", "B", "REL1", vec![]);
+        add_edge(&mut g, "B", "C", "REL2", vec![]);
+
+        let all = compute_all_neighbors_schemas(&g);
+        assert_eq!(all.len(), 3);
+
+        let a_schema = &all["A"];
+        assert_eq!(a_schema.outgoing.len(), 1);
+        assert!(a_schema.incoming.is_empty());
+
+        let b_schema = &all["B"];
+        assert_eq!(b_schema.outgoing.len(), 1);
+        assert_eq!(b_schema.incoming.len(), 1);
+
+        let c_schema = &all["C"];
+        assert!(c_schema.outgoing.is_empty());
+        assert_eq!(c_schema.incoming.len(), 1);
+    }
+
+    // ── compute_sample ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_compute_sample_basic() {
+        let g = make_graph_with_nodes(&[(
+            "Item",
+            vec![
+                ("i1", "A", vec![]),
+                ("i2", "B", vec![]),
+                ("i3", "C", vec![]),
+            ],
+        )]);
+        let samples = compute_sample(&g, "Item", 2).unwrap();
+        assert_eq!(samples.len(), 2);
+    }
+
+    #[test]
+    fn test_compute_sample_more_than_available() {
+        let g = make_graph_with_nodes(&[("Item", vec![("i1", "A", vec![])])]);
+        let samples = compute_sample(&g, "Item", 10).unwrap();
+        assert_eq!(samples.len(), 1);
+    }
+
+    #[test]
+    fn test_compute_sample_unknown_type() {
+        let g = DirGraph::new();
+        let result = compute_sample(&g, "X", 5);
+        assert!(result.is_err());
+    }
+
+    // ── compute_schema with indexes ────────────────────────────────────────
+
+    #[test]
+    fn test_compute_schema_with_indexes() {
+        let mut g = make_graph_with_nodes(&[(
+            "Person",
+            vec![("p1", "Alice", vec![("age", Value::Int64(30))])],
+        )]);
+        // Add a property index key
+        g.property_indices
+            .insert(("Person".to_string(), "age".to_string()), HashMap::new());
+        // Add a range index key
+        g.range_indices.insert(
+            ("Person".to_string(), "age".to_string()),
+            std::collections::BTreeMap::new(),
+        );
+        // Add a composite index key
+        g.composite_indices.insert(
+            (
+                "Person".to_string(),
+                vec!["age".to_string(), "name".to_string()],
+            ),
+            HashMap::new(),
+        );
+
+        let schema = compute_schema(&g);
+        assert!(schema.indexes.len() >= 2);
+        let idx_strs: Vec<&str> = schema.indexes.iter().map(|s| s.as_str()).collect();
+        assert!(idx_strs.iter().any(|s| s.contains("Person.age")));
+        assert!(idx_strs.iter().any(|s| s.contains("[range]")));
+        assert!(idx_strs.iter().any(|s| s.contains("(age, name)")));
+    }
+
+    // ── write_conventions ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_write_conventions_no_capabilities() {
+        let caps: HashMap<String, TypeCapabilities> = HashMap::new();
+        let mut xml = String::new();
+        write_conventions(&mut xml, &caps);
+        assert!(xml.contains("All nodes have .id and .title</conventions>"));
+        assert!(!xml.contains("Some have:"));
+    }
+
+    #[test]
+    fn test_write_conventions_with_capabilities() {
+        let mut caps: HashMap<String, TypeCapabilities> = HashMap::new();
+        caps.insert(
+            "Sensor".into(),
+            TypeCapabilities {
+                has_timeseries: true,
+                has_location: true,
+                has_geometry: false,
+                has_embeddings: false,
+            },
+        );
+        let mut xml = String::new();
+        write_conventions(&mut xml, &caps);
+        assert!(xml.contains("Some have:"));
+        assert!(xml.contains("location"));
+        assert!(xml.contains("timeseries"));
+    }
+
+    // ── write_read_only_notice ─────────────────────────────────────────────
+
+    #[test]
+    fn test_write_read_only_notice_off() {
+        let g = DirGraph::new();
+        let mut xml = String::new();
+        write_read_only_notice(&mut xml, &g);
+        assert!(xml.is_empty());
+    }
+
+    #[test]
+    fn test_write_read_only_notice_on() {
+        let mut g = DirGraph::new();
+        g.read_only = true;
+        let mut xml = String::new();
+        write_read_only_notice(&mut xml, &g);
+        assert!(xml.contains("<read-only>"));
+        assert!(xml.contains("mutations disabled"));
+    }
+
+    // ── write_connection_map ───────────────────────────────────────────────
+
+    #[test]
+    fn test_write_connection_map_empty() {
+        let g = DirGraph::new();
+        let stats: Vec<ConnectionTypeStats> = Vec::new();
+        let mut xml = String::new();
+        write_connection_map(&mut xml, &g, &stats);
+        assert!(xml.contains("<connections/>"));
+    }
+
+    #[test]
+    fn test_write_connection_map_with_stats() {
+        let g = DirGraph::new();
+        let stats = vec![ConnectionTypeStats {
+            connection_type: "KNOWS".into(),
+            count: 42,
+            source_types: vec!["Person".into()],
+            target_types: vec!["Person".into()],
+            property_names: vec!["since".into()],
+        }];
+        let mut xml = String::new();
+        write_connection_map(&mut xml, &g, &stats);
+        assert!(xml.contains("type=\"KNOWS\""));
+        assert!(xml.contains("count=\"42\""));
+        assert!(xml.contains("from=\"Person\""));
+        assert!(xml.contains("to=\"Person\""));
+        assert!(xml.contains("properties=\"since\""));
+    }
+
+    // ── write_extensions ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_write_extensions_basic() {
+        let g = DirGraph::new();
+        let mut xml = String::new();
+        write_extensions(&mut xml, &g);
+        assert!(xml.contains("<extensions>"));
+        assert!(xml.contains("</extensions>"));
+        assert!(xml.contains("<algorithms"));
+        assert!(xml.contains("<cypher"));
+        assert!(xml.contains("<fluent_api"));
+        // No timeseries, spatial, or embeddings
+        assert!(!xml.contains("<timeseries"));
+        assert!(!xml.contains("<spatial"));
+        assert!(!xml.contains("<semantic"));
+    }
+
+    #[test]
+    fn test_write_extensions_with_timeseries() {
+        let mut g = DirGraph::new();
+        g.timeseries_configs.insert(
+            "Sensor".to_string(),
+            super::super::timeseries::TimeseriesConfig {
+                resolution: "daily".to_string(),
+                channels: vec!["temp".to_string()],
+                units: HashMap::new(),
+                bin_type: None,
+            },
+        );
+        let mut xml = String::new();
+        write_extensions(&mut xml, &g);
+        assert!(xml.contains("<timeseries"));
+    }
+
+    // ── write_exploration_hints ─────────────────────────────────────────────
+
+    #[test]
+    fn test_write_exploration_hints_trivial_graph() {
+        // < 2 types → no hints
+        let g = make_graph_with_nodes(&[("Only", vec![("o1", "x", vec![])])]);
+        let stats: Vec<ConnectionTypeStats> = Vec::new();
+        let mut xml = String::new();
+        write_exploration_hints(&mut xml, &g, &stats);
+        assert!(xml.is_empty());
+    }
+
+    #[test]
+    fn test_write_exploration_hints_disconnected_types() {
+        let mut g = make_graph_with_nodes(&[
+            ("TypeA", vec![("a1", "a", vec![])]),
+            ("TypeB", vec![("b1", "b", vec![])]),
+            ("TypeC", vec![("c1", "c", vec![])]),
+        ]);
+        // Connect A to B, leave C disconnected
+        add_edge(&mut g, "TypeA", "TypeB", "REL", vec![]);
+
+        let stats = compute_connection_type_stats(&g);
+        let mut xml = String::new();
+        write_exploration_hints(&mut xml, &g, &stats);
+        assert!(xml.contains("<disconnected>"));
+        assert!(xml.contains("TypeC"));
+    }
+
+    // ── write_cypher_overview ──────────────────────────────────────────────
+
+    #[test]
+    fn test_write_cypher_overview_structure() {
+        let mut xml = String::new();
+        write_cypher_overview(&mut xml);
+        assert!(xml.starts_with("<cypher>"));
+        assert!(xml.ends_with("</cypher>\n"));
+        assert!(xml.contains("<clauses>"));
+        assert!(xml.contains("<operators>"));
+        assert!(xml.contains("<functions>"));
+        assert!(xml.contains("<procedures>"));
+        assert!(xml.contains("<patterns>"));
+        assert!(xml.contains("<limitations>"));
+    }
+
+    // ── write_cypher_topics ────────────────────────────────────────────────
+
+    #[test]
+    fn test_write_cypher_topics_unknown() {
+        let mut xml = String::new();
+        let result = write_cypher_topics(&mut xml, &["NONEXISTENT".to_string()]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unknown Cypher topic"));
+    }
+
+    #[test]
+    fn test_write_cypher_topics_empty_falls_back_to_overview() {
+        let mut xml = String::new();
+        let result = write_cypher_topics(&mut xml, &[]);
+        assert!(result.is_ok());
+        assert!(xml.contains("<clauses>"));
+    }
+
+    #[test]
+    fn test_write_cypher_topics_match() {
+        let mut xml = String::new();
+        let result = write_cypher_topics(&mut xml, &["MATCH".to_string()]);
+        assert!(result.is_ok());
+        assert!(xml.contains("<MATCH>"));
+        assert!(xml.contains("</MATCH>"));
+    }
+
+    #[test]
+    fn test_write_cypher_topics_case_insensitive() {
+        let mut xml = String::new();
+        let result = write_cypher_topics(&mut xml, &["where".to_string()]);
+        assert!(result.is_ok());
+        assert!(xml.contains("<WHERE>"));
+    }
+
+    #[test]
+    fn test_write_cypher_topics_multiple() {
+        let mut xml = String::new();
+        let result = write_cypher_topics(&mut xml, &["MATCH".to_string(), "RETURN".to_string()]);
+        assert!(result.is_ok());
+        assert!(xml.contains("<MATCH>"));
+        assert!(xml.contains("<RETURN>"));
+    }
+
+    #[test]
+    fn test_write_cypher_topics_order_by_aliases() {
+        for alias in &["ORDER BY", "ORDERBY", "ORDER_BY"] {
+            let mut xml = String::new();
+            let result = write_cypher_topics(&mut xml, &[alias.to_string()]);
+            assert!(result.is_ok(), "Failed for alias: {}", alias);
+            assert!(xml.contains("<ORDER_BY>"));
+        }
+    }
+
+    #[test]
+    fn test_write_cypher_topics_all_known() {
+        // Test that every topic in the known topic list can be rendered
+        let topics: Vec<String> = CYPHER_TOPIC_LIST
+            .split(", ")
+            .map(|s| s.trim().to_string())
+            .collect();
+        for topic in &topics {
+            let mut xml = String::new();
+            let result = write_cypher_topics(&mut xml, &[topic.clone()]);
+            assert!(result.is_ok(), "Failed for topic: {}", topic);
+            assert!(!xml.is_empty(), "Empty output for topic: {}", topic);
+        }
+    }
+
+    // ── write_fluent_overview ──────────────────────────────────────────────
+
+    #[test]
+    fn test_write_fluent_overview_structure() {
+        let mut xml = String::new();
+        write_fluent_overview(&mut xml);
+        assert!(xml.starts_with("<fluent_api>"));
+        assert!(xml.ends_with("</fluent_api>\n"));
+        assert!(xml.contains("selection"));
+        assert!(xml.contains("traversal"));
+    }
+
+    // ── write_fluent_topics ────────────────────────────────────────────────
+
+    #[test]
+    fn test_write_fluent_topics_unknown() {
+        let mut xml = String::new();
+        let result = write_fluent_topics(&mut xml, &["NONEXISTENT".to_string()]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_write_fluent_topics_empty_falls_back() {
+        let mut xml = String::new();
+        let result = write_fluent_topics(&mut xml, &[]);
+        assert!(result.is_ok());
+        assert!(xml.contains("<fluent_api>"));
+    }
+
+    #[test]
+    fn test_write_fluent_topics_all_known() {
+        let topics: Vec<String> = FLUENT_TOPIC_LIST
+            .split(", ")
+            .map(|s| s.trim().to_string())
+            .collect();
+        for topic in &topics {
+            let mut xml = String::new();
+            let result = write_fluent_topics(&mut xml, &[topic.clone()]);
+            assert!(result.is_ok(), "Failed for fluent topic: {}", topic);
+            assert!(!xml.is_empty(), "Empty output for fluent topic: {}", topic);
+        }
+    }
+
+    // ── compute_description ────────────────────────────────────────────────
+
+    #[test]
+    fn test_compute_description_empty_graph() {
+        let g = DirGraph::new();
+        let result = compute_description(
+            &g,
+            None,
+            &ConnectionDetail::Off,
+            &CypherDetail::Off,
+            &FluentDetail::Off,
+        )
+        .unwrap();
+        assert!(result.contains("<graph"));
+        assert!(result.contains("nodes=\"0\""));
+        assert!(result.contains("edges=\"0\""));
+    }
+
+    #[test]
+    fn test_compute_description_with_nodes() {
+        let g = make_graph_with_nodes(&[
+            (
+                "Person",
+                vec![("p1", "Alice", vec![("age", Value::Int64(30))])],
+            ),
+            ("City", vec![("c1", "London", vec![])]),
+        ]);
+        let result = compute_description(
+            &g,
+            None,
+            &ConnectionDetail::Off,
+            &CypherDetail::Off,
+            &FluentDetail::Off,
+        )
+        .unwrap();
+        assert!(result.contains("Person"));
+        assert!(result.contains("City"));
+    }
+
+    #[test]
+    fn test_compute_description_focused_types() {
+        let g = make_graph_with_nodes(&[
+            (
+                "Person",
+                vec![("p1", "Alice", vec![("age", Value::Int64(30))])],
+            ),
+            ("City", vec![("c1", "London", vec![])]),
+        ]);
+        let types = vec!["Person".to_string()];
+        let result = compute_description(
+            &g,
+            Some(&types),
+            &ConnectionDetail::Off,
+            &CypherDetail::Off,
+            &FluentDetail::Off,
+        )
+        .unwrap();
+        assert!(result.contains("Person"));
+    }
+
+    #[test]
+    fn test_compute_description_focused_type_not_found() {
+        let g = DirGraph::new();
+        let types = vec!["NonExistent".to_string()];
+        let result = compute_description(
+            &g,
+            Some(&types),
+            &ConnectionDetail::Off,
+            &CypherDetail::Off,
+            &FluentDetail::Off,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_compute_description_cypher_overview() {
+        let g = DirGraph::new();
+        let result = compute_description(
+            &g,
+            None,
+            &ConnectionDetail::Off,
+            &CypherDetail::Overview,
+            &FluentDetail::Off,
+        )
+        .unwrap();
+        assert!(result.contains("<cypher>"));
+        // Standalone mode — should NOT contain <graph>
+        assert!(!result.contains("<graph"));
+    }
+
+    #[test]
+    fn test_compute_description_cypher_topics() {
+        let g = DirGraph::new();
+        let result = compute_description(
+            &g,
+            None,
+            &ConnectionDetail::Off,
+            &CypherDetail::Topics(vec!["MATCH".to_string()]),
+            &FluentDetail::Off,
+        )
+        .unwrap();
+        assert!(result.contains("<MATCH>"));
+    }
+
+    #[test]
+    fn test_compute_description_fluent_overview() {
+        let g = DirGraph::new();
+        let result = compute_description(
+            &g,
+            None,
+            &ConnectionDetail::Off,
+            &CypherDetail::Off,
+            &FluentDetail::Overview,
+        )
+        .unwrap();
+        assert!(result.contains("<fluent_api>"));
+    }
+
+    #[test]
+    fn test_compute_description_connections_overview() {
+        let mut g = make_graph_with_nodes(&[
+            ("A", vec![("a1", "a", vec![])]),
+            ("B", vec![("b1", "b", vec![])]),
+        ]);
+        add_edge(&mut g, "A", "B", "REL", vec![]);
+
+        let result = compute_description(
+            &g,
+            None,
+            &ConnectionDetail::Overview,
+            &CypherDetail::Off,
+            &FluentDetail::Off,
+        )
+        .unwrap();
+        assert!(result.contains("<connections>"));
+        assert!(result.contains("REL"));
+    }
+
+    // ── build_inventory ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_build_inventory_basic() {
+        let g = make_graph_with_nodes(&[
+            ("Person", vec![("p1", "Alice", vec![])]),
+            ("City", vec![("c1", "London", vec![])]),
+        ]);
+        let result = build_inventory(&g);
+        assert!(result.starts_with("<graph"));
+        assert!(result.ends_with("</graph>"));
+        assert!(result.contains("Person"));
+        assert!(result.contains("City"));
+    }
+
+    #[test]
+    fn test_build_inventory_with_parent_types() {
+        let mut g = make_graph_with_nodes(&[
+            ("Core", vec![("c1", "main", vec![])]),
+            ("Sub", vec![("s1", "child", vec![])]),
+        ]);
+        g.parent_types.insert("Sub".to_string(), "Core".to_string());
+
+        let result = build_inventory(&g);
+        // Supporting types should be noted
+        assert!(result.contains("core="));
+        assert!(result.contains("supporting="));
+    }
+
+    // ── build_inventory_with_detail ────────────────────────────────────────
+
+    #[test]
+    fn test_build_inventory_with_detail() {
+        let g = make_graph_with_nodes(&[(
+            "Person",
+            vec![
+                ("p1", "Alice", vec![("age", Value::Int64(30))]),
+                ("p2", "Bob", vec![("age", Value::Int64(25))]),
+            ],
+        )]);
+        let result = build_inventory_with_detail(&g);
+        assert!(result.contains("<type name=\"Person\""));
+        assert!(result.contains("<samples>"));
+    }
+
+    // ── write_connections_overview ──────────────────────────────────────────
+
+    #[test]
+    fn test_write_connections_overview_empty() {
+        let g = DirGraph::new();
+        let mut xml = String::new();
+        write_connections_overview(&mut xml, &g);
+        assert!(xml.contains("<connections/>"));
+    }
+
+    #[test]
+    fn test_write_connections_overview_with_edges() {
+        let mut g = make_graph_with_nodes(&[
+            ("A", vec![("a1", "a", vec![])]),
+            ("B", vec![("b1", "b", vec![])]),
+        ]);
+        add_edge(&mut g, "A", "B", "LINKS", vec![]);
+        let mut xml = String::new();
+        write_connections_overview(&mut xml, &g);
+        assert!(xml.contains("type=\"LINKS\""));
+    }
+
+    // ── write_connections_detail ────────────────────────────────────────────
+
+    #[test]
+    fn test_write_connections_detail_unknown_type() {
+        let g = DirGraph::new();
+        let mut xml = String::new();
+        let result = write_connections_detail(&mut xml, &g, &["NOPE".to_string()]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn test_write_connections_detail_valid() {
+        let mut g = make_graph_with_nodes(&[
+            ("A", vec![("a1", "nodeA", vec![])]),
+            ("B", vec![("b1", "nodeB", vec![])]),
+        ]);
+        add_edge(
+            &mut g,
+            "A",
+            "B",
+            "LINKS",
+            vec![("weight", Value::Float64(0.5))],
+        );
+        let mut xml = String::new();
+        let result = write_connections_detail(&mut xml, &g, &["LINKS".to_string()]);
+        assert!(result.is_ok());
+        assert!(xml.contains("<LINKS"));
+        assert!(xml.contains("<endpoints>"));
+        assert!(xml.contains("<samples>"));
+    }
+
+    // ── compute_edge_property_stats ────────────────────────────────────────
+
+    #[test]
+    fn test_compute_edge_property_stats_no_edges() {
+        let g = DirGraph::new();
+        let stats = compute_edge_property_stats(&g, "NONEXISTENT", 10);
+        assert!(stats.is_empty());
+    }
+
+    #[test]
+    fn test_compute_edge_property_stats() {
+        let mut g = make_graph_with_nodes(&[
+            ("A", vec![("a1", "a", vec![])]),
+            ("B", vec![("b1", "b", vec![])]),
+        ]);
+        add_edge(
+            &mut g,
+            "A",
+            "B",
+            "REL",
+            vec![("weight", Value::Float64(1.5))],
+        );
+        let stats = compute_edge_property_stats(&g, "REL", 10);
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].property_name, "weight");
+        assert_eq!(stats[0].non_null, 1);
+        assert_eq!(stats[0].type_string, "float");
+    }
+
+    // ── mcp_quickstart ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_mcp_quickstart() {
+        let result = mcp_quickstart();
+        assert!(result.contains("<mcp_quickstart"));
+        assert!(result.contains("</mcp_quickstart>"));
+        assert!(result.contains("pip install kglite"));
+    }
+
+    // ── compute_type_capabilities ──────────────────────────────────────────
+
+    #[test]
+    fn test_compute_type_capabilities_empty() {
+        let g = DirGraph::new();
+        let caps = compute_type_capabilities(&g);
+        assert!(caps.is_empty());
+    }
+
+    #[test]
+    fn test_compute_type_capabilities_with_timeseries() {
+        let mut g = make_graph_with_nodes(&[("Sensor", vec![("s1", "s", vec![])])]);
+        g.timeseries_configs.insert(
+            "Sensor".to_string(),
+            super::super::timeseries::TimeseriesConfig {
+                resolution: "daily".to_string(),
+                channels: vec![],
+                units: HashMap::new(),
+                bin_type: None,
+            },
+        );
+        let caps = compute_type_capabilities(&g);
+        assert!(caps["Sensor"].has_timeseries);
+        assert!(!caps["Sensor"].has_location);
+    }
+
+    #[test]
+    fn test_compute_type_capabilities_with_point_metadata() {
+        let mut g = make_graph_with_nodes(&[("Place", vec![("pl1", "here", vec![])])]);
+        let mut meta = HashMap::new();
+        meta.insert("coords".to_string(), "Point".to_string());
+        g.node_type_metadata.insert("Place".to_string(), meta);
+        let caps = compute_type_capabilities(&g);
+        assert!(caps["Place"].has_location);
+    }
+
+    // ── Large graph inventory (>15 types) ──────────────────────────────────
+
+    #[test]
+    fn test_compute_description_large_graph_uses_inventory() {
+        // Create a graph with >15 core types to trigger the inventory path
+        let types: Vec<(&str, Vec<(&str, &str, Vec<(&str, Value)>)>)> = (0..20)
+            .map(|i| {
+                let type_name: &'static str = Box::leak(format!("Type{}", i).into_boxed_str());
+                let id: &'static str = Box::leak(format!("id{}", i).into_boxed_str());
+                let title: &'static str = Box::leak(format!("t{}", i).into_boxed_str());
+                let nodes = vec![(id, title, vec![])];
+                (type_name, nodes)
+            })
+            .collect();
+        let g = make_graph_with_nodes(&types);
+
+        let result = compute_description(
+            &g,
+            None,
+            &ConnectionDetail::Off,
+            &CypherDetail::Off,
+            &FluentDetail::Off,
+        )
+        .unwrap();
+        // Should use build_inventory (compact) path
+        assert!(result.contains("<types count="));
+        // Should have the hint
+        assert!(result.contains("describe(types="));
+    }
+
+    // ── write_type_detail ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_write_type_detail_basic() {
+        let g = make_graph_with_nodes(&[(
+            "Person",
+            vec![
+                ("p1", "Alice", vec![("age", Value::Int64(30))]),
+                ("p2", "Bob", vec![("age", Value::Int64(25))]),
+            ],
+        )]);
+        let caps = TypeCapabilities {
+            has_timeseries: false,
+            has_location: false,
+            has_geometry: false,
+            has_embeddings: false,
+        };
+        let mut xml = String::new();
+        write_type_detail(&mut xml, &g, "Person", &caps, "  ", None);
+        assert!(xml.contains("<type name=\"Person\" count=\"2\""));
+        assert!(xml.contains("</type>"));
+        assert!(xml.contains("<samples>"));
+    }
+
+    #[test]
+    fn test_write_type_detail_with_aliases() {
+        let mut g = make_graph_with_nodes(&[("Well", vec![("w1", "Well-1", vec![])])]);
+        g.id_field_aliases
+            .insert("Well".to_string(), "npdid".to_string());
+        g.title_field_aliases
+            .insert("Well".to_string(), "well_name".to_string());
+
+        let caps = TypeCapabilities {
+            has_timeseries: false,
+            has_location: false,
+            has_geometry: false,
+            has_embeddings: false,
+        };
+        let mut xml = String::new();
+        write_type_detail(&mut xml, &g, "Well", &caps, "", None);
+        assert!(xml.contains("id_alias=\"npdid\""));
+        assert!(xml.contains("title_alias=\"well_name\""));
+    }
+
+    // ── sample_unique_values ───────────────────────────────────────────────
+
+    #[test]
+    fn test_sample_unique_values_basic() {
+        let g = make_graph_with_nodes(&[(
+            "Item",
+            vec![
+                ("i1", "A", vec![("color", Value::String("red".into()))]),
+                ("i2", "B", vec![("color", Value::String("blue".into()))]),
+                ("i3", "C", vec![("color", Value::String("red".into()))]),
+            ],
+        )]);
+        let vals = sample_unique_values(&g, "Item", "color", 100);
+        assert_eq!(vals.len(), 2);
+        assert!(vals.contains("red"));
+        assert!(vals.contains("blue"));
+    }
+
+    #[test]
+    fn test_sample_unique_values_max_limit() {
+        let g = make_graph_with_nodes(&[(
+            "Item",
+            vec![
+                ("i1", "A", vec![("x", Value::Int64(1))]),
+                ("i2", "B", vec![("x", Value::Int64(2))]),
+                ("i3", "C", vec![("x", Value::Int64(3))]),
+            ],
+        )]);
+        let vals = sample_unique_values(&g, "Item", "x", 2);
+        assert_eq!(vals.len(), 2);
+    }
+
+    #[test]
+    fn test_sample_unique_values_nonexistent_type() {
+        let g = DirGraph::new();
+        let vals = sample_unique_values(&g, "Nothing", "x", 10);
+        assert!(vals.is_empty());
+    }
+
+    #[test]
+    fn test_sample_unique_values_with_nulls() {
+        let g = make_graph_with_nodes(&[(
+            "Item",
+            vec![
+                ("i1", "A", vec![("x", Value::Int64(1))]),
+                ("i2", "B", vec![("x", Value::Null)]),
+            ],
+        )]);
+        let vals = sample_unique_values(&g, "Item", "x", 10);
+        assert_eq!(vals.len(), 1);
+    }
+
+    // ── Special characters in node names ───────────────────────────────────
+
+    #[test]
+    fn test_description_with_special_chars_in_names() {
+        let g = make_graph_with_nodes(&[("Type<A>&B", vec![("id&1", "title\"quoted\"", vec![])])]);
+        let result = compute_description(
+            &g,
+            None,
+            &ConnectionDetail::Off,
+            &CypherDetail::Off,
+            &FluentDetail::Off,
+        )
+        .unwrap();
+        // Should be escaped in XML
+        assert!(result.contains("&amp;"));
+        assert!(result.contains("&lt;"));
+        assert!(result.contains("&gt;"));
+    }
+
+    // ── Connections with edge properties ───────────────────────────────────
+
+    #[test]
+    fn test_connection_map_with_edge_properties() {
+        let g = DirGraph::new();
+        let stats = vec![ConnectionTypeStats {
+            connection_type: "HAS".into(),
+            count: 10,
+            source_types: vec!["A".into()],
+            target_types: vec!["B".into()],
+            property_names: vec!["weight".into(), "type".into()],
+        }];
+        let mut xml = String::new();
+        write_connection_map(&mut xml, &g, &stats);
+        assert!(xml.contains("properties=\"weight,type\""));
+    }
+
+    // ── Multiple connection types ──────────────────────────────────────────
+
+    #[test]
+    fn test_compute_schema_multiple_edge_types() {
+        let mut g = make_graph_with_nodes(&[
+            ("A", vec![("a1", "a", vec![])]),
+            ("B", vec![("b1", "b", vec![])]),
+            ("C", vec![("c1", "c", vec![])]),
+        ]);
+        add_edge(&mut g, "A", "B", "KNOWS", vec![]);
+        add_edge(&mut g, "B", "C", "MANAGES", vec![]);
+
+        let schema = compute_schema(&g);
+        assert_eq!(schema.node_count, 3);
+        assert_eq!(schema.edge_count, 2);
+        assert_eq!(schema.connection_types.len(), 2);
+        let conn_names: Vec<&str> = schema
+            .connection_types
+            .iter()
+            .map(|c| c.connection_type.as_str())
+            .collect();
+        assert!(conn_names.contains(&"KNOWS"));
+        assert!(conn_names.contains(&"MANAGES"));
+    }
+
+    // ── write_connection_map filters supporting types ──────────────────────
+
+    #[test]
+    fn test_write_connection_map_filters_supporting_type_edges() {
+        let mut g = DirGraph::new();
+        // Set up parent_types so "Sub" is a child of "Core"
+        g.parent_types.insert("Sub".to_string(), "Core".to_string());
+
+        // A connection where all sources are children of the target → should be filtered
+        let stats = vec![ConnectionTypeStats {
+            connection_type: "OF_CORE".into(),
+            count: 5,
+            source_types: vec!["Sub".into()],
+            target_types: vec!["Core".into()],
+            property_names: vec![],
+        }];
+        let mut xml = String::new();
+        write_connection_map(&mut xml, &g, &stats);
+        // The entire connection should be filtered out
+        assert!(xml.contains("<connections/>"));
+    }
+
+    // ── compute_join_candidates ─────────────────────────────────────────────
+
+    #[test]
+    fn test_compute_join_candidates_with_overlap() {
+        let mut g = make_graph_with_nodes(&[
+            (
+                "TypeX",
+                vec![
+                    ("x1", "A", vec![("name", Value::String("Alice".into()))]),
+                    ("x2", "B", vec![("name", Value::String("Bob".into()))]),
+                ],
+            ),
+            (
+                "TypeY",
+                vec![
+                    ("y1", "C", vec![("name", Value::String("Alice".into()))]),
+                    ("y2", "D", vec![("name", Value::String("Charlie".into()))]),
+                ],
+            ),
+        ]);
+        // Add metadata so types_compatible works
+        let mut meta_x = HashMap::new();
+        meta_x.insert("name".to_string(), "String".to_string());
+        g.node_type_metadata.insert("TypeX".to_string(), meta_x);
+        let mut meta_y = HashMap::new();
+        meta_y.insert("name".to_string(), "String".to_string());
+        g.node_type_metadata.insert("TypeY".to_string(), meta_y);
+
+        let connected_pairs = HashSet::new(); // No existing connections
+        let candidates = compute_join_candidates(&g, &connected_pairs, 10, 100);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].overlap, 1); // "Alice" overlaps
+        assert_eq!(candidates[0].left_prop, "name");
+    }
+
+    #[test]
+    fn test_compute_join_candidates_skips_connected_pairs() {
+        let mut g = make_graph_with_nodes(&[
+            (
+                "TypeX",
+                vec![("x1", "A", vec![("name", Value::String("Alice".into()))])],
+            ),
+            (
+                "TypeY",
+                vec![("y1", "B", vec![("name", Value::String("Alice".into()))])],
+            ),
+        ]);
+        let mut meta = HashMap::new();
+        meta.insert("name".to_string(), "String".to_string());
+        g.node_type_metadata
+            .insert("TypeX".to_string(), meta.clone());
+        g.node_type_metadata.insert("TypeY".to_string(), meta);
+
+        // Mark them as already connected
+        let mut connected_pairs = HashSet::new();
+        connected_pairs.insert(("TypeX".to_string(), "TypeY".to_string()));
+        connected_pairs.insert(("TypeY".to_string(), "TypeX".to_string()));
+
+        let candidates = compute_join_candidates(&g, &connected_pairs, 10, 100);
+        assert!(candidates.is_empty());
+    }
+
+    // ── Additional coverage tests ─────────────────────────────────────────
+
+    // ── value_type_name extended ──────────────────────────────────────────
+
+    #[test]
+    fn test_value_type_name_datetime() {
+        let dt = chrono::NaiveDate::from_ymd_opt(2020, 1, 1).unwrap();
+        assert_eq!(value_type_name(&Value::DateTime(dt)), "datetime");
+    }
+
+    #[test]
+    fn test_value_type_name_uniqueid() {
+        assert_eq!(value_type_name(&Value::UniqueId(42)), "uniqueid");
+    }
+
+    #[test]
+    fn test_value_type_name_noderef() {
+        assert_eq!(value_type_name(&Value::NodeRef(0)), "noderef");
+    }
+
+    #[test]
+    fn test_value_type_name_edgeref() {
+        assert_eq!(
+            value_type_name(&Value::EdgeRef {
+                edge_idx: 0,
+                src_idx: 0,
+                dst_idx: 1,
+            }),
+            "edgeref"
+        );
+    }
+
+    // ── value_display_compact extended ────────────────────────────────────
+
+    #[test]
+    fn test_value_display_compact_datetime() {
+        let dt = chrono::NaiveDate::from_ymd_opt(2020, 6, 15).unwrap();
+        let result = value_display_compact(&Value::DateTime(dt));
+        assert!(result.contains("2020"));
+    }
+
+    #[test]
+    fn test_value_display_compact_uniqueid() {
+        let result = value_display_compact(&Value::UniqueId(12345));
+        assert_eq!(result, "12345");
+    }
+
+    #[test]
+    fn test_value_display_compact_noderef() {
+        assert_eq!(value_display_compact(&Value::NodeRef(42)), "node#42");
+    }
+
+    #[test]
+    fn test_value_display_compact_edgeref() {
+        assert_eq!(
+            value_display_compact(&Value::EdgeRef {
+                edge_idx: 7,
+                src_idx: 0,
+                dst_idx: 1,
+            }),
+            "edge#7"
+        );
+    }
+
+    #[test]
+    fn test_value_display_compact_string_exactly_40_chars() {
+        // 40 chars should NOT be truncated
+        let s = "a".repeat(40);
+        let v = Value::String(s.clone());
+        assert_eq!(value_display_compact(&v), s);
+    }
+
+    #[test]
+    fn test_value_display_compact_string_41_chars_truncated() {
+        // 41 chars should be truncated
+        let s = "a".repeat(41);
+        let result = value_display_compact(&Value::String(s));
+        assert!(result.ends_with("..."));
+        assert_eq!(result.len(), 40);
+    }
+
+    // ── is_null_value extended ────────────────────────────────────────────
+
+    #[test]
+    fn test_is_null_value_nan_negative() {
+        assert!(is_null_value(&Value::Float64(f64::NEG_INFINITY * 0.0))); // NaN
+    }
+
+    #[test]
+    fn test_is_null_value_point_not_null() {
+        assert!(!is_null_value(&Value::Point { lat: 0.0, lon: 0.0 }));
+    }
+
+    // ── compute_property_stats max_values=0 ──────────────────────────────
+
+    #[test]
+    fn test_compute_property_stats_max_values_zero() {
+        let g = make_graph_with_nodes(&[(
+            "Item",
+            vec![
+                ("i1", "A", vec![("color", Value::String("red".into()))]),
+                ("i2", "B", vec![("color", Value::String("blue".into()))]),
+            ],
+        )]);
+        let stats = compute_property_stats(&g, "Item", 0, None).unwrap();
+        let color_stat = stats.iter().find(|s| s.property_name == "color").unwrap();
+        // max_values=0 means values should be None
+        assert!(color_stat.values.is_none());
+        assert_eq!(color_stat.unique, 2);
+        assert_eq!(color_stat.non_null, 2);
+    }
+
+    // ── compute_property_stats with metadata ─────────────────────────────
+
+    #[test]
+    fn test_compute_property_stats_uses_metadata_type() {
+        let mut g = make_graph_with_nodes(&[(
+            "Item",
+            vec![("i1", "A", vec![("score", Value::Float64(3.14))])],
+        )]);
+        let mut meta = HashMap::new();
+        meta.insert("score".to_string(), "Float64".to_string());
+        g.node_type_metadata.insert("Item".to_string(), meta);
+
+        let stats = compute_property_stats(&g, "Item", 15, None).unwrap();
+        let score_stat = stats.iter().find(|s| s.property_name == "score").unwrap();
+        // Should use metadata type string "Float64" instead of "float"
+        assert_eq!(score_stat.type_string, "Float64");
+    }
+
+    // ── compute_property_stats value_cap exceeded ────────────────────────
+
+    #[test]
+    fn test_compute_property_stats_value_cap_exceeded() {
+        // Create nodes with many unique values exceeding max_values
+        let nodes: Vec<(&str, &str, Vec<(&str, Value)>)> = (0..20)
+            .map(|i| {
+                let id: &'static str = Box::leak(format!("id{}", i).into_boxed_str());
+                let title: &'static str = Box::leak(format!("t{}", i).into_boxed_str());
+                let props: Vec<(&str, Value)> =
+                    vec![("val", Value::String(format!("v{}", i).into()))];
+                (id, title, props)
+            })
+            .collect();
+        let g = make_graph_with_nodes(&[("Many", nodes)]);
+
+        // max_values=5, but there are 20 unique values
+        let stats = compute_property_stats(&g, "Many", 5, None).unwrap();
+        let val_stat = stats.iter().find(|s| s.property_name == "val").unwrap();
+        // When unique > max_values, values should be None
+        assert!(val_stat.values.is_none());
+    }
+
+    // ── write_extensions with spatial ─────────────────────────────────────
+
+    #[test]
+    fn test_write_extensions_with_spatial() {
+        let mut g = DirGraph::new();
+        g.spatial_configs.insert(
+            "City".to_string(),
+            crate::graph::schema::SpatialConfig {
+                location: Some(("lat".to_string(), "lon".to_string())),
+                geometry: None,
+                points: HashMap::new(),
+                shapes: HashMap::new(),
+            },
+        );
+        let mut xml = String::new();
+        write_extensions(&mut xml, &g);
+        assert!(xml.contains("<spatial"));
+    }
+
+    #[test]
+    fn test_write_extensions_with_spatial_from_metadata() {
+        let mut g = DirGraph::new();
+        let mut meta = HashMap::new();
+        meta.insert("coords".to_string(), "point".to_string());
+        g.node_type_metadata.insert("Place".to_string(), meta);
+        let mut xml = String::new();
+        write_extensions(&mut xml, &g);
+        assert!(xml.contains("<spatial"));
+    }
+
+    // ── write_extensions with edges (connections hint) ────────────────────
+
+    #[test]
+    fn test_write_extensions_with_edges() {
+        let mut g = make_graph_with_nodes(&[
+            ("A", vec![("a1", "a", vec![])]),
+            ("B", vec![("b1", "b", vec![])]),
+        ]);
+        add_edge(&mut g, "A", "B", "REL", vec![]);
+        let mut xml = String::new();
+        write_extensions(&mut xml, &g);
+        assert!(xml.contains("<connections hint="));
+    }
+
+    #[test]
+    fn test_write_extensions_no_edges_no_connections_hint() {
+        let g = DirGraph::new();
+        let mut xml = String::new();
+        write_extensions(&mut xml, &g);
+        assert!(!xml.contains("<connections hint="));
+    }
+
+    // ── write_type_detail with spatial config ────────────────────────────
+
+    #[test]
+    fn test_write_type_detail_with_spatial_location() {
+        let mut g = make_graph_with_nodes(&[(
+            "City",
+            vec![("c1", "Oslo", vec![("lat", Value::Float64(59.9))])],
+        )]);
+        g.spatial_configs.insert(
+            "City".to_string(),
+            crate::graph::schema::SpatialConfig {
+                location: Some(("lat".to_string(), "lon".to_string())),
+                geometry: None,
+                points: HashMap::new(),
+                shapes: HashMap::new(),
+            },
+        );
+        let caps = TypeCapabilities {
+            has_timeseries: false,
+            has_location: true,
+            has_geometry: false,
+            has_embeddings: false,
+        };
+        let mut xml = String::new();
+        write_type_detail(&mut xml, &g, "City", &caps, "", None);
+        assert!(xml.contains("<spatial"));
+        assert!(xml.contains("location=\"lat,lon\""));
+    }
+
+    #[test]
+    fn test_write_type_detail_with_spatial_geometry() {
+        let mut g = make_graph_with_nodes(&[("Block", vec![("b1", "Block1", vec![])])]);
+        g.spatial_configs.insert(
+            "Block".to_string(),
+            crate::graph::schema::SpatialConfig {
+                location: None,
+                geometry: Some("wkt_col".to_string()),
+                points: HashMap::new(),
+                shapes: HashMap::new(),
+            },
+        );
+        let caps = TypeCapabilities {
+            has_timeseries: false,
+            has_location: false,
+            has_geometry: true,
+            has_embeddings: false,
+        };
+        let mut xml = String::new();
+        write_type_detail(&mut xml, &g, "Block", &caps, "", None);
+        assert!(xml.contains("geometry=\"wkt_col\""));
+    }
+
+    // ── write_type_detail with timeseries ─────────────────────────────────
+
+    #[test]
+    fn test_write_type_detail_with_timeseries() {
+        let mut g = make_graph_with_nodes(&[("Sensor", vec![("s1", "Sensor1", vec![])])]);
+        let mut units = HashMap::new();
+        units.insert("temp".to_string(), "°C".to_string());
+        g.timeseries_configs.insert(
+            "Sensor".to_string(),
+            super::super::timeseries::TimeseriesConfig {
+                resolution: "daily".to_string(),
+                channels: vec!["temp".to_string(), "pressure".to_string()],
+                units,
+                bin_type: None,
+            },
+        );
+        let caps = TypeCapabilities {
+            has_timeseries: true,
+            has_location: false,
+            has_geometry: false,
+            has_embeddings: false,
+        };
+        let mut xml = String::new();
+        write_type_detail(&mut xml, &g, "Sensor", &caps, "", None);
+        assert!(xml.contains("<timeseries"));
+        assert!(xml.contains("resolution=\"daily\""));
+        assert!(xml.contains("channels=\"temp,pressure\""));
+        assert!(xml.contains("units=\"temp=°C\""));
+    }
+
+    // ── write_type_detail with supporting children ────────────────────────
+
+    #[test]
+    fn test_write_type_detail_with_supporting_children() {
+        let mut g = make_graph_with_nodes(&[
+            ("Parent", vec![("p1", "main", vec![])]),
+            ("ChildA", vec![("ca1", "ca", vec![])]),
+            ("ChildB", vec![("cb1", "cb", vec![])]),
+        ]);
+        g.parent_types
+            .insert("ChildA".to_string(), "Parent".to_string());
+        g.parent_types
+            .insert("ChildB".to_string(), "Parent".to_string());
+
+        let caps = TypeCapabilities {
+            has_timeseries: false,
+            has_location: false,
+            has_geometry: false,
+            has_embeddings: false,
+        };
+        let mut xml = String::new();
+        write_type_detail(&mut xml, &g, "Parent", &caps, "", None);
+        assert!(xml.contains("<supporting>"));
+        assert!(xml.contains("ChildA"));
+        assert!(xml.contains("ChildB"));
+    }
+
+    // ── write_type_detail with temporal config ────────────────────────────
+
+    #[test]
+    fn test_write_type_detail_with_temporal_config() {
+        let mut g = make_graph_with_nodes(&[("Contract", vec![("c1", "Contract1", vec![])])]);
+        g.temporal_node_configs.insert(
+            "Contract".to_string(),
+            crate::graph::schema::TemporalConfig {
+                valid_from: "start_date".to_string(),
+                valid_to: "end_date".to_string(),
+            },
+        );
+        let caps = TypeCapabilities {
+            has_timeseries: false,
+            has_location: false,
+            has_geometry: false,
+            has_embeddings: false,
+        };
+        let mut xml = String::new();
+        write_type_detail(&mut xml, &g, "Contract", &caps, "", None);
+        assert!(xml.contains("temporal_from=\"start_date\""));
+        assert!(xml.contains("temporal_to=\"end_date\""));
+    }
+
+    // ── write_type_detail with pre-computed neighbor cache ────────────────
+
+    #[test]
+    fn test_write_type_detail_with_neighbor_cache() {
+        let mut g = make_graph_with_nodes(&[
+            ("A", vec![("a1", "nodeA", vec![])]),
+            ("B", vec![("b1", "nodeB", vec![])]),
+        ]);
+        add_edge(&mut g, "A", "B", "LINKS", vec![]);
+
+        let all_neighbors = compute_all_neighbors_schemas(&g);
+        let caps = TypeCapabilities {
+            has_timeseries: false,
+            has_location: false,
+            has_geometry: false,
+            has_embeddings: false,
+        };
+        let mut xml = String::new();
+        write_type_detail(&mut xml, &g, "A", &caps, "", Some(&all_neighbors));
+        assert!(xml.contains("<connections>"));
+        assert!(xml.contains("type=\"LINKS\""));
+        assert!(xml.contains("target=\"B\""));
+    }
+
+    // ── write_type_detail with no properties ──────────────────────────────
+
+    #[test]
+    fn test_write_type_detail_no_custom_properties() {
+        let g = make_graph_with_nodes(&[("Empty", vec![("e1", "E", vec![])])]);
+        let caps = TypeCapabilities {
+            has_timeseries: false,
+            has_location: false,
+            has_geometry: false,
+            has_embeddings: false,
+        };
+        let mut xml = String::new();
+        write_type_detail(&mut xml, &g, "Empty", &caps, "  ", None);
+        assert!(xml.contains("<type name=\"Empty\" count=\"1\""));
+        // Should still have samples
+        assert!(xml.contains("<samples>"));
+    }
+
+    // ── build_focused_detail ──────────────────────────────────────────────
+
+    #[test]
+    fn test_build_focused_detail_multiple_types() {
+        let g = make_graph_with_nodes(&[
+            ("Person", vec![("p1", "Alice", vec![])]),
+            ("City", vec![("c1", "London", vec![])]),
+            ("Other", vec![("o1", "X", vec![])]),
+        ]);
+        let types = vec!["Person".to_string(), "City".to_string()];
+        let result = build_focused_detail(&g, &types).unwrap();
+        assert!(result.contains("Person"));
+        assert!(result.contains("City"));
+        // "Other" should NOT be included
+        assert!(!result.contains("Other"));
+    }
+
+    #[test]
+    fn test_build_focused_detail_type_not_found() {
+        let g = make_graph_with_nodes(&[("Person", vec![("p1", "Alice", vec![])])]);
+        let types = vec!["NonExistent".to_string()];
+        let result = build_focused_detail(&g, &types);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("not found"));
+        assert!(err.contains("Person")); // Should list available types
+    }
+
+    // ── build_inventory_with_detail with edges ───────────────────────────
+
+    #[test]
+    fn test_build_inventory_with_detail_with_edges() {
+        let mut g = make_graph_with_nodes(&[
+            (
+                "Person",
+                vec![("p1", "Alice", vec![("age", Value::Int64(30))])],
+            ),
+            ("City", vec![("c1", "London", vec![])]),
+        ]);
+        add_edge(&mut g, "Person", "City", "LIVES_IN", vec![]);
+
+        let result = build_inventory_with_detail(&g);
+        assert!(result.contains("Person"));
+        assert!(result.contains("City"));
+        assert!(result.contains("LIVES_IN"));
+        assert!(result.contains("<connections>"));
+    }
+
+    // ── build_inventory with edges ────────────────────────────────────────
+
+    #[test]
+    fn test_build_inventory_with_edges() {
+        let mut g = make_graph_with_nodes(&[
+            ("Person", vec![("p1", "Alice", vec![])]),
+            ("City", vec![("c1", "London", vec![])]),
+        ]);
+        add_edge(&mut g, "Person", "City", "LIVES_IN", vec![]);
+
+        let result = build_inventory(&g);
+        assert!(result.contains("LIVES_IN"));
+    }
+
+    // ── compute_description standalone modes ─────────────────────────────
+
+    #[test]
+    fn test_compute_description_connections_topics() {
+        let mut g = make_graph_with_nodes(&[
+            ("A", vec![("a1", "nodeA", vec![])]),
+            ("B", vec![("b1", "nodeB", vec![])]),
+        ]);
+        add_edge(
+            &mut g,
+            "A",
+            "B",
+            "LINKS",
+            vec![("weight", Value::Float64(0.9))],
+        );
+
+        let result = compute_description(
+            &g,
+            None,
+            &ConnectionDetail::Topics(vec!["LINKS".to_string()]),
+            &CypherDetail::Off,
+            &FluentDetail::Off,
+        )
+        .unwrap();
+        assert!(result.contains("<LINKS"));
+        assert!(result.contains("<endpoints>"));
+        // Standalone mode — should NOT contain <graph>
+        assert!(!result.contains("<graph"));
+    }
+
+    #[test]
+    fn test_compute_description_connections_topics_not_found() {
+        let g = DirGraph::new();
+        let result = compute_description(
+            &g,
+            None,
+            &ConnectionDetail::Topics(vec!["NOPE".to_string()]),
+            &CypherDetail::Off,
+            &FluentDetail::Off,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_compute_description_fluent_topics() {
+        let g = DirGraph::new();
+        let result = compute_description(
+            &g,
+            None,
+            &ConnectionDetail::Off,
+            &CypherDetail::Off,
+            &FluentDetail::Topics(vec!["select".to_string()]),
+        )
+        .unwrap();
+        assert!(result.contains("<selection>"));
+    }
+
+    #[test]
+    fn test_compute_description_multiple_standalone_axes() {
+        let g = DirGraph::new();
+        let result = compute_description(
+            &g,
+            None,
+            &ConnectionDetail::Off,
+            &CypherDetail::Overview,
+            &FluentDetail::Overview,
+        )
+        .unwrap();
+        assert!(result.contains("<cypher>"));
+        assert!(result.contains("<fluent_api>"));
+        assert!(!result.contains("<graph"));
+    }
+
+    // ── write_exploration_hints with join candidates ──────────────────────
+
+    #[test]
+    fn test_write_exploration_hints_with_join_candidates() {
+        let mut g = make_graph_with_nodes(&[
+            (
+                "TypeX",
+                vec![("x1", "A", vec![("name", Value::String("Shared".into()))])],
+            ),
+            (
+                "TypeY",
+                vec![("y1", "B", vec![("name", Value::String("Shared".into()))])],
+            ),
+            ("TypeZ", vec![("z1", "C", vec![])]),
+        ]);
+        // Connect Z to X, leave Y disconnected from X
+        add_edge(&mut g, "TypeZ", "TypeX", "REL", vec![]);
+
+        // Add metadata for join candidate detection
+        let mut meta = HashMap::new();
+        meta.insert("name".to_string(), "String".to_string());
+        g.node_type_metadata
+            .insert("TypeX".to_string(), meta.clone());
+        g.node_type_metadata.insert("TypeY".to_string(), meta);
+
+        let stats = compute_connection_type_stats(&g);
+        let mut xml = String::new();
+        write_exploration_hints(&mut xml, &g, &stats);
+        // TypeY is disconnected — should appear
+        assert!(xml.contains("TypeY"));
+    }
+
+    // ── write_exploration_hints no edges ──────────────────────────────────
+
+    #[test]
+    fn test_write_exploration_hints_no_edges() {
+        // >= 2 types but 0 edges → no hints (all disconnected = not useful)
+        let g = make_graph_with_nodes(&[
+            ("TypeA", vec![("a1", "a", vec![])]),
+            ("TypeB", vec![("b1", "b", vec![])]),
+        ]);
+        let stats: Vec<ConnectionTypeStats> = Vec::new();
+        let mut xml = String::new();
+        write_exploration_hints(&mut xml, &g, &stats);
+        assert!(xml.is_empty());
+    }
+
+    // ── write_connection_map with temporal edges ─────────────────────────
+
+    #[test]
+    fn test_write_connection_map_with_temporal_edges() {
+        let mut g = DirGraph::new();
+        g.temporal_edge_configs.insert(
+            "EMPLOYED".to_string(),
+            vec![crate::graph::schema::TemporalConfig {
+                valid_from: "start".to_string(),
+                valid_to: "end".to_string(),
+            }],
+        );
+        let stats = vec![ConnectionTypeStats {
+            connection_type: "EMPLOYED".into(),
+            count: 10,
+            source_types: vec!["Person".into()],
+            target_types: vec!["Company".into()],
+            property_names: vec![],
+        }];
+        let mut xml = String::new();
+        write_connection_map(&mut xml, &g, &stats);
+        assert!(xml.contains("temporal_from=\"start\""));
+        assert!(xml.contains("temporal_to=\"end\""));
+    }
+
+    // ── compute_connection_type_stats multiple edge types ─────────────────
+
+    #[test]
+    fn test_compute_connection_type_stats_multiple_types_fallback() {
+        let mut g = make_graph_with_nodes(&[
+            ("A", vec![("a1", "a", vec![])]),
+            ("B", vec![("b1", "b", vec![])]),
+            ("C", vec![("c1", "c", vec![])]),
+        ]);
+        add_edge(&mut g, "A", "B", "KNOWS", vec![]);
+        add_edge(&mut g, "B", "C", "WORKS_AT", vec![]);
+
+        let stats = compute_connection_type_stats(&g);
+        assert_eq!(stats.len(), 2);
+        // Should be sorted by connection type
+        assert_eq!(stats[0].connection_type, "KNOWS");
+        assert_eq!(stats[1].connection_type, "WORKS_AT");
+    }
+
+    // ── sample_unique_values with different value types ──────────────────
+
+    #[test]
+    fn test_sample_unique_values_float() {
+        let g = make_graph_with_nodes(&[(
+            "Item",
+            vec![
+                ("i1", "A", vec![("x", Value::Float64(1.5))]),
+                ("i2", "B", vec![("x", Value::Float64(2.5))]),
+            ],
+        )]);
+        let vals = sample_unique_values(&g, "Item", "x", 100);
+        assert_eq!(vals.len(), 2);
+    }
+
+    #[test]
+    fn test_sample_unique_values_uniqueid() {
+        let g = make_graph_with_nodes(&[(
+            "Item",
+            vec![
+                ("i1", "A", vec![("uid", Value::UniqueId(1))]),
+                ("i2", "B", vec![("uid", Value::UniqueId(2))]),
+            ],
+        )]);
+        let vals = sample_unique_values(&g, "Item", "uid", 100);
+        assert_eq!(vals.len(), 2);
+    }
+
+    #[test]
+    fn test_sample_unique_values_missing_property() {
+        let g = make_graph_with_nodes(&[("Item", vec![("i1", "A", vec![("x", Value::Int64(1))])])]);
+        let vals = sample_unique_values(&g, "Item", "nonexistent", 100);
+        assert!(vals.is_empty());
+    }
+
+    // ── compute_neighbors_schema with multiple edges ─────────────────────
+
+    #[test]
+    fn test_compute_neighbors_schema_multiple_targets() {
+        let mut g = make_graph_with_nodes(&[
+            (
+                "Person",
+                vec![("p1", "Alice", vec![]), ("p2", "Bob", vec![])],
+            ),
+            ("City", vec![("c1", "London", vec![])]),
+            ("Country", vec![("co1", "UK", vec![])]),
+        ]);
+        add_edge(&mut g, "Person", "City", "LIVES_IN", vec![]);
+        add_edge_indexed(&mut g, "Person", 0, "Country", 0, "BORN_IN");
+
+        let schema = compute_neighbors_schema(&g, "Person").unwrap();
+        assert_eq!(schema.outgoing.len(), 2);
+        // Should be sorted by (connection_type, other_type)
+        assert_eq!(schema.outgoing[0].connection_type, "BORN_IN");
+        assert_eq!(schema.outgoing[1].connection_type, "LIVES_IN");
+    }
+
+    // ── write_conventions with all cap types ──────────────────────────────
+
+    #[test]
+    fn test_write_conventions_with_all_capabilities() {
+        let mut caps: HashMap<String, TypeCapabilities> = HashMap::new();
+        caps.insert(
+            "Full".into(),
+            TypeCapabilities {
+                has_timeseries: true,
+                has_location: true,
+                has_geometry: true,
+                has_embeddings: true,
+            },
+        );
+        let mut xml = String::new();
+        write_conventions(&mut xml, &caps);
+        assert!(xml.contains("location"));
+        assert!(xml.contains("geometry"));
+        assert!(xml.contains("timeseries"));
+        assert!(xml.contains("embeddings"));
+    }
+
+    // ── compute_schema node types are sorted ─────────────────────────────
+
+    #[test]
+    fn test_compute_schema_sorted_types() {
+        let g = make_graph_with_nodes(&[
+            ("Zebra", vec![("z1", "z", vec![])]),
+            ("Alpha", vec![("a1", "a", vec![])]),
+            ("Middle", vec![("m1", "m", vec![])]),
+        ]);
+        let schema = compute_schema(&g);
+        let type_names: Vec<&str> = schema.node_types.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(type_names, vec!["Alpha", "Middle", "Zebra"]);
+    }
+
+    // ── write_connections_detail with multiple properties and samples ─────
+
+    #[test]
+    fn test_write_connections_detail_with_properties() {
+        let mut g = make_graph_with_nodes(&[
+            ("A", vec![("a1", "nodeA", vec![]), ("a2", "nodeA2", vec![])]),
+            ("B", vec![("b1", "nodeB", vec![])]),
+        ]);
+        add_edge(
+            &mut g,
+            "A",
+            "B",
+            "HAS",
+            vec![
+                ("weight", Value::Float64(0.5)),
+                ("label", Value::String("test".into())),
+            ],
+        );
+        add_edge_indexed(&mut g, "A", 1, "B", 0, "HAS");
+
+        let mut xml = String::new();
+        let result = write_connections_detail(&mut xml, &g, &["HAS".to_string()]);
+        assert!(result.is_ok());
+        assert!(xml.contains("<HAS"));
+        assert!(xml.contains("count=\"2\""));
+        assert!(xml.contains("<properties>"));
+    }
+
+    // ── compute_edge_property_stats with mixed types ─────────────────────
+
+    #[test]
+    fn test_compute_edge_property_stats_multiple_props() {
+        let mut g = make_graph_with_nodes(&[
+            ("A", vec![("a1", "a", vec![])]),
+            ("B", vec![("b1", "b", vec![])]),
+        ]);
+        add_edge(
+            &mut g,
+            "A",
+            "B",
+            "REL",
+            vec![
+                ("w", Value::Float64(1.0)),
+                ("label", Value::String("x".into())),
+            ],
+        );
+        let stats = compute_edge_property_stats(&g, "REL", 10);
+        assert_eq!(stats.len(), 2);
+        // Should be sorted by property name
+        assert_eq!(stats[0].property_name, "label");
+        assert_eq!(stats[1].property_name, "w");
+    }
+
+    // ── compute_description with read_only graph ─────────────────────────
+
+    #[test]
+    fn test_compute_description_read_only_graph() {
+        let mut g = make_graph_with_nodes(&[("A", vec![("a1", "a", vec![])])]);
+        g.read_only = true;
+
+        let result = compute_description(
+            &g,
+            None,
+            &ConnectionDetail::Off,
+            &CypherDetail::Off,
+            &FluentDetail::Off,
+        )
+        .unwrap();
+        assert!(result.contains("<read-only>"));
+    }
+
+    // ── write_connections_overview with properties ────────────────────────
+
+    #[test]
+    fn test_write_connections_overview_with_properties() {
+        let mut g = make_graph_with_nodes(&[
+            ("A", vec![("a1", "a", vec![])]),
+            ("B", vec![("b1", "b", vec![])]),
+        ]);
+        add_edge(
+            &mut g,
+            "A",
+            "B",
+            "HAS",
+            vec![("weight", Value::Float64(1.0))],
+        );
+        let mut xml = String::new();
+        write_connections_overview(&mut xml, &g);
+        assert!(xml.contains("type=\"HAS\""));
+    }
+
+    // ── fluent topic aliases ──────────────────────────────────────────────
+
+    #[test]
+    fn test_write_fluent_topics_aliases() {
+        // Test that aliases route to the correct topics
+        let aliases = vec![
+            ("selection", "<selection>"),
+            ("filtering", "<selection>"),
+            ("traversal", "<traversal>"),
+            ("comparison", "<compare>"),
+            ("collect", "<retrieval>"),
+            ("calculate", "<statistics>"),
+            ("graph_algorithms", "<algorithms>"),
+            ("embeddings", "<vectors>"),
+            ("search", "<vectors>"),
+            ("update", "<mutation>"),
+            ("data_loading", "<loading>"),
+            ("persistence", "<export>"),
+        ];
+        for (alias, expected_tag) in aliases {
+            let mut xml = String::new();
+            let result = write_fluent_topics(&mut xml, &[alias.to_string()]);
+            assert!(result.is_ok(), "Failed for fluent alias: {}", alias);
+            assert!(
+                xml.contains(expected_tag),
+                "Alias '{}' did not produce expected tag '{}'",
+                alias,
+                expected_tag
+            );
+        }
+    }
+
+    // ── cypher topic aliases ──────────────────────────────────────────────
+
+    #[test]
+    fn test_write_cypher_topics_delete_alias() {
+        let mut xml = String::new();
+        let result = write_cypher_topics(&mut xml, &["REMOVE".to_string()]);
+        assert!(result.is_ok());
+        assert!(xml.contains("<DELETE>"));
+    }
+
+    #[test]
+    fn test_write_cypher_topics_label_propagation_aliases() {
+        for alias in &["LABEL_PROPAGATION", "LABELPROPAGATION"] {
+            let mut xml = String::new();
+            let result = write_cypher_topics(&mut xml, &[alias.to_string()]);
+            assert!(result.is_ok(), "Failed for alias: {}", alias);
+            assert!(xml.contains("<label_propagation>"));
+        }
+    }
+
+    #[test]
+    fn test_write_cypher_topics_connected_components_aliases() {
+        for alias in &["CONNECTED_COMPONENTS", "CONNECTEDCOMPONENTS"] {
+            let mut xml = String::new();
+            let result = write_cypher_topics(&mut xml, &[alias.to_string()]);
+            assert!(result.is_ok(), "Failed for alias: {}", alias);
+            assert!(xml.contains("<connected_components>"));
+        }
+    }
+
+    // ── compute_description with empty types slice ────────────────────────
+
+    #[test]
+    fn test_compute_description_empty_types_slice() {
+        let g = make_graph_with_nodes(&[("Person", vec![("p1", "Alice", vec![])])]);
+        // Empty slice should fall through to inventory
+        let types: Vec<String> = vec![];
+        let result = compute_description(
+            &g,
+            Some(&types),
+            &ConnectionDetail::Off,
+            &CypherDetail::Off,
+            &FluentDetail::Off,
+        )
+        .unwrap();
+        assert!(result.contains("<graph"));
+    }
+
+    // ── write_connection_map with source filtering ───────────────────────
+
+    #[test]
+    fn test_write_connection_map_filters_empty_sources_after_tier_filter() {
+        let mut g = DirGraph::new();
+        g.parent_types
+            .insert("Child".to_string(), "Parent".to_string());
+
+        // Connection where only source is a supporting type, target is unrelated
+        // After filtering supporting types from sources, sources would be empty
+        let stats = vec![ConnectionTypeStats {
+            connection_type: "SOME_REL".into(),
+            count: 3,
+            source_types: vec!["Child".into()],
+            target_types: vec!["Unrelated".into()],
+            property_names: vec![],
+        }];
+        let mut xml = String::new();
+        write_connection_map(&mut xml, &g, &stats);
+        // Sources become empty after tier filter → connection should be skipped
+        // (the `continue` in the loop handles this)
+        assert!(!xml.contains("SOME_REL"));
+    }
+
+    // ── write_type_detail indentation ─────────────────────────────────────
+
+    #[test]
+    fn test_write_type_detail_uses_correct_indent() {
+        let g = make_graph_with_nodes(&[("T", vec![("t1", "test", vec![("x", Value::Int64(1))])])]);
+        let caps = TypeCapabilities {
+            has_timeseries: false,
+            has_location: false,
+            has_geometry: false,
+            has_embeddings: false,
+        };
+        let mut xml = String::new();
+        write_type_detail(&mut xml, &g, "T", &caps, ">>", None);
+        assert!(xml.starts_with(">><type"));
+        assert!(xml.contains(">>  <properties>"));
+        assert!(xml.contains(">>  <samples>"));
+    }
+
+    // ── compute_all_neighbors_schemas empty graph ─────────────────────────
+
+    #[test]
+    fn test_compute_all_neighbors_schemas_empty() {
+        let g = DirGraph::new();
+        let all = compute_all_neighbors_schemas(&g);
+        assert!(all.is_empty());
+    }
+
+    // ── build_inventory_with_detail parent types ──────────────────────────
+
+    #[test]
+    fn test_build_inventory_with_detail_filters_supporting_types() {
+        let mut g = make_graph_with_nodes(&[
+            ("Core", vec![("c1", "main", vec![])]),
+            ("Supporting", vec![("s1", "sub", vec![])]),
+        ]);
+        g.parent_types
+            .insert("Supporting".to_string(), "Core".to_string());
+
+        let result = build_inventory_with_detail(&g);
+        // Should contain Core but not list Supporting as a top-level type
+        assert!(result.contains("Core"));
+        // Supporting should only appear in the <supporting> child element
+    }
+
+    // ── types_compatible edge cases ──────────────────────────────────────
+
+    #[test]
+    fn test_types_compatible_empty_strings() {
+        assert!(!types_compatible("", ""));
+        assert!(!types_compatible("", "String"));
+    }
+
+    #[test]
+    fn test_types_compatible_case_insensitive() {
+        assert!(types_compatible("STRING", "string"));
+        assert!(types_compatible("int64", "INT64"));
+        assert!(types_compatible("Float64", "FLOAT64"));
+    }
+
+    // ── compute_schema with edge metadata ─────────────────────────────────
+
+    #[test]
+    fn test_compute_schema_with_edges() {
+        let mut g = make_graph_with_nodes(&[
+            ("A", vec![("a1", "a", vec![])]),
+            ("B", vec![("b1", "b", vec![])]),
+        ]);
+        add_edge(&mut g, "A", "B", "REL", vec![]);
+
+        let schema = compute_schema(&g);
+        assert_eq!(schema.node_count, 2);
+        assert_eq!(schema.edge_count, 1);
+        assert_eq!(schema.connection_types.len(), 1);
+    }
+
+    // ── property_complexity boundary values ───────────────────────────────
+
+    #[test]
+    fn test_property_complexity_exact_boundaries() {
+        assert_eq!(property_complexity(3), "vl");
+        assert_eq!(property_complexity(4), "l");
+        assert_eq!(property_complexity(8), "l");
+        assert_eq!(property_complexity(9), "m");
+        assert_eq!(property_complexity(15), "m");
+        assert_eq!(property_complexity(16), "h");
+        assert_eq!(property_complexity(30), "h");
+        assert_eq!(property_complexity(31), "vh");
+    }
+
+    // ── size_tier boundary values ─────────────────────────────────────────
+
+    #[test]
+    fn test_size_tier_exact_boundaries() {
+        assert_eq!(size_tier(9), "vs");
+        assert_eq!(size_tier(10), "s");
+        assert_eq!(size_tier(99), "s");
+        assert_eq!(size_tier(100), "m");
+        assert_eq!(size_tier(999), "m");
+        assert_eq!(size_tier(1000), "l");
+        assert_eq!(size_tier(9999), "l");
+        assert_eq!(size_tier(10000), "vl");
+    }
+
+    // ── xml_escape with unicode ──────────────────────────────────────────
+
+    #[test]
+    fn test_xml_escape_unicode() {
+        assert_eq!(xml_escape("café"), "café");
+        assert_eq!(xml_escape("日本語"), "日本語");
+        assert_eq!(xml_escape("hello<世界>"), "hello&lt;世界&gt;");
+    }
+
+    // ── mcp_quickstart content ────────────────────────────────────────────
+
+    #[test]
+    fn test_mcp_quickstart_contains_tools() {
+        let result = mcp_quickstart();
+        assert!(result.contains("graph_overview"));
+        assert!(result.contains("cypher_query"));
+        assert!(result.contains("bug_report"));
+        assert!(result.contains("core_tools"));
+    }
+
+    // ── compute_join_candidates with supporting types excluded ────────────
+
+    #[test]
+    fn test_compute_join_candidates_excludes_supporting_types() {
+        let mut g = make_graph_with_nodes(&[
+            (
+                "Core",
+                vec![("c1", "A", vec![("name", Value::String("Shared".into()))])],
+            ),
+            (
+                "Supporting",
+                vec![("s1", "B", vec![("name", Value::String("Shared".into()))])],
+            ),
+        ]);
+        g.parent_types
+            .insert("Supporting".to_string(), "Core".to_string());
+        let mut meta = HashMap::new();
+        meta.insert("name".to_string(), "String".to_string());
+        g.node_type_metadata
+            .insert("Core".to_string(), meta.clone());
+        g.node_type_metadata.insert("Supporting".to_string(), meta);
+
+        let connected_pairs = HashSet::new();
+        let candidates = compute_join_candidates(&g, &connected_pairs, 10, 100);
+        // Supporting type should be excluded from join candidate search
+        assert!(candidates.is_empty());
+    }
+
+    // ── compute_property_stats ordering ───────────────────────────────────
+
+    #[test]
+    fn test_compute_property_stats_ordering() {
+        let g = make_graph_with_nodes(&[(
+            "Item",
+            vec![(
+                "i1",
+                "A",
+                vec![("zebra", Value::Int64(1)), ("alpha", Value::Int64(2))],
+            )],
+        )]);
+        let stats = compute_property_stats(&g, "Item", 15, None).unwrap();
+        let names: Vec<&str> = stats.iter().map(|s| s.property_name.as_str()).collect();
+        // Order should be: type, title, id, then remaining sorted
+        assert_eq!(names[0], "type");
+        assert_eq!(names[1], "title");
+        assert_eq!(names[2], "id");
+        // Remaining properties should be alphabetically sorted
+        let remaining = &names[3..];
+        assert!(remaining.windows(2).all(|w| w[0] <= w[1]));
+    }
 }

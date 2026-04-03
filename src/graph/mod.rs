@@ -6391,3 +6391,2106 @@ impl Transaction {
         Ok(false)
     }
 }
+
+// ============================================================================
+// Unit Tests
+// ============================================================================
+//
+// Most of this file is #[pymethods] which requires a Python runtime to test.
+// The tests below cover the non-PyO3 logic: resolve_noderefs, TemporalContext,
+// InlineTimeseriesConfig, DirGraph construction, NodeData/EdgeData operations,
+// and CowSelection behavior.
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::datatypes::values::Value;
+
+    // ── Helper to build a DirGraph with some nodes ──────────────────────────
+
+    /// Create a DirGraph with the given nodes added to the graph and type_indices populated.
+    fn make_graph(nodes: Vec<(&str, &str, &str)>, // (node_type, id, title)
+    ) -> DirGraph {
+        let mut dg = DirGraph::new();
+        for (node_type, id, title) in nodes {
+            let node = schema::NodeData::new(
+                Value::String(id.to_string()),
+                Value::String(title.to_string()),
+                node_type.to_string(),
+                HashMap::new(),
+                &mut dg.interner,
+            );
+            let idx = dg.graph.add_node(node);
+            dg.type_indices
+                .entry(node_type.to_string())
+                .or_default()
+                .push(idx);
+        }
+        dg
+    }
+
+    /// Create a DirGraph with nodes that have properties.
+    fn make_graph_with_props(nodes: Vec<(&str, &str, &str, HashMap<String, Value>)>) -> DirGraph {
+        let mut dg = DirGraph::new();
+        for (node_type, id, title, props) in nodes {
+            let node = schema::NodeData::new(
+                Value::String(id.to_string()),
+                Value::String(title.to_string()),
+                node_type.to_string(),
+                props,
+                &mut dg.interner,
+            );
+            let idx = dg.graph.add_node(node);
+            dg.type_indices
+                .entry(node_type.to_string())
+                .or_default()
+                .push(idx);
+        }
+        dg
+    }
+
+    // ── resolve_noderefs ────────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_noderefs_replaces_noderef_with_title() {
+        let dg = make_graph(vec![("Person", "p1", "Alice"), ("Person", "p2", "Bob")]);
+        let mut rows = vec![
+            vec![Value::NodeRef(0), Value::String("hello".into())],
+            vec![Value::NodeRef(1), Value::Int64(42)],
+        ];
+        resolve_noderefs(&dg.graph, &mut rows);
+        assert_eq!(rows[0][0], Value::String("Alice".into()));
+        assert_eq!(rows[0][1], Value::String("hello".into()));
+        assert_eq!(rows[1][0], Value::String("Bob".into()));
+        assert_eq!(rows[1][1], Value::Int64(42));
+    }
+
+    #[test]
+    fn resolve_noderefs_invalid_index_becomes_null() {
+        let dg = make_graph(vec![("Person", "p1", "Alice")]);
+        let mut rows = vec![vec![Value::NodeRef(999)]];
+        resolve_noderefs(&dg.graph, &mut rows);
+        assert_eq!(rows[0][0], Value::Null);
+    }
+
+    #[test]
+    fn resolve_noderefs_empty_rows() {
+        let dg = make_graph(vec![]);
+        let mut rows: Vec<Vec<Value>> = vec![];
+        resolve_noderefs(&dg.graph, &mut rows);
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn resolve_noderefs_no_noderefs_unchanged() {
+        let dg = make_graph(vec![("Person", "p1", "Alice")]);
+        let mut rows = vec![vec![
+            Value::String("keep".into()),
+            Value::Int64(7),
+            Value::Null,
+        ]];
+        resolve_noderefs(&dg.graph, &mut rows);
+        assert_eq!(rows[0][0], Value::String("keep".into()));
+        assert_eq!(rows[0][1], Value::Int64(7));
+        assert_eq!(rows[0][2], Value::Null);
+    }
+
+    #[test]
+    fn resolve_noderefs_mixed_values() {
+        let dg = make_graph(vec![("City", "c1", "Oslo")]);
+        let mut rows = vec![vec![
+            Value::NodeRef(0),
+            Value::Float64(3.14),
+            Value::Boolean(true),
+        ]];
+        resolve_noderefs(&dg.graph, &mut rows);
+        assert_eq!(rows[0][0], Value::String("Oslo".into()));
+        assert_eq!(rows[0][1], Value::Float64(3.14));
+        assert_eq!(rows[0][2], Value::Boolean(true));
+    }
+
+    // ── TemporalContext ─────────────────────────────────────────────────────
+
+    #[test]
+    fn temporal_context_is_all() {
+        assert!(TemporalContext::All.is_all());
+        assert!(!TemporalContext::Today.is_all());
+        assert!(!TemporalContext::default().is_all());
+    }
+
+    #[test]
+    fn temporal_context_at_is_not_all() {
+        let date = chrono::NaiveDate::from_ymd_opt(2024, 6, 15).unwrap();
+        assert!(!TemporalContext::At(date).is_all());
+    }
+
+    #[test]
+    fn temporal_context_during_is_not_all() {
+        let start = chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        let end = chrono::NaiveDate::from_ymd_opt(2024, 12, 31).unwrap();
+        assert!(!TemporalContext::During(start, end).is_all());
+    }
+
+    #[test]
+    fn temporal_context_default_is_today() {
+        assert!(matches!(TemporalContext::default(), TemporalContext::Today));
+    }
+
+    #[test]
+    fn temporal_context_clone() {
+        let date = chrono::NaiveDate::from_ymd_opt(2024, 3, 1).unwrap();
+        let ctx = TemporalContext::At(date);
+        let cloned = ctx.clone();
+        assert!(!cloned.is_all());
+        if let TemporalContext::At(d) = cloned {
+            assert_eq!(d, date);
+        } else {
+            panic!("Expected TemporalContext::At after clone");
+        }
+    }
+
+    // ── InlineTimeseriesConfig::all_columns ─────────────────────────────────
+
+    #[test]
+    fn all_columns_string_column() {
+        let config = InlineTimeseriesConfig {
+            time: TimeSpec::StringColumn("timestamp".into()),
+            channels: vec!["temperature".into(), "pressure".into()],
+            resolution: None,
+            units: HashMap::new(),
+        };
+        let cols = config.all_columns();
+        assert!(cols.contains(&"timestamp".to_string()));
+        assert!(cols.contains(&"temperature".to_string()));
+        assert!(cols.contains(&"pressure".to_string()));
+        assert_eq!(cols.len(), 3);
+    }
+
+    #[test]
+    fn all_columns_separate_columns() {
+        let config = InlineTimeseriesConfig {
+            time: TimeSpec::SeparateColumns(vec!["year".into(), "month".into(), "day".into()]),
+            channels: vec!["value".into()],
+            resolution: Some("day".into()),
+            units: HashMap::new(),
+        };
+        let cols = config.all_columns();
+        assert!(cols.contains(&"year".to_string()));
+        assert!(cols.contains(&"month".to_string()));
+        assert!(cols.contains(&"day".to_string()));
+        assert!(cols.contains(&"value".to_string()));
+        assert_eq!(cols.len(), 4);
+    }
+
+    #[test]
+    fn all_columns_empty_channels() {
+        let config = InlineTimeseriesConfig {
+            time: TimeSpec::StringColumn("ts".into()),
+            channels: vec![],
+            resolution: None,
+            units: HashMap::new(),
+        };
+        let cols = config.all_columns();
+        assert_eq!(cols, vec!["ts".to_string()]);
+    }
+
+    // ── DirGraph construction and basic operations ──────────────────────────
+
+    #[test]
+    fn dirgraph_new_is_empty() {
+        let dg = DirGraph::new();
+        assert_eq!(dg.graph.node_count(), 0);
+        assert_eq!(dg.graph.edge_count(), 0);
+        assert!(dg.type_indices.is_empty());
+        assert!(dg.schema_definition.is_none());
+        assert_eq!(dg.auto_vacuum_threshold, Some(0.3));
+    }
+
+    #[test]
+    fn dirgraph_add_nodes_and_lookup() {
+        let dg = make_graph(vec![
+            ("Person", "p1", "Alice"),
+            ("Person", "p2", "Bob"),
+            ("City", "c1", "Oslo"),
+        ]);
+        assert_eq!(dg.graph.node_count(), 3);
+        assert_eq!(dg.type_indices["Person"].len(), 2);
+        assert_eq!(dg.type_indices["City"].len(), 1);
+
+        let alice_idx = dg.type_indices["Person"][0];
+        let alice = dg.get_node(alice_idx).unwrap();
+        assert_eq!(alice.title, Value::String("Alice".into()));
+        assert_eq!(alice.node_type, "Person");
+    }
+
+    #[test]
+    fn dirgraph_get_node_invalid_index() {
+        let dg = make_graph(vec![("Person", "p1", "Alice")]);
+        let bad_idx = NodeIndex::new(999);
+        assert!(dg.get_node(bad_idx).is_none());
+    }
+
+    #[test]
+    fn dirgraph_add_edge() {
+        let mut dg = make_graph(vec![("Person", "p1", "Alice"), ("City", "c1", "Oslo")]);
+        let alice_idx = dg.type_indices["Person"][0];
+        let oslo_idx = dg.type_indices["City"][0];
+
+        let edge = schema::EdgeData::new("LIVES_IN".to_string(), HashMap::new(), &mut dg.interner);
+        let edge_idx = dg.graph.add_edge(alice_idx, oslo_idx, edge);
+        assert_eq!(dg.graph.edge_count(), 1);
+
+        let edge_data = dg.graph.edge_weight(edge_idx).unwrap();
+        assert_eq!(dg.interner.resolve(edge_data.connection_type), "LIVES_IN");
+    }
+
+    #[test]
+    fn dirgraph_add_edge_with_properties() {
+        let mut dg = make_graph(vec![("A", "a1", "A1"), ("B", "b1", "B1")]);
+        let a_idx = dg.type_indices["A"][0];
+        let b_idx = dg.type_indices["B"][0];
+
+        let mut props = HashMap::new();
+        props.insert("weight".to_string(), Value::Float64(0.75));
+        props.insert("label".to_string(), Value::String("strong".into()));
+
+        let edge = schema::EdgeData::new("RELATES_TO".to_string(), props, &mut dg.interner);
+        let edge_idx = dg.graph.add_edge(a_idx, b_idx, edge);
+
+        let edge_data = dg.graph.edge_weight(edge_idx).unwrap();
+        assert_eq!(edge_data.properties.len(), 2);
+    }
+
+    #[test]
+    fn dirgraph_clone() {
+        let dg = make_graph(vec![("Person", "p1", "Alice")]);
+        let cloned = dg.clone();
+        assert_eq!(cloned.graph.node_count(), 1);
+        assert_eq!(cloned.type_indices["Person"].len(), 1);
+    }
+
+    #[test]
+    fn dirgraph_get_node_types() {
+        let dg = make_graph(vec![
+            ("Person", "p1", "Alice"),
+            ("City", "c1", "Oslo"),
+            ("Person", "p2", "Bob"),
+        ]);
+        let types = dg.get_node_types();
+        assert!(types.contains(&"Person".to_string()));
+        assert!(types.contains(&"City".to_string()));
+    }
+
+    // ── NodeData operations ─────────────────────────────────────────────────
+
+    #[test]
+    fn nodedata_get_field_ref() {
+        let mut interner = schema::StringInterner::new();
+        let mut props = HashMap::new();
+        props.insert("age".to_string(), Value::Int64(30));
+        let node = schema::NodeData::new(
+            Value::String("p1".into()),
+            Value::String("Alice".into()),
+            "Person".to_string(),
+            props,
+            &mut interner,
+        );
+
+        assert_eq!(
+            *node.get_field_ref("id").unwrap(),
+            Value::String("p1".into())
+        );
+        assert_eq!(
+            *node.get_field_ref("title").unwrap(),
+            Value::String("Alice".into())
+        );
+        assert_eq!(*node.get_field_ref("age").unwrap(), Value::Int64(30));
+        assert!(node.get_field_ref("nonexistent").is_none());
+    }
+
+    #[test]
+    fn nodedata_set_and_remove_property() {
+        let mut interner = schema::StringInterner::new();
+        let mut node = schema::NodeData::new(
+            Value::String("p1".into()),
+            Value::String("Alice".into()),
+            "Person".to_string(),
+            HashMap::new(),
+            &mut interner,
+        );
+
+        assert_eq!(node.property_count(), 0);
+
+        node.set_property("age", Value::Int64(25), &mut interner);
+        assert_eq!(node.property_count(), 1);
+        assert_eq!(*node.get_property("age").unwrap(), Value::Int64(25));
+
+        let removed = node.remove_property("age");
+        assert_eq!(removed, Some(Value::Int64(25)));
+        assert_eq!(node.property_count(), 0);
+    }
+
+    #[test]
+    fn nodedata_has_property() {
+        let mut interner = schema::StringInterner::new();
+        let mut props = HashMap::new();
+        props.insert("color".to_string(), Value::String("blue".into()));
+        let node = schema::NodeData::new(
+            Value::String("n1".into()),
+            Value::String("Node1".into()),
+            "Thing".to_string(),
+            props,
+            &mut interner,
+        );
+
+        assert!(node.has_property("color"));
+        assert!(!node.has_property("size"));
+    }
+
+    #[test]
+    fn nodedata_get_node_type_ref() {
+        let mut interner = schema::StringInterner::new();
+        let node = schema::NodeData::new(
+            Value::String("n1".into()),
+            Value::String("Node1".into()),
+            "MyType".to_string(),
+            HashMap::new(),
+            &mut interner,
+        );
+        assert_eq!(node.get_node_type_ref(), "MyType");
+    }
+
+    #[test]
+    fn nodedata_to_node_info() {
+        let mut interner = schema::StringInterner::new();
+        let mut props = HashMap::new();
+        props.insert("score".to_string(), Value::Float64(9.5));
+        let node = schema::NodeData::new(
+            Value::String("n1".into()),
+            Value::String("Test".into()),
+            "Item".to_string(),
+            props,
+            &mut interner,
+        );
+
+        let info = node.to_node_info(&interner);
+        assert_eq!(info.id, Value::String("n1".into()));
+        assert_eq!(info.title, Value::String("Test".into()));
+        assert_eq!(info.node_type, "Item");
+        assert_eq!(info.properties["score"], Value::Float64(9.5));
+    }
+
+    #[test]
+    fn nodedata_extra_labels() {
+        let mut interner = schema::StringInterner::new();
+        let mut node = schema::NodeData::new(
+            Value::String("n1".into()),
+            Value::String("Node1".into()),
+            "Primary".to_string(),
+            HashMap::new(),
+            &mut interner,
+        );
+        assert!(node.extra_labels.is_empty());
+        node.extra_labels.push("Secondary".to_string());
+        node.extra_labels.push("Tertiary".to_string());
+        assert_eq!(node.extra_labels.len(), 2);
+    }
+
+    // ── EdgeData operations ─────────────────────────────────────────────────
+
+    #[test]
+    fn edgedata_new() {
+        let mut interner = schema::StringInterner::new();
+        let mut props = HashMap::new();
+        props.insert("since".to_string(), Value::String("2020".into()));
+
+        let edge = schema::EdgeData::new("KNOWS".to_string(), props, &mut interner);
+        assert_eq!(interner.resolve(edge.connection_type), "KNOWS");
+        assert_eq!(edge.properties.len(), 1);
+    }
+
+    #[test]
+    fn edgedata_new_interned() {
+        let mut interner = schema::StringInterner::new();
+        let ct_key = interner.get_or_intern("FOLLOWS");
+        let prop_key = interner.get_or_intern("weight");
+
+        let edge = schema::EdgeData::new_interned(ct_key, vec![(prop_key, Value::Float64(0.5))]);
+        assert_eq!(edge.connection_type, ct_key);
+        assert_eq!(edge.properties.len(), 1);
+    }
+
+    #[test]
+    fn edgedata_empty_properties() {
+        let mut interner = schema::StringInterner::new();
+        let edge = schema::EdgeData::new("LINKS".to_string(), HashMap::new(), &mut interner);
+        assert!(edge.properties.is_empty());
+    }
+
+    #[test]
+    fn edgedata_clone() {
+        let mut interner = schema::StringInterner::new();
+        let mut props = HashMap::new();
+        props.insert("x".to_string(), Value::Int64(1));
+        let edge = schema::EdgeData::new("REL".to_string(), props, &mut interner);
+        let cloned = edge.clone();
+        assert_eq!(cloned.connection_type, edge.connection_type);
+        assert_eq!(cloned.properties.len(), edge.properties.len());
+    }
+
+    // ── CowSelection operations ─────────────────────────────────────────────
+
+    #[test]
+    fn cow_selection_new_has_initial_level() {
+        let sel = CowSelection::new();
+        // CowSelection::new() starts with one empty level
+        assert_eq!(sel.get_level_count(), 1);
+        assert!(!sel.has_active_selection());
+    }
+
+    #[test]
+    fn cow_selection_add_level_and_nodes() {
+        let mut sel = CowSelection::new();
+        // Already has level 0 from new()
+        assert_eq!(sel.get_level_count(), 1);
+
+        let level = sel.get_level_mut(0).unwrap();
+        level.add_selection(None, vec![NodeIndex::new(0), NodeIndex::new(1)]);
+        assert_eq!(level.node_count(), 2);
+        // has_active_selection checks operations, not selections
+        // Adding nodes to selections doesn't add operations
+        assert_eq!(sel.current_node_count(), 2);
+    }
+
+    #[test]
+    fn cow_selection_multiple_levels() {
+        let mut sel = CowSelection::new();
+        // Level 0 already exists from new()
+        sel.get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![NodeIndex::new(0)]);
+
+        sel.add_level();
+        sel.get_level_mut(1).unwrap().add_selection(
+            Some(NodeIndex::new(0)),
+            vec![NodeIndex::new(1), NodeIndex::new(2)],
+        );
+
+        assert_eq!(sel.get_level_count(), 2);
+        assert_eq!(sel.get_level(0).unwrap().node_count(), 1);
+        assert_eq!(sel.get_level(1).unwrap().node_count(), 2);
+    }
+
+    #[test]
+    fn cow_selection_plan_steps() {
+        let mut sel = CowSelection::new();
+        sel.add_plan_step(PlanStep::new("SELECT", Some("Person"), 100));
+        sel.add_plan_step(PlanStep::new("TRAVERSE", Some("KNOWS"), 50).with_actual_rows(45));
+        let plan = sel.get_execution_plan();
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[0].operation, "SELECT");
+        assert_eq!(plan[1].actual_rows, Some(45));
+    }
+
+    #[test]
+    fn cow_selection_clear() {
+        let mut sel = CowSelection::new();
+        sel.get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![NodeIndex::new(0)]);
+        sel.add_plan_step(PlanStep::new("TEST", None, 1));
+
+        sel.clear();
+        // clear() re-adds one empty level
+        assert_eq!(sel.get_level_count(), 1);
+        assert!(!sel.has_active_selection());
+    }
+
+    #[test]
+    fn cow_selection_current_node_count() {
+        let mut sel = CowSelection::new();
+        assert_eq!(sel.current_node_count(), 0);
+
+        // Use the initial level (level 0) from new()
+        sel.get_level_mut(0).unwrap().add_selection(
+            None,
+            vec![NodeIndex::new(0), NodeIndex::new(1), NodeIndex::new(2)],
+        );
+        assert_eq!(sel.current_node_count(), 3);
+    }
+
+    #[test]
+    fn cow_selection_first_node_type() {
+        let dg = make_graph(vec![("Person", "p1", "Alice"), ("City", "c1", "Oslo")]);
+        let mut sel = CowSelection::new();
+        // Use the initial level from new()
+        sel.get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![dg.type_indices["City"][0]]);
+
+        assert_eq!(sel.first_node_type(&dg), Some("City".to_string()));
+    }
+
+    // ── StringInterner ──────────────────────────────────────────────────────
+
+    #[test]
+    fn interner_get_or_intern_and_resolve() {
+        let mut interner = schema::StringInterner::new();
+        let key = interner.get_or_intern("hello");
+        assert_eq!(interner.resolve(key), "hello");
+    }
+
+    #[test]
+    fn interner_same_string_same_key() {
+        let mut interner = schema::StringInterner::new();
+        let k1 = interner.get_or_intern("test");
+        let k2 = interner.get_or_intern("test");
+        assert_eq!(k1, k2);
+    }
+
+    #[test]
+    fn interner_different_strings_different_keys() {
+        let mut interner = schema::StringInterner::new();
+        let k1 = interner.get_or_intern("alpha");
+        let k2 = interner.get_or_intern("beta");
+        assert_ne!(k1, k2);
+    }
+
+    #[test]
+    fn interner_try_resolve() {
+        let mut interner = schema::StringInterner::new();
+        let key = interner.get_or_intern("found");
+        assert_eq!(interner.try_resolve(key), Some("found"));
+
+        let unknown = schema::InternedKey::from_str("never_interned_via_interner");
+        // from_str computes the hash but doesn't register in the interner,
+        // so try_resolve should return None
+        assert!(interner.try_resolve(unknown).is_none());
+    }
+
+    // ── SelectionLevel ──────────────────────────────────────────────────────
+
+    #[test]
+    fn selection_level_operations() {
+        let mut level = schema::SelectionLevel::new();
+        assert!(level.is_empty());
+        assert_eq!(level.node_count(), 0);
+
+        level.add_selection(None, vec![NodeIndex::new(0), NodeIndex::new(1)]);
+        assert!(!level.is_empty());
+        assert_eq!(level.node_count(), 2);
+
+        let all = level.get_all_nodes();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn selection_level_grouped() {
+        let mut level = schema::SelectionLevel::new();
+        let parent = NodeIndex::new(10);
+        level.add_selection(Some(parent), vec![NodeIndex::new(20), NodeIndex::new(21)]);
+        level.add_selection(Some(NodeIndex::new(11)), vec![NodeIndex::new(30)]);
+
+        assert_eq!(level.node_count(), 3);
+        let groups: Vec<_> = level.iter_groups().collect();
+        assert_eq!(groups.len(), 2);
+    }
+
+    #[test]
+    fn selection_level_iter_node_indices() {
+        let mut level = schema::SelectionLevel::new();
+        level.add_selection(None, vec![NodeIndex::new(5), NodeIndex::new(10)]);
+
+        let indices: Vec<_> = level.iter_node_indices().collect();
+        assert_eq!(indices.len(), 2);
+        assert!(indices.contains(&NodeIndex::new(5)));
+        assert!(indices.contains(&NodeIndex::new(10)));
+    }
+
+    // ── DirGraph metadata operations ────────────────────────────────────────
+
+    #[test]
+    fn dirgraph_id_field_aliases() {
+        let mut dg = DirGraph::new();
+        dg.id_field_aliases
+            .insert("Person".to_string(), "employee_id".to_string());
+        assert_eq!(dg.id_field_aliases["Person"], "employee_id");
+    }
+
+    #[test]
+    fn dirgraph_title_field_aliases() {
+        let mut dg = DirGraph::new();
+        dg.title_field_aliases
+            .insert("Person".to_string(), "full_name".to_string());
+        assert_eq!(dg.title_field_aliases["Person"], "full_name");
+    }
+
+    #[test]
+    fn dirgraph_parent_types() {
+        let mut dg = DirGraph::new();
+        dg.parent_types
+            .insert("Address".to_string(), "Person".to_string());
+        assert_eq!(dg.parent_types["Address"], "Person");
+    }
+
+    #[test]
+    fn dirgraph_node_type_metadata() {
+        let mut dg = DirGraph::new();
+        let mut meta = HashMap::new();
+        meta.insert("age".to_string(), "int".to_string());
+        meta.insert("name".to_string(), "str".to_string());
+        dg.node_type_metadata.insert("Person".to_string(), meta);
+
+        let retrieved = dg.get_node_type_metadata("Person").unwrap();
+        assert_eq!(retrieved["age"], "int");
+        assert!(dg.get_node_type_metadata("Unknown").is_none());
+    }
+
+    #[test]
+    fn dirgraph_read_only_flag() {
+        let mut dg = DirGraph::new();
+        assert!(!dg.read_only);
+        dg.read_only = true;
+        assert!(dg.read_only);
+    }
+
+    #[test]
+    fn dirgraph_version_counter() {
+        let mut dg = DirGraph::new();
+        assert_eq!(dg.version, 0);
+        dg.version += 1;
+        assert_eq!(dg.version, 1);
+    }
+
+    // ── resolve_noderefs edge cases ─────────────────────────────────────────
+
+    #[test]
+    fn resolve_noderefs_multiple_refs_same_node() {
+        let dg = make_graph(vec![("X", "x1", "NodeX")]);
+        let mut rows = vec![vec![Value::NodeRef(0), Value::NodeRef(0)]];
+        resolve_noderefs(&dg.graph, &mut rows);
+        assert_eq!(rows[0][0], Value::String("NodeX".into()));
+        assert_eq!(rows[0][1], Value::String("NodeX".into()));
+    }
+
+    #[test]
+    fn resolve_noderefs_preserves_row_structure() {
+        let dg = make_graph(vec![
+            ("A", "a1", "First"),
+            ("B", "b1", "Second"),
+            ("C", "c1", "Third"),
+        ]);
+        let mut rows = vec![
+            vec![Value::NodeRef(0)],
+            vec![Value::NodeRef(1)],
+            vec![Value::NodeRef(2)],
+        ];
+        resolve_noderefs(&dg.graph, &mut rows);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].len(), 1);
+        assert_eq!(rows[0][0], Value::String("First".into()));
+        assert_eq!(rows[1][0], Value::String("Second".into()));
+        assert_eq!(rows[2][0], Value::String("Third".into()));
+    }
+
+    // ── NodeData with properties via graph ──────────────────────────────────
+
+    #[test]
+    fn nodedata_property_keys() {
+        let mut interner = schema::StringInterner::new();
+        let mut props = HashMap::new();
+        props.insert("age".to_string(), Value::Int64(30));
+        props.insert("city".to_string(), Value::String("Oslo".into()));
+        let node = schema::NodeData::new(
+            Value::String("p1".into()),
+            Value::String("Alice".into()),
+            "Person".to_string(),
+            props,
+            &mut interner,
+        );
+
+        let keys: Vec<&str> = node.property_keys(&interner).collect();
+        assert_eq!(keys.len(), 2);
+        assert!(keys.contains(&"age"));
+        assert!(keys.contains(&"city"));
+    }
+
+    #[test]
+    fn nodedata_property_iter() {
+        let mut interner = schema::StringInterner::new();
+        let mut props = HashMap::new();
+        props.insert("x".to_string(), Value::Int64(1));
+        props.insert("y".to_string(), Value::Int64(2));
+        let node = schema::NodeData::new(
+            Value::String("n1".into()),
+            Value::String("N1".into()),
+            "Point".to_string(),
+            props,
+            &mut interner,
+        );
+
+        let pairs: HashMap<&str, &Value> = node.property_iter(&interner).collect();
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs["x"], &Value::Int64(1));
+        assert_eq!(pairs["y"], &Value::Int64(2));
+    }
+
+    // ── Graph traversal via petgraph ────────────────────────────────────────
+
+    #[test]
+    fn graph_neighbors() {
+        let mut dg = make_graph(vec![
+            ("Person", "p1", "Alice"),
+            ("Person", "p2", "Bob"),
+            ("Person", "p3", "Charlie"),
+        ]);
+        let alice = dg.type_indices["Person"][0];
+        let bob = dg.type_indices["Person"][1];
+        let charlie = dg.type_indices["Person"][2];
+
+        dg.graph.add_edge(
+            alice,
+            bob,
+            schema::EdgeData::new("KNOWS".to_string(), HashMap::new(), &mut dg.interner),
+        );
+        dg.graph.add_edge(
+            alice,
+            charlie,
+            schema::EdgeData::new("KNOWS".to_string(), HashMap::new(), &mut dg.interner),
+        );
+
+        let neighbors: Vec<_> = dg.graph.neighbors(alice).collect();
+        assert_eq!(neighbors.len(), 2);
+        assert!(neighbors.contains(&bob));
+        assert!(neighbors.contains(&charlie));
+
+        // Bob has no outgoing edges
+        let bob_neighbors: Vec<_> = dg.graph.neighbors(bob).collect();
+        assert!(bob_neighbors.is_empty());
+    }
+
+    #[test]
+    fn graph_edge_endpoints() {
+        let mut dg = make_graph(vec![("A", "a1", "A1"), ("B", "b1", "B1")]);
+        let a = dg.type_indices["A"][0];
+        let b = dg.type_indices["B"][0];
+
+        let edge_idx = dg.graph.add_edge(
+            a,
+            b,
+            schema::EdgeData::new("LINKS".to_string(), HashMap::new(), &mut dg.interner),
+        );
+
+        let (src, tgt) = dg.graph.edge_endpoints(edge_idx).unwrap();
+        assert_eq!(src, a);
+        assert_eq!(tgt, b);
+    }
+
+    // ── PlanStep ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn plan_step_creation() {
+        let step = PlanStep::new("FILTER", Some("Person"), 100);
+        assert_eq!(step.operation, "FILTER");
+        assert_eq!(step.node_type, Some("Person".to_string()));
+        assert_eq!(step.estimated_rows, 100);
+        assert_eq!(step.actual_rows, None);
+    }
+
+    #[test]
+    fn plan_step_with_actual_rows() {
+        let step = PlanStep::new("TRAVERSE", Some("KNOWS"), 50).with_actual_rows(42);
+        assert_eq!(step.actual_rows, Some(42));
+    }
+
+    #[test]
+    fn plan_step_no_node_type() {
+        let step = PlanStep::new("SORT", None, 10);
+        assert_eq!(step.node_type, None);
+    }
+
+    // ── NodeData equality ───────────────────────────────────────────────────
+
+    #[test]
+    fn nodedata_equality() {
+        let mut interner = schema::StringInterner::new();
+        let n1 = schema::NodeData::new(
+            Value::String("id1".into()),
+            Value::String("Title".into()),
+            "Type".to_string(),
+            HashMap::new(),
+            &mut interner,
+        );
+        let n2 = schema::NodeData::new(
+            Value::String("id1".into()),
+            Value::String("Title".into()),
+            "Type".to_string(),
+            HashMap::new(),
+            &mut interner,
+        );
+        assert_eq!(n1, n2);
+    }
+
+    #[test]
+    fn nodedata_inequality_different_id() {
+        let mut interner = schema::StringInterner::new();
+        let n1 = schema::NodeData::new(
+            Value::String("id1".into()),
+            Value::String("Title".into()),
+            "Type".to_string(),
+            HashMap::new(),
+            &mut interner,
+        );
+        let n2 = schema::NodeData::new(
+            Value::String("id2".into()),
+            Value::String("Title".into()),
+            "Type".to_string(),
+            HashMap::new(),
+            &mut interner,
+        );
+        assert_ne!(n1, n2);
+    }
+
+    // ── DirGraph spatial config ─────────────────────────────────────────────
+
+    #[test]
+    fn dirgraph_spatial_config() {
+        let mut dg = DirGraph::new();
+        assert!(dg.get_spatial_config("Person").is_none());
+
+        dg.spatial_configs.insert(
+            "Location".to_string(),
+            schema::SpatialConfig {
+                location: Some(("lat".to_string(), "lon".to_string())),
+                ..Default::default()
+            },
+        );
+        let config = dg.get_spatial_config("Location").unwrap();
+        assert_eq!(
+            config.location,
+            Some(("lat".to_string(), "lon".to_string()))
+        );
+    }
+
+    // ── DirGraph from_graph constructor ─────────────────────────────────────
+
+    #[test]
+    fn dirgraph_from_graph() {
+        let mut graph = schema::Graph::new();
+        let mut interner = schema::StringInterner::new();
+        let node = schema::NodeData::new(
+            Value::String("x".into()),
+            Value::String("X".into()),
+            "Test".to_string(),
+            HashMap::new(),
+            &mut interner,
+        );
+        graph.add_node(node);
+
+        let dg = DirGraph::from_graph(graph);
+        assert_eq!(dg.graph.node_count(), 1);
+        // type_indices not populated by from_graph
+        assert!(dg.type_indices.is_empty());
+    }
+
+    // ── Embedder skeleton message ───────────────────────────────────────────
+
+    #[test]
+    fn embedder_skeleton_msg_is_nonempty() {
+        assert!(!EMBEDDER_SKELETON_MSG.is_empty());
+        assert!(EMBEDDER_SKELETON_MSG.contains("set_embedder"));
+    }
+
+    // ── make_graph_with_props helper ───────────────────────────────────────
+
+    #[test]
+    fn make_graph_with_props_creates_nodes_with_properties() {
+        let mut props = HashMap::new();
+        props.insert("age".to_string(), Value::Int64(30));
+        props.insert("city".to_string(), Value::String("Oslo".into()));
+
+        let dg = make_graph_with_props(vec![("Person", "p1", "Alice", props)]);
+        assert_eq!(dg.graph.node_count(), 1);
+
+        let node = dg.graph.node_weight(dg.type_indices["Person"][0]).unwrap();
+        assert_eq!(*node.get_field_ref("age").unwrap(), Value::Int64(30));
+        assert_eq!(
+            *node.get_field_ref("city").unwrap(),
+            Value::String("Oslo".into())
+        );
+    }
+
+    #[test]
+    fn make_graph_with_props_multiple_types() {
+        let mut person_props = HashMap::new();
+        person_props.insert("age".to_string(), Value::Int64(25));
+        let mut city_props = HashMap::new();
+        city_props.insert("population".to_string(), Value::Int64(700000));
+
+        let dg = make_graph_with_props(vec![
+            ("Person", "p1", "Alice", person_props),
+            ("City", "c1", "Oslo", city_props),
+        ]);
+        assert_eq!(dg.graph.node_count(), 2);
+        assert_eq!(dg.type_indices["Person"].len(), 1);
+        assert_eq!(dg.type_indices["City"].len(), 1);
+    }
+
+    // ── DirGraph property index operations ─────────────────────────────────
+
+    #[test]
+    fn dirgraph_create_and_lookup_property_index() {
+        let mut props = HashMap::new();
+        props.insert("color".to_string(), Value::String("red".into()));
+
+        let mut dg = make_graph_with_props(vec![
+            ("Item", "i1", "Item1", props.clone()),
+            ("Item", "i2", "Item2", {
+                let mut p = HashMap::new();
+                p.insert("color".to_string(), Value::String("blue".into()));
+                p
+            }),
+            ("Item", "i3", "Item3", props),
+        ]);
+
+        let indexed = dg.create_index("Item", "color");
+        assert_eq!(indexed, 2); // 2 unique values: "red" and "blue"
+
+        let results = dg
+            .lookup_by_index("Item", "color", &Value::String("red".into()))
+            .unwrap();
+        assert_eq!(results.len(), 2); // i1 and i3 both have color=red
+
+        let results_blue = dg
+            .lookup_by_index("Item", "color", &Value::String("blue".into()))
+            .unwrap();
+        assert_eq!(results_blue.len(), 1);
+    }
+
+    #[test]
+    fn dirgraph_has_index() {
+        let mut dg = make_graph(vec![("Person", "p1", "Alice")]);
+        assert!(!dg.has_index("Person", "name"));
+        dg.create_index("Person", "name");
+        assert!(dg.has_index("Person", "name"));
+    }
+
+    #[test]
+    fn dirgraph_drop_index() {
+        let mut dg = make_graph(vec![("Person", "p1", "Alice")]);
+        dg.create_index("Person", "name");
+        assert!(dg.has_index("Person", "name"));
+        let dropped = dg.drop_index("Person", "name");
+        assert!(dropped);
+        assert!(!dg.has_index("Person", "name"));
+    }
+
+    #[test]
+    fn dirgraph_drop_index_nonexistent() {
+        let mut dg = make_graph(vec![("Person", "p1", "Alice")]);
+        let dropped = dg.drop_index("Person", "nonexistent");
+        assert!(!dropped);
+    }
+
+    #[test]
+    fn dirgraph_list_indexes() {
+        let mut dg = make_graph(vec![("Person", "p1", "Alice")]);
+        assert!(dg.list_indexes().is_empty());
+        dg.create_index("Person", "name");
+        dg.create_index("Person", "age");
+        let indexes = dg.list_indexes();
+        assert_eq!(indexes.len(), 2);
+    }
+
+    #[test]
+    fn dirgraph_index_stats() {
+        let mut props = HashMap::new();
+        props.insert("status".to_string(), Value::String("active".into()));
+
+        let mut dg = make_graph_with_props(vec![
+            ("Task", "t1", "Task1", props.clone()),
+            ("Task", "t2", "Task2", props.clone()),
+            ("Task", "t3", "Task3", {
+                let mut p = HashMap::new();
+                p.insert("status".to_string(), Value::String("done".into()));
+                p
+            }),
+        ]);
+
+        dg.create_index("Task", "status");
+        let stats = dg.get_index_stats("Task", "status").unwrap();
+        assert_eq!(stats.total_entries, 3);
+        assert_eq!(stats.unique_values, 2); // "active" and "done"
+    }
+
+    // ── DirGraph range index operations ────────────────────────────────────
+
+    #[test]
+    fn dirgraph_range_index_create_and_lookup() {
+        let mut dg = make_graph_with_props(vec![
+            ("Sensor", "s1", "Sensor1", {
+                let mut p = HashMap::new();
+                p.insert("value".to_string(), Value::Int64(10));
+                p
+            }),
+            ("Sensor", "s2", "Sensor2", {
+                let mut p = HashMap::new();
+                p.insert("value".to_string(), Value::Int64(20));
+                p
+            }),
+            ("Sensor", "s3", "Sensor3", {
+                let mut p = HashMap::new();
+                p.insert("value".to_string(), Value::Int64(30));
+                p
+            }),
+        ]);
+
+        dg.create_range_index("Sensor", "value");
+        assert!(dg.has_range_index("Sensor", "value"));
+
+        // Range lookup: 15..=25 should find s2 (value=20)
+        use std::ops::Bound;
+        let results = dg.lookup_range(
+            "Sensor",
+            "value",
+            Bound::Included(&Value::Int64(15)),
+            Bound::Included(&Value::Int64(25)),
+        );
+        assert_eq!(results.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn dirgraph_range_index_drop() {
+        let mut dg = make_graph(vec![("X", "x1", "X1")]);
+        dg.create_range_index("X", "val");
+        assert!(dg.has_range_index("X", "val"));
+        let dropped = dg.drop_range_index("X", "val");
+        assert!(dropped);
+        assert!(!dg.has_range_index("X", "val"));
+    }
+
+    // ── DirGraph composite index operations ────────────────────────────────
+
+    #[test]
+    fn dirgraph_composite_index() {
+        let mut dg = make_graph_with_props(vec![
+            ("Employee", "e1", "Alice", {
+                let mut p = HashMap::new();
+                p.insert("dept".to_string(), Value::String("eng".into()));
+                p.insert("level".to_string(), Value::Int64(3));
+                p
+            }),
+            ("Employee", "e2", "Bob", {
+                let mut p = HashMap::new();
+                p.insert("dept".to_string(), Value::String("eng".into()));
+                p.insert("level".to_string(), Value::Int64(5));
+                p
+            }),
+        ]);
+
+        let indexed = dg.create_composite_index("Employee", &["dept", "level"]);
+        assert_eq!(indexed, 2);
+        assert!(dg.has_composite_index("Employee", &["dept".to_string(), "level".to_string()]));
+    }
+
+    #[test]
+    fn dirgraph_list_composite_indexes() {
+        let mut dg = make_graph(vec![("X", "x1", "X1")]);
+        assert!(dg.list_composite_indexes().is_empty());
+        dg.create_composite_index("X", &["a", "b"]);
+        let indexes = dg.list_composite_indexes();
+        assert_eq!(indexes.len(), 1);
+        assert_eq!(indexes[0].0, "X");
+    }
+
+    // ── DirGraph ID index operations ───────────────────────────────────────
+
+    #[test]
+    fn dirgraph_build_id_index_and_lookup() {
+        let mut dg = make_graph(vec![("Person", "p1", "Alice"), ("Person", "p2", "Bob")]);
+
+        dg.build_id_index("Person");
+        let result = dg.lookup_by_id("Person", &Value::String("p1".into()));
+        assert!(result.is_some());
+
+        let node = dg.get_node(result.unwrap()).unwrap();
+        assert_eq!(node.title, Value::String("Alice".into()));
+    }
+
+    #[test]
+    fn dirgraph_lookup_by_id_not_found() {
+        let mut dg = make_graph(vec![("Person", "p1", "Alice")]);
+        dg.build_id_index("Person");
+        let result = dg.lookup_by_id("Person", &Value::String("not_found".into()));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn dirgraph_lookup_by_id_readonly() {
+        let mut dg = make_graph(vec![("Person", "p1", "Alice")]);
+        dg.build_id_index("Person");
+        let result = dg.lookup_by_id_readonly("Person", &Value::String("p1".into()));
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn dirgraph_invalidate_id_index() {
+        let mut dg = make_graph(vec![("Person", "p1", "Alice")]);
+        dg.build_id_index("Person");
+        assert!(dg.id_indices.contains_key("Person"));
+
+        dg.invalidate_id_index("Person");
+        // After invalidation, the id_index entry is removed
+        assert!(!dg.id_indices.contains_key("Person"));
+        // But lookup_by_id_readonly still works via linear scan fallback
+        assert!(dg
+            .lookup_by_id_readonly("Person", &Value::String("p1".into()))
+            .is_some());
+    }
+
+    #[test]
+    fn dirgraph_clear_id_indices() {
+        let mut dg = make_graph(vec![("Person", "p1", "Alice"), ("City", "c1", "Oslo")]);
+        dg.build_id_index("Person");
+        dg.build_id_index("City");
+        assert!(dg.id_indices.contains_key("Person"));
+        assert!(dg.id_indices.contains_key("City"));
+
+        dg.clear_id_indices();
+        assert!(dg.id_indices.is_empty());
+    }
+
+    // ── DirGraph rebuild_type_indices ───────────────────────────────────────
+
+    #[test]
+    fn dirgraph_rebuild_type_indices() {
+        let mut dg = DirGraph::new();
+        // Add nodes manually without updating type_indices
+        let node1 = schema::NodeData::new(
+            Value::String("p1".into()),
+            Value::String("Alice".into()),
+            "Person".to_string(),
+            HashMap::new(),
+            &mut dg.interner,
+        );
+        let node2 = schema::NodeData::new(
+            Value::String("c1".into()),
+            Value::String("Oslo".into()),
+            "City".to_string(),
+            HashMap::new(),
+            &mut dg.interner,
+        );
+        dg.graph.add_node(node1);
+        dg.graph.add_node(node2);
+        assert!(dg.type_indices.is_empty());
+
+        dg.rebuild_type_indices();
+        assert_eq!(dg.type_indices.len(), 2);
+        assert_eq!(dg.type_indices["Person"].len(), 1);
+        assert_eq!(dg.type_indices["City"].len(), 1);
+    }
+
+    // ── DirGraph connection type tracking ──────────────────────────────────
+
+    #[test]
+    fn dirgraph_register_connection_type() {
+        let mut dg = DirGraph::new();
+        assert!(!dg.has_connection_type("KNOWS"));
+        dg.register_connection_type("KNOWS".to_string());
+        assert!(dg.has_connection_type("KNOWS"));
+    }
+
+    #[test]
+    fn dirgraph_build_connection_types_cache() {
+        let mut dg = make_graph(vec![("A", "a1", "A1"), ("B", "b1", "B1")]);
+        let a = dg.type_indices["A"][0];
+        let b = dg.type_indices["B"][0];
+        dg.graph.add_edge(
+            a,
+            b,
+            schema::EdgeData::new("LINKS".to_string(), HashMap::new(), &mut dg.interner),
+        );
+
+        dg.build_connection_types_cache();
+        assert!(dg.has_connection_type("LINKS"));
+    }
+
+    #[test]
+    fn dirgraph_get_edge_type_counts() {
+        let mut dg = make_graph(vec![
+            ("A", "a1", "A1"),
+            ("B", "b1", "B1"),
+            ("B", "b2", "B2"),
+        ]);
+        let a = dg.type_indices["A"][0];
+        let b1 = dg.type_indices["B"][0];
+        let b2 = dg.type_indices["B"][1];
+        dg.graph.add_edge(
+            a,
+            b1,
+            schema::EdgeData::new("LINKS".to_string(), HashMap::new(), &mut dg.interner),
+        );
+        dg.graph.add_edge(
+            a,
+            b2,
+            schema::EdgeData::new("LINKS".to_string(), HashMap::new(), &mut dg.interner),
+        );
+        dg.graph.add_edge(
+            b1,
+            b2,
+            schema::EdgeData::new("FOLLOWS".to_string(), HashMap::new(), &mut dg.interner),
+        );
+
+        let counts = dg.get_edge_type_counts();
+        assert_eq!(counts["LINKS"], 2);
+        assert_eq!(counts["FOLLOWS"], 1);
+    }
+
+    // ── DirGraph has_node_type and nodes_matching_label ─────────────────────
+
+    #[test]
+    fn dirgraph_has_node_type() {
+        let dg = make_graph(vec![("Person", "p1", "Alice")]);
+        assert!(dg.has_node_type("Person"));
+        assert!(!dg.has_node_type("Animal"));
+    }
+
+    #[test]
+    fn dirgraph_nodes_matching_label_primary() {
+        let dg = make_graph(vec![
+            ("Person", "p1", "Alice"),
+            ("Person", "p2", "Bob"),
+            ("City", "c1", "Oslo"),
+        ]);
+        let matches = dg.nodes_matching_label("Person");
+        assert_eq!(matches.len(), 2);
+    }
+
+    #[test]
+    fn dirgraph_nodes_matching_label_extra_labels() {
+        let mut dg = make_graph(vec![("Person", "p1", "Alice"), ("City", "c1", "Oslo")]);
+        // Add extra label "Employee" to Alice
+        let alice_idx = dg.type_indices["Person"][0];
+        dg.graph
+            .node_weight_mut(alice_idx)
+            .unwrap()
+            .extra_labels
+            .push("Employee".to_string());
+
+        let matches = dg.nodes_matching_label("Employee");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0], alice_idx);
+    }
+
+    // ── DirGraph resolve_alias ──────────────────────────────────────────────
+
+    #[test]
+    fn dirgraph_resolve_alias_id() {
+        let mut dg = DirGraph::new();
+        dg.id_field_aliases
+            .insert("Person".to_string(), "employee_id".to_string());
+        assert_eq!(dg.resolve_alias("Person", "employee_id"), "id");
+    }
+
+    #[test]
+    fn dirgraph_resolve_alias_title() {
+        let mut dg = DirGraph::new();
+        dg.title_field_aliases
+            .insert("Person".to_string(), "full_name".to_string());
+        assert_eq!(dg.resolve_alias("Person", "full_name"), "title");
+    }
+
+    #[test]
+    fn dirgraph_resolve_alias_passthrough() {
+        let dg = DirGraph::new();
+        assert_eq!(dg.resolve_alias("Person", "age"), "age");
+    }
+
+    // ── DirGraph get_node_mut ───────────────────────────────────────────────
+
+    #[test]
+    fn dirgraph_get_node_mut_modify_property() {
+        let mut dg = make_graph_with_props(vec![("Person", "p1", "Alice", {
+            let mut p = HashMap::new();
+            p.insert("age".to_string(), Value::Int64(25));
+            p
+        })]);
+
+        let idx = dg.type_indices["Person"][0];
+        let node = dg.get_node_mut(idx).unwrap();
+        node.set_property("age", Value::Int64(26), &mut schema::StringInterner::new());
+
+        // Verify mutation persisted
+        let node = dg.get_node(idx).unwrap();
+        assert_eq!(*node.get_property("age").unwrap(), Value::Int64(26));
+    }
+
+    // ── DirGraph graph_info ────────────────────────────────────────────────
+
+    #[test]
+    fn dirgraph_graph_info_empty() {
+        let dg = DirGraph::new();
+        let info = dg.graph_info();
+        assert_eq!(info.node_count, 0);
+        assert_eq!(info.edge_count, 0);
+        assert_eq!(info.type_count, 0);
+        assert_eq!(info.fragmentation_ratio, 0.0);
+    }
+
+    #[test]
+    fn dirgraph_graph_info_with_data() {
+        let mut dg = make_graph(vec![
+            ("Person", "p1", "Alice"),
+            ("Person", "p2", "Bob"),
+            ("City", "c1", "Oslo"),
+        ]);
+        let alice = dg.type_indices["Person"][0];
+        let oslo = dg.type_indices["City"][0];
+        dg.graph.add_edge(
+            alice,
+            oslo,
+            schema::EdgeData::new("LIVES_IN".to_string(), HashMap::new(), &mut dg.interner),
+        );
+
+        let info = dg.graph_info();
+        assert_eq!(info.node_count, 3);
+        assert_eq!(info.edge_count, 1);
+        assert_eq!(info.type_count, 2);
+        assert_eq!(info.node_tombstones, 0);
+    }
+
+    // ── DirGraph vacuum ────────────────────────────────────────────────────
+
+    #[test]
+    fn dirgraph_vacuum_no_tombstones() {
+        let mut dg = make_graph(vec![("A", "a1", "A1"), ("B", "b1", "B1")]);
+        let remap = dg.vacuum();
+        assert!(remap.is_empty()); // No tombstones, no remapping needed
+        assert_eq!(dg.graph.node_count(), 2);
+    }
+
+    #[test]
+    fn dirgraph_vacuum_with_removal() {
+        let mut dg = make_graph(vec![
+            ("A", "a1", "A1"),
+            ("A", "a2", "A2"),
+            ("A", "a3", "A3"),
+        ]);
+        // Remove the middle node to create a tombstone
+        let a2_idx = dg.type_indices["A"][1];
+        dg.graph.remove_node(a2_idx);
+
+        // Graph now has a tombstone
+        assert_eq!(dg.graph.node_count(), 2);
+
+        let remap = dg.vacuum();
+        // Vacuum should compact the graph
+        assert_eq!(dg.graph.node_count(), 2);
+        // After vacuum, the graph should be compacted (node_bound == node_count)
+        assert_eq!(dg.graph.node_bound(), 2);
+        // Remap should have entries if indices changed
+        // (the last node gets moved to fill the gap)
+        assert!(!remap.is_empty() || dg.graph.node_bound() == dg.graph.node_count());
+    }
+
+    // ── DirGraph schema operations ─────────────────────────────────────────
+
+    #[test]
+    fn dirgraph_schema_set_get_clear() {
+        let mut dg = DirGraph::new();
+        assert!(dg.get_schema().is_none());
+
+        let schema = SchemaDefinition::new();
+        dg.set_schema(schema);
+        assert!(dg.get_schema().is_some());
+
+        dg.clear_schema();
+        assert!(dg.get_schema().is_none());
+    }
+
+    #[test]
+    fn schema_definition_with_node_types() {
+        let mut schema = SchemaDefinition::new();
+        let mut node_schema = NodeSchemaDefinition::default();
+        node_schema.required_fields = vec!["name".to_string(), "age".to_string()];
+        node_schema.optional_fields = vec!["email".to_string()];
+        schema
+            .node_schemas
+            .insert("Person".to_string(), node_schema);
+
+        assert_eq!(schema.node_schemas.len(), 1);
+        let person_schema = &schema.node_schemas["Person"];
+        assert_eq!(person_schema.required_fields.len(), 2);
+        assert_eq!(person_schema.optional_fields.len(), 1);
+    }
+
+    #[test]
+    fn schema_definition_with_connection_types() {
+        let mut schema = SchemaDefinition::new();
+        let conn_schema = ConnectionSchemaDefinition {
+            source_type: "Person".to_string(),
+            target_type: "City".to_string(),
+            cardinality: None,
+            required_properties: Vec::new(),
+            property_types: HashMap::new(),
+        };
+        schema
+            .connection_schemas
+            .insert("LIVES_IN".to_string(), conn_schema);
+
+        assert_eq!(schema.connection_schemas.len(), 1);
+        let lives_in = &schema.connection_schemas["LIVES_IN"];
+        assert_eq!(lives_in.source_type, "Person");
+        assert_eq!(lives_in.target_type, "City");
+    }
+
+    // ── DirGraph node_type_metadata ────────────────────────────────────────
+
+    #[test]
+    fn dirgraph_upsert_node_type_metadata() {
+        let mut dg = DirGraph::new();
+        let mut props = HashMap::new();
+        props.insert("age".to_string(), "int".to_string());
+        dg.upsert_node_type_metadata("Person", props);
+
+        assert!(dg.get_node_type_metadata("Person").is_some());
+        assert_eq!(dg.get_node_type_metadata("Person").unwrap()["age"], "int");
+
+        // Upsert again — should merge
+        let mut more_props = HashMap::new();
+        more_props.insert("name".to_string(), "str".to_string());
+        dg.upsert_node_type_metadata("Person", more_props);
+
+        let meta = dg.get_node_type_metadata("Person").unwrap();
+        assert!(meta.contains_key("age"));
+        assert!(meta.contains_key("name"));
+    }
+
+    // ── DirGraph connection_type_metadata ──────────────────────────────────
+
+    #[test]
+    fn dirgraph_upsert_connection_type_metadata() {
+        let mut dg = DirGraph::new();
+        dg.upsert_connection_type_metadata("KNOWS", "Person", "Person", HashMap::new());
+
+        let info = dg.get_connection_type_info("KNOWS");
+        assert!(info.is_some());
+    }
+
+    // ── EmbeddingStore operations ──────────────────────────────────────────
+
+    #[test]
+    fn embedding_store_new() {
+        let store = schema::EmbeddingStore::new(384);
+        assert_eq!(store.dimension, 384);
+        assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn embedding_store_with_metric() {
+        let store = schema::EmbeddingStore::with_metric(768, "cosine");
+        assert_eq!(store.dimension, 768);
+        assert_eq!(store.metric.as_deref(), Some("cosine"));
+    }
+
+    #[test]
+    fn embedding_store_set_and_get() {
+        let mut store = schema::EmbeddingStore::new(3);
+        let embedding = vec![1.0f32, 2.0, 3.0];
+        store.set_embedding(0, &embedding);
+
+        let retrieved = store.get_embedding(0).unwrap();
+        assert_eq!(retrieved, &[1.0, 2.0, 3.0]);
+        assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn embedding_store_overwrite() {
+        let mut store = schema::EmbeddingStore::new(2);
+        store.set_embedding(5, &[1.0, 2.0]);
+        store.set_embedding(5, &[3.0, 4.0]);
+
+        let retrieved = store.get_embedding(5).unwrap();
+        assert_eq!(retrieved, &[3.0, 4.0]);
+        assert_eq!(store.len(), 1); // still 1, overwritten not appended
+    }
+
+    #[test]
+    fn embedding_store_multiple_nodes() {
+        let mut store = schema::EmbeddingStore::new(2);
+        store.set_embedding(0, &[1.0, 0.0]);
+        store.set_embedding(1, &[0.0, 1.0]);
+        store.set_embedding(2, &[1.0, 1.0]);
+
+        assert_eq!(store.len(), 3);
+        assert_eq!(store.get_embedding(0).unwrap(), &[1.0, 0.0]);
+        assert_eq!(store.get_embedding(1).unwrap(), &[0.0, 1.0]);
+        assert_eq!(store.get_embedding(2).unwrap(), &[1.0, 1.0]);
+        assert!(store.get_embedding(99).is_none());
+    }
+
+    // ── PropertyStorage operations ─────────────────────────────────────────
+
+    #[test]
+    fn property_storage_insert_and_get() {
+        let mut interner = schema::StringInterner::new();
+        let key = interner.get_or_intern("color");
+        let mut storage = schema::PropertyStorage::Map(HashMap::new());
+        storage.insert(key, Value::String("blue".into()));
+
+        assert!(storage.contains(key));
+        assert_eq!(
+            storage.get_value(key).unwrap(),
+            Value::String("blue".into())
+        );
+    }
+
+    #[test]
+    fn property_storage_remove() {
+        let mut interner = schema::StringInterner::new();
+        let key = interner.get_or_intern("x");
+        let mut storage = schema::PropertyStorage::Map(HashMap::new());
+        storage.insert(key, Value::Int64(42));
+
+        let removed = storage.remove(key);
+        assert_eq!(removed, Some(Value::Int64(42)));
+        assert!(!storage.contains(key));
+    }
+
+    #[test]
+    fn property_storage_len() {
+        let mut interner = schema::StringInterner::new();
+        let k1 = interner.get_or_intern("a");
+        let k2 = interner.get_or_intern("b");
+        let mut storage = schema::PropertyStorage::Map(HashMap::new());
+        assert_eq!(storage.len(), 0);
+
+        storage.insert(k1, Value::Int64(1));
+        assert_eq!(storage.len(), 1);
+
+        storage.insert(k2, Value::Int64(2));
+        assert_eq!(storage.len(), 2);
+    }
+
+    #[test]
+    fn property_storage_insert_if_absent() {
+        let mut interner = schema::StringInterner::new();
+        let key = interner.get_or_intern("x");
+        let mut storage = schema::PropertyStorage::Map(HashMap::new());
+        storage.insert(key, Value::Int64(1));
+
+        // insert_if_absent should NOT overwrite
+        storage.insert_if_absent(key, Value::Int64(99));
+        assert_eq!(storage.get_value(key).unwrap(), Value::Int64(1));
+    }
+
+    #[test]
+    fn property_storage_replace_all() {
+        let mut interner = schema::StringInterner::new();
+        let k1 = interner.get_or_intern("a");
+        let k2 = interner.get_or_intern("b");
+        let mut storage = schema::PropertyStorage::Map(HashMap::new());
+        storage.insert(k1, Value::Int64(1));
+
+        storage.replace_all(vec![(k1, Value::Int64(100)), (k2, Value::Int64(200))]);
+        assert_eq!(storage.get_value(k1).unwrap(), Value::Int64(100));
+        assert_eq!(storage.get_value(k2).unwrap(), Value::Int64(200));
+    }
+
+    // ── CowSelection advanced operations ───────────────────────────────────
+
+    #[test]
+    fn cow_selection_current_node_indices() {
+        let mut sel = CowSelection::new();
+        sel.get_level_mut(0)
+            .unwrap()
+            .add_selection(None, vec![NodeIndex::new(5), NodeIndex::new(10)]);
+
+        let indices: Vec<_> = sel.current_node_indices().collect();
+        assert_eq!(indices.len(), 2);
+        assert!(indices.contains(&NodeIndex::new(5)));
+        assert!(indices.contains(&NodeIndex::new(10)));
+    }
+
+    #[test]
+    fn cow_selection_empty_current_node_indices() {
+        let sel = CowSelection::new();
+        // new() creates one empty level, so current_node_indices returns empty iterator
+        let indices: Vec<_> = sel.current_node_indices().collect();
+        assert!(indices.is_empty());
+    }
+
+    #[test]
+    fn cow_selection_clear_execution_plan() {
+        let mut sel = CowSelection::new();
+        sel.add_plan_step(PlanStep::new("TEST", None, 10));
+        assert_eq!(sel.get_execution_plan().len(), 1);
+        sel.clear_execution_plan();
+        assert!(sel.get_execution_plan().is_empty());
+    }
+
+    #[test]
+    fn cow_selection_get_level_out_of_bounds() {
+        let sel = CowSelection::new();
+        // Level 0 exists (created by new())
+        assert!(sel.get_level(0).is_some());
+        // Level 1 and beyond don't exist
+        assert!(sel.get_level(1).is_none());
+        assert!(sel.get_level(100).is_none());
+    }
+
+    #[test]
+    fn cow_selection_first_node_type_empty() {
+        let dg = make_graph(vec![("Person", "p1", "Alice")]);
+        let sel = CowSelection::new();
+        // Initial level exists but is empty, so first_node_type returns None
+        assert_eq!(sel.first_node_type(&dg), None);
+    }
+
+    // ── NodeData set_property overwrites existing ──────────────────────────
+
+    #[test]
+    fn nodedata_set_property_overwrites() {
+        let mut interner = schema::StringInterner::new();
+        let mut node = schema::NodeData::new(
+            Value::String("n1".into()),
+            Value::String("N1".into()),
+            "T".to_string(),
+            HashMap::new(),
+            &mut interner,
+        );
+        node.set_property("x", Value::Int64(1), &mut interner);
+        assert_eq!(*node.get_property("x").unwrap(), Value::Int64(1));
+
+        node.set_property("x", Value::Int64(99), &mut interner);
+        assert_eq!(*node.get_property("x").unwrap(), Value::Int64(99));
+        assert_eq!(node.property_count(), 1); // still 1, not 2
+    }
+
+    #[test]
+    fn nodedata_remove_nonexistent_property() {
+        let mut interner = schema::StringInterner::new();
+        let mut node = schema::NodeData::new(
+            Value::String("n1".into()),
+            Value::String("N1".into()),
+            "T".to_string(),
+            HashMap::new(),
+            &mut interner,
+        );
+        let removed = node.remove_property("nonexistent");
+        assert!(removed.is_none());
+    }
+
+    // ── NodeData get_field_ref special fields ──────────────────────────────
+
+    #[test]
+    fn nodedata_get_field_ref_id_and_title() {
+        let mut interner = schema::StringInterner::new();
+        let node = schema::NodeData::new(
+            Value::String("n1".into()),
+            Value::String("N1".into()),
+            "MyType".to_string(),
+            HashMap::new(),
+            &mut interner,
+        );
+        // get_field_ref supports "id" and "title" as virtual fields
+        assert_eq!(
+            *node.get_field_ref("id").unwrap(),
+            Value::String("n1".into())
+        );
+        assert_eq!(
+            *node.get_field_ref("title").unwrap(),
+            Value::String("N1".into())
+        );
+        // "node_type" is not accessible via get_field_ref - use get_node_type_ref instead
+        assert!(node.get_field_ref("node_type").is_none());
+        assert_eq!(node.get_node_type_ref(), "MyType");
+    }
+
+    // ── DirGraph edge iteration patterns ───────────────────────────────────
+
+    #[test]
+    fn dirgraph_edges_directed() {
+        let mut dg = make_graph(vec![
+            ("A", "a1", "A1"),
+            ("B", "b1", "B1"),
+            ("C", "c1", "C1"),
+        ]);
+        let a = dg.type_indices["A"][0];
+        let b = dg.type_indices["B"][0];
+        let c = dg.type_indices["C"][0];
+
+        dg.graph.add_edge(
+            a,
+            b,
+            schema::EdgeData::new("AB".to_string(), HashMap::new(), &mut dg.interner),
+        );
+        dg.graph.add_edge(
+            a,
+            c,
+            schema::EdgeData::new("AC".to_string(), HashMap::new(), &mut dg.interner),
+        );
+        dg.graph.add_edge(
+            b,
+            a,
+            schema::EdgeData::new("BA".to_string(), HashMap::new(), &mut dg.interner),
+        );
+
+        // Outgoing from A: 2 edges
+        use petgraph::Direction;
+        let outgoing: Vec<_> = dg.graph.edges_directed(a, Direction::Outgoing).collect();
+        assert_eq!(outgoing.len(), 2);
+
+        // Incoming to A: 1 edge (from B)
+        let incoming: Vec<_> = dg.graph.edges_directed(a, Direction::Incoming).collect();
+        assert_eq!(incoming.len(), 1);
+    }
+
+    #[test]
+    fn dirgraph_edge_filtering_by_type() {
+        let mut dg = make_graph(vec![
+            ("Person", "p1", "Alice"),
+            ("Person", "p2", "Bob"),
+            ("City", "c1", "Oslo"),
+        ]);
+        let alice = dg.type_indices["Person"][0];
+        let bob = dg.type_indices["Person"][1];
+        let oslo = dg.type_indices["City"][0];
+
+        dg.graph.add_edge(
+            alice,
+            bob,
+            schema::EdgeData::new("KNOWS".to_string(), HashMap::new(), &mut dg.interner),
+        );
+        dg.graph.add_edge(
+            alice,
+            oslo,
+            schema::EdgeData::new("LIVES_IN".to_string(), HashMap::new(), &mut dg.interner),
+        );
+
+        let knows_key = dg.interner.get_or_intern("KNOWS");
+        let knows_edges: Vec<_> = dg
+            .graph
+            .edges(alice)
+            .filter(|e| e.weight().connection_type == knows_key)
+            .collect();
+        assert_eq!(knows_edges.len(), 1);
+    }
+
+    // ── DirGraph node removal and graph consistency ────────────────────────
+
+    #[test]
+    fn dirgraph_remove_node_cleans_edges() {
+        let mut dg = make_graph(vec![("A", "a1", "A1"), ("B", "b1", "B1")]);
+        let a = dg.type_indices["A"][0];
+        let b = dg.type_indices["B"][0];
+
+        dg.graph.add_edge(
+            a,
+            b,
+            schema::EdgeData::new("LINK".to_string(), HashMap::new(), &mut dg.interner),
+        );
+        assert_eq!(dg.graph.edge_count(), 1);
+
+        dg.graph.remove_node(a);
+        // Removing a node should also remove its edges
+        assert_eq!(dg.graph.edge_count(), 0);
+        assert_eq!(dg.graph.node_count(), 1);
+    }
+
+    // ── DirGraph columnar operations ───────────────────────────────────────
+
+    #[test]
+    fn dirgraph_is_columnar_default_false() {
+        let dg = DirGraph::new();
+        assert!(!dg.is_columnar());
+    }
+
+    // ── DirGraph auto_vacuum_threshold ─────────────────────────────────────
+
+    #[test]
+    fn dirgraph_auto_vacuum_threshold_default() {
+        let dg = DirGraph::new();
+        assert_eq!(dg.auto_vacuum_threshold, Some(0.3));
+    }
+
+    #[test]
+    fn dirgraph_auto_vacuum_threshold_custom() {
+        let mut dg = DirGraph::new();
+        dg.auto_vacuum_threshold = Some(0.5);
+        assert_eq!(dg.auto_vacuum_threshold, Some(0.5));
+
+        dg.auto_vacuum_threshold = None; // disable
+        assert!(dg.auto_vacuum_threshold.is_none());
+    }
+
+    // ── DirGraph check_auto_vacuum ─────────────────────────────────────────
+
+    #[test]
+    fn dirgraph_check_auto_vacuum_below_threshold() {
+        let mut dg = make_graph(vec![("A", "a1", "A1"), ("A", "a2", "A2")]);
+        // No tombstones, should not trigger vacuum
+        let vacuumed = dg.check_auto_vacuum();
+        assert!(!vacuumed);
+    }
+
+    // ── StringInterner advanced ────────────────────────────────────────────
+
+    #[test]
+    fn interner_many_strings() {
+        let mut interner = schema::StringInterner::new();
+        let mut keys = Vec::new();
+        for i in 0..100 {
+            keys.push(interner.get_or_intern(&format!("str_{}", i)));
+        }
+        // All should resolve correctly
+        for (i, key) in keys.iter().enumerate() {
+            assert_eq!(interner.resolve(*key), format!("str_{}", i));
+        }
+    }
+
+    #[test]
+    fn interner_empty_string() {
+        let mut interner = schema::StringInterner::new();
+        let key = interner.get_or_intern("");
+        assert_eq!(interner.resolve(key), "");
+    }
+
+    // ── SelectionLevel dedup and ordering ──────────────────────────────────
+
+    #[test]
+    fn selection_level_multiple_parents() {
+        let mut level = schema::SelectionLevel::new();
+        let parent_a = NodeIndex::new(0);
+        let parent_b = NodeIndex::new(1);
+
+        level.add_selection(Some(parent_a), vec![NodeIndex::new(10), NodeIndex::new(11)]);
+        level.add_selection(Some(parent_b), vec![NodeIndex::new(20)]);
+
+        assert_eq!(level.node_count(), 3);
+
+        let all = level.get_all_nodes();
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn selection_level_no_parent() {
+        let mut level = schema::SelectionLevel::new();
+        level.add_selection(None, vec![NodeIndex::new(0), NodeIndex::new(1)]);
+
+        let groups: Vec<_> = level.iter_groups().collect();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, &None);
+    }
+
+    // ── NodeData with various Value types ──────────────────────────────────
+
+    #[test]
+    fn nodedata_various_property_types() {
+        let mut interner = schema::StringInterner::new();
+        let mut props = HashMap::new();
+        props.insert("int_val".to_string(), Value::Int64(42));
+        props.insert("float_val".to_string(), Value::Float64(3.14));
+        props.insert("bool_val".to_string(), Value::Boolean(true));
+        props.insert("str_val".to_string(), Value::String("hello".into()));
+        props.insert("null_val".to_string(), Value::Null);
+
+        let node = schema::NodeData::new(
+            Value::String("n1".into()),
+            Value::String("Node1".into()),
+            "Mixed".to_string(),
+            props,
+            &mut interner,
+        );
+
+        assert_eq!(node.property_count(), 5);
+        assert_eq!(*node.get_property("int_val").unwrap(), Value::Int64(42));
+        assert_eq!(
+            *node.get_property("float_val").unwrap(),
+            Value::Float64(3.14)
+        );
+        assert_eq!(
+            *node.get_property("bool_val").unwrap(),
+            Value::Boolean(true)
+        );
+        assert_eq!(
+            *node.get_property("str_val").unwrap(),
+            Value::String("hello".into())
+        );
+        assert_eq!(*node.get_property("null_val").unwrap(), Value::Null);
+    }
+
+    // ── PlanStep display ───────────────────────────────────────────────────
+
+    #[test]
+    fn plan_step_with_detail() {
+        let step = PlanStep::new("FILTER", Some("Person"), 100).with_actual_rows(75);
+        assert_eq!(step.operation, "FILTER");
+        assert_eq!(step.node_type, Some("Person".to_string()));
+        assert_eq!(step.estimated_rows, 100);
+        assert_eq!(step.actual_rows, Some(75));
+    }
+
+    // ── DirGraph populate_index_keys and rebuild ───────────────────────────
+
+    #[test]
+    fn dirgraph_populate_index_keys() {
+        let mut dg = make_graph_with_props(vec![("Item", "i1", "Item1", {
+            let mut p = HashMap::new();
+            p.insert("color".to_string(), Value::String("red".into()));
+            p
+        })]);
+
+        dg.create_index("Item", "color");
+        dg.populate_index_keys();
+
+        // Keys should be recorded for persistence
+        assert!(!dg.property_index_keys.is_empty());
+    }
+
+    #[test]
+    fn dirgraph_rebuild_indices_from_keys() {
+        let mut dg = make_graph_with_props(vec![
+            ("Item", "i1", "Item1", {
+                let mut p = HashMap::new();
+                p.insert("color".to_string(), Value::String("red".into()));
+                p
+            }),
+            ("Item", "i2", "Item2", {
+                let mut p = HashMap::new();
+                p.insert("color".to_string(), Value::String("blue".into()));
+                p
+            }),
+        ]);
+
+        dg.create_index("Item", "color");
+        dg.populate_index_keys();
+
+        // Clear runtime indices (simulating a reload)
+        dg.property_indices.clear();
+        assert!(dg
+            .lookup_by_index("Item", "color", &Value::String("red".into()))
+            .is_none());
+
+        // Rebuild from persisted keys
+        dg.rebuild_indices_from_keys();
+        let results = dg
+            .lookup_by_index("Item", "color", &Value::String("red".into()))
+            .unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    // ── DirGraph reindex ───────────────────────────────────────────────────
+
+    #[test]
+    fn dirgraph_reindex() {
+        let mut dg = make_graph(vec![("Person", "p1", "Alice"), ("City", "c1", "Oslo")]);
+
+        // Mess up type_indices
+        dg.type_indices.clear();
+        assert!(dg.type_indices.is_empty());
+
+        dg.reindex();
+        // After reindex, type_indices should be rebuilt
+        assert!(!dg.type_indices.is_empty());
+        assert!(dg.type_indices.contains_key("Person"));
+        assert!(dg.type_indices.contains_key("City"));
+    }
+
+    // ── Resolve noderefs with various Value types ──────────────────────────
+
+    #[test]
+    fn resolve_noderefs_with_datetime_values() {
+        let dg = make_graph(vec![("X", "x1", "Node")]);
+        let date = chrono::NaiveDate::from_ymd_opt(2024, 6, 15).unwrap();
+        let mut rows = vec![vec![Value::NodeRef(0), Value::DateTime(date)]];
+        resolve_noderefs(&dg.graph, &mut rows);
+        assert_eq!(rows[0][0], Value::String("Node".into()));
+        // DateTime should be untouched
+        assert_eq!(rows[0][1], Value::DateTime(date));
+    }
+
+    #[test]
+    fn resolve_noderefs_single_row_single_column() {
+        let dg = make_graph(vec![("T", "t1", "Solo")]);
+        let mut rows = vec![vec![Value::NodeRef(0)]];
+        resolve_noderefs(&dg.graph, &mut rows);
+        assert_eq!(rows[0][0], Value::String("Solo".into()));
+    }
+
+    // ── DirGraph memory_limit ──────────────────────────────────────────────
+
+    #[test]
+    fn dirgraph_memory_limit_default_none() {
+        let dg = DirGraph::new();
+        assert!(dg.memory_limit.is_none());
+    }
+
+    // ── TypeSchema operations ──────────────────────────────────────────────
+
+    #[test]
+    fn type_schema_new_is_empty() {
+        let ts = schema::TypeSchema::new();
+        assert_eq!(ts.len(), 0);
+    }
+
+    #[test]
+    fn type_schema_from_keys() {
+        let mut interner = schema::StringInterner::new();
+        let k1 = interner.get_or_intern("a");
+        let k2 = interner.get_or_intern("b");
+        let k3 = interner.get_or_intern("c");
+
+        let ts = schema::TypeSchema::from_keys(vec![k1, k2, k3]);
+        assert_eq!(ts.len(), 3);
+        assert!(ts.slot(k1).is_some());
+        assert!(ts.slot(k2).is_some());
+        assert!(ts.slot(k3).is_some());
+    }
+
+    #[test]
+    fn type_schema_add_key() {
+        let mut interner = schema::StringInterner::new();
+        let k1 = interner.get_or_intern("first");
+        let k2 = interner.get_or_intern("second");
+
+        let mut ts = schema::TypeSchema::new();
+        let slot1 = ts.add_key(k1);
+        let slot2 = ts.add_key(k2);
+
+        assert_eq!(slot1, 0);
+        assert_eq!(slot2, 1);
+        assert_eq!(ts.len(), 2);
+
+        // Adding same key again should return same slot
+        let slot1_again = ts.add_key(k1);
+        assert_eq!(slot1_again, 0);
+        assert_eq!(ts.len(), 2); // still 2
+    }
+
+    // ── DirGraph compact_properties ────────────────────────────────────────
+
+    #[test]
+    fn dirgraph_compact_properties() {
+        let mut dg = make_graph_with_props(vec![
+            ("Person", "p1", "Alice", {
+                let mut p = HashMap::new();
+                p.insert("age".to_string(), Value::Int64(30));
+                p
+            }),
+            ("Person", "p2", "Bob", {
+                let mut p = HashMap::new();
+                p.insert("age".to_string(), Value::Int64(25));
+                p
+            }),
+        ]);
+
+        // compact_properties should not lose data
+        dg.compact_properties();
+        let alice = dg.get_node(dg.type_indices["Person"][0]).unwrap();
+        assert_eq!(*alice.get_property("age").unwrap(), Value::Int64(30));
+        let bob = dg.get_node(dg.type_indices["Person"][1]).unwrap();
+        assert_eq!(*bob.get_property("age").unwrap(), Value::Int64(25));
+    }
+}
