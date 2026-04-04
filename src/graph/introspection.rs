@@ -6473,10 +6473,7 @@ mod tests {
 
     #[test]
     fn test_xml_escape_multiple() {
-        assert_eq!(
-            xml_escape("A&B<C>D\"E"),
-            "A&amp;B&lt;C&gt;D&quot;E"
-        );
+        assert_eq!(xml_escape("A&B<C>D\"E"), "A&amp;B&lt;C&gt;D&quot;E");
     }
 
     #[test]

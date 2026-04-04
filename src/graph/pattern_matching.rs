@@ -2480,13 +2480,17 @@ mod tests {
     #[test]
     fn test_tokenize_parameter_reference() {
         let tokens = tokenize("$param_name").unwrap();
-        assert!(tokens.iter().any(|t| matches!(t, Token::Parameter(ref s) if s == "param_name")));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t, Token::Parameter(ref s) if s == "param_name")));
     }
 
     #[test]
     fn test_tokenize_escaped_chars() {
         let tokens = tokenize("{s: \"line1\\nline2\"}").unwrap();
-        assert!(tokens.iter().any(|t| matches!(t, Token::StringLit(ref s) if s.contains('\n'))));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t, Token::StringLit(ref s) if s.contains('\n'))));
     }
 
     #[test]
@@ -2592,8 +2596,12 @@ mod tests {
     #[test]
     fn test_tokenize_underscore_idents() {
         let tokens = tokenize("(v:T_1)").unwrap();
-        assert!(tokens.iter().any(|t| matches!(t, Token::Identifier(ref s) if s == "v")));
-        assert!(tokens.iter().any(|t| matches!(t, Token::Identifier(ref s) if s == "T_1")));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t, Token::Identifier(ref s) if s == "v")));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t, Token::Identifier(ref s) if s == "T_1")));
     }
 
     #[test]
@@ -2639,6 +2647,8 @@ mod tests {
     #[test]
     fn test_tokenize_float_edge() {
         let tokens = tokenize("{v: 3.14159}").unwrap();
-        assert!(tokens.iter().any(|t| matches!(t, Token::FloatLit(f) if (f - 3.14159).abs() < 0.0001)));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t, Token::FloatLit(f) if (f - 3.14159).abs() < 0.0001)));
     }
 }

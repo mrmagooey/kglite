@@ -278,7 +278,8 @@ mod tests {
     #[test]
     fn test_lookup_with_type_fallback_string_type() {
         let map = HashMap::new();
-        let result = CombinedTypeLookup::lookup_with_type_fallback(&map, &Value::String("test".to_string()));
+        let result =
+            CombinedTypeLookup::lookup_with_type_fallback(&map, &Value::String("test".to_string()));
         assert_eq!(result, None);
     }
 }

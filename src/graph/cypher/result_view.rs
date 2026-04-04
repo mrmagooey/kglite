@@ -929,12 +929,10 @@ mod tests {
         use super::super::py_convert::PreProcessedValue;
 
         let columns = vec!["name".to_string(), "age".to_string()];
-        let rows = vec![
-            vec![
-                PreProcessedValue::Plain(Value::String("Alice".to_string())),
-                PreProcessedValue::Plain(Value::Int64(30)),
-            ],
-        ];
+        let rows = vec![vec![
+            PreProcessedValue::Plain(Value::String("Alice".to_string())),
+            PreProcessedValue::Plain(Value::Int64(30)),
+        ]];
         let result = format_table(&columns, &rows);
         assert!(result.contains("shape: (1, 2)"));
         assert!(result.contains("name"));
@@ -1011,12 +1009,10 @@ mod tests {
         use super::super::py_convert::PreProcessedValue;
 
         let columns = vec!["short".to_string(), "verylongcolumn".to_string()];
-        let rows = vec![
-            vec![
-                PreProcessedValue::Plain(Value::String("a".to_string())),
-                PreProcessedValue::Plain(Value::String("b".to_string())),
-            ],
-        ];
+        let rows = vec![vec![
+            PreProcessedValue::Plain(Value::String("a".to_string())),
+            PreProcessedValue::Plain(Value::String("b".to_string())),
+        ]];
         let result = format_table(&columns, &rows);
         // Should accommodate the long column name
         assert!(result.contains("verylongcolumn"));

@@ -587,7 +587,10 @@ mod tests {
         let unique_values = UniqueValues {
             parent_title: "Test".to_string(),
             parent_idx: Some(NodeIndex::new(0)),
-            values: vec![Value::String("value1".into()), Value::String("value2".into())],
+            values: vec![
+                Value::String("value1".into()),
+                Value::String("value2".into()),
+            ],
         };
 
         assert_eq!(unique_values.parent_title, "Test");

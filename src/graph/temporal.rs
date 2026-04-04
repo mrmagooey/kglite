@@ -248,8 +248,14 @@ mod tests {
         };
         let reference = make_date(2024, 6, 15);
         let props = vec![
-            (InternedKey::from_str("start"), Value::DateTime(make_date(2024, 1, 1))),
-            (InternedKey::from_str("end"), Value::DateTime(make_date(2024, 12, 31))),
+            (
+                InternedKey::from_str("start"),
+                Value::DateTime(make_date(2024, 1, 1)),
+            ),
+            (
+                InternedKey::from_str("end"),
+                Value::DateTime(make_date(2024, 12, 31)),
+            ),
         ];
         assert!(is_temporally_valid(&props, &config, &reference));
     }
@@ -262,8 +268,14 @@ mod tests {
         };
         let reference = make_date(2023, 12, 31);
         let props = vec![
-            (InternedKey::from_str("start"), Value::DateTime(make_date(2024, 1, 1))),
-            (InternedKey::from_str("end"), Value::DateTime(make_date(2024, 12, 31))),
+            (
+                InternedKey::from_str("start"),
+                Value::DateTime(make_date(2024, 1, 1)),
+            ),
+            (
+                InternedKey::from_str("end"),
+                Value::DateTime(make_date(2024, 12, 31)),
+            ),
         ];
         assert!(!is_temporally_valid(&props, &config, &reference));
     }
@@ -276,8 +288,14 @@ mod tests {
         };
         let reference = make_date(2025, 1, 1);
         let props = vec![
-            (InternedKey::from_str("start"), Value::DateTime(make_date(2024, 1, 1))),
-            (InternedKey::from_str("end"), Value::DateTime(make_date(2024, 12, 31))),
+            (
+                InternedKey::from_str("start"),
+                Value::DateTime(make_date(2024, 1, 1)),
+            ),
+            (
+                InternedKey::from_str("end"),
+                Value::DateTime(make_date(2024, 12, 31)),
+            ),
         ];
         assert!(!is_temporally_valid(&props, &config, &reference));
     }
@@ -290,7 +308,10 @@ mod tests {
         };
         let reference = make_date(2024, 12, 31);
         let props = vec![
-            (InternedKey::from_str("start"), Value::DateTime(make_date(2024, 1, 1))),
+            (
+                InternedKey::from_str("start"),
+                Value::DateTime(make_date(2024, 1, 1)),
+            ),
             (InternedKey::from_str("end"), Value::Null),
         ];
         assert!(is_temporally_valid(&props, &config, &reference));
@@ -316,8 +337,14 @@ mod tests {
         let range_start = make_date(2024, 1, 1);
         let range_end = make_date(2024, 12, 31);
         let props = vec![
-            (InternedKey::from_str("start"), Value::DateTime(make_date(2024, 6, 1))),
-            (InternedKey::from_str("end"), Value::DateTime(make_date(2024, 7, 1))),
+            (
+                InternedKey::from_str("start"),
+                Value::DateTime(make_date(2024, 6, 1)),
+            ),
+            (
+                InternedKey::from_str("end"),
+                Value::DateTime(make_date(2024, 7, 1)),
+            ),
         ];
         assert!(overlaps_range(&props, &config, &range_start, &range_end));
     }
@@ -331,8 +358,14 @@ mod tests {
         let range_start = make_date(2024, 6, 1);
         let range_end = make_date(2024, 12, 31);
         let props = vec![
-            (InternedKey::from_str("start"), Value::DateTime(make_date(2024, 1, 1))),
-            (InternedKey::from_str("end"), Value::DateTime(make_date(2024, 5, 31))),
+            (
+                InternedKey::from_str("start"),
+                Value::DateTime(make_date(2024, 1, 1)),
+            ),
+            (
+                InternedKey::from_str("end"),
+                Value::DateTime(make_date(2024, 5, 31)),
+            ),
         ];
         assert!(!overlaps_range(&props, &config, &range_start, &range_end));
     }
@@ -349,9 +382,19 @@ mod tests {
         };
         let reference = make_date(2024, 6, 15);
         let props = vec![
-            (InternedKey::from_str("s1"), Value::DateTime(make_date(2024, 1, 1))),
-            (InternedKey::from_str("e1"), Value::DateTime(make_date(2024, 12, 31))),
+            (
+                InternedKey::from_str("s1"),
+                Value::DateTime(make_date(2024, 1, 1)),
+            ),
+            (
+                InternedKey::from_str("e1"),
+                Value::DateTime(make_date(2024, 12, 31)),
+            ),
         ];
-        assert!(is_temporally_valid_multi(&props, &[config1, config2], &reference));
+        assert!(is_temporally_valid_multi(
+            &props,
+            &[config1, config2],
+            &reference
+        ));
     }
 }

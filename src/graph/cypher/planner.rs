@@ -3607,9 +3607,8 @@ mod tests {
     #[test]
     fn test_fold_or_to_in_basic() {
         // n.type = 'A' OR n.type = 'B' should fold to n.type IN ['A', 'B']
-        let mut query = parse_cypher(
-            "MATCH (n) WHERE n.type = 'A' OR n.type = 'B' RETURN n"
-        ).unwrap();
+        let mut query =
+            parse_cypher("MATCH (n) WHERE n.type = 'A' OR n.type = 'B' RETURN n").unwrap();
 
         let graph = DirGraph::new();
         let params = HashMap::new();
@@ -3627,9 +3626,8 @@ mod tests {
 
     #[test]
     fn test_multiple_or_conditions() {
-        let mut query = parse_cypher(
-            "MATCH (n) WHERE n.x = 1 OR n.x = 2 OR n.x = 3 RETURN n"
-        ).unwrap();
+        let mut query =
+            parse_cypher("MATCH (n) WHERE n.x = 1 OR n.x = 2 OR n.x = 3 RETURN n").unwrap();
 
         let graph = DirGraph::new();
         let params = HashMap::new();
@@ -3640,9 +3638,7 @@ mod tests {
 
     #[test]
     fn test_limit_pushdown() {
-        let mut query = parse_cypher(
-            "MATCH (n:Person) RETURN n LIMIT 10"
-        ).unwrap();
+        let mut query = parse_cypher("MATCH (n:Person) RETURN n LIMIT 10").unwrap();
 
         let graph = DirGraph::new();
         let params = HashMap::new();
@@ -3656,26 +3652,24 @@ mod tests {
 
     #[test]
     fn test_distinct_pushdown() {
-        let mut query = parse_cypher(
-            "MATCH (n:Person) RETURN DISTINCT n.name"
-        ).unwrap();
+        let mut query = parse_cypher("MATCH (n:Person) RETURN DISTINCT n.name").unwrap();
 
         let graph = DirGraph::new();
         let params = HashMap::new();
         optimize(&mut query, &graph, &params);
 
         // RETURN should have distinct flag set
-        let found_distinct = query.clauses.iter().any(|c| {
-            matches!(c, Clause::Return(r) if r.distinct)
-        });
+        let found_distinct = query
+            .clauses
+            .iter()
+            .any(|c| matches!(c, Clause::Return(r) if r.distinct));
         assert!(found_distinct);
     }
 
     #[test]
     fn test_complex_and_or_predicate() {
-        let mut query = parse_cypher(
-            "MATCH (n) WHERE (n.a = 1 AND n.b = 2) OR (n.c = 3) RETURN n"
-        ).unwrap();
+        let mut query =
+            parse_cypher("MATCH (n) WHERE (n.a = 1 AND n.b = 2) OR (n.c = 3) RETURN n").unwrap();
 
         let graph = DirGraph::new();
         let params = HashMap::new();
@@ -3686,9 +3680,7 @@ mod tests {
 
     #[test]
     fn test_union_optimization() {
-        let mut query = parse_cypher(
-            "MATCH (n:A) RETURN n UNION MATCH (m:B) RETURN m"
-        ).unwrap();
+        let mut query = parse_cypher("MATCH (n:A) RETURN n UNION MATCH (m:B) RETURN m").unwrap();
 
         let graph = DirGraph::new();
         let params = HashMap::new();
@@ -3701,9 +3693,7 @@ mod tests {
 
     #[test]
     fn test_parameter_in_comparison() {
-        let mut query = parse_cypher(
-            "MATCH (n) WHERE n.value < $threshold RETURN n"
-        ).unwrap();
+        let mut query = parse_cypher("MATCH (n) WHERE n.value < $threshold RETURN n").unwrap();
 
         let graph = DirGraph::new();
         let mut params = HashMap::new();
@@ -3720,9 +3710,7 @@ mod tests {
 
     #[test]
     fn test_no_optimization_needed() {
-        let mut query = parse_cypher(
-            "MATCH (n) RETURN n"
-        ).unwrap();
+        let mut query = parse_cypher("MATCH (n) RETURN n").unwrap();
 
         let graph = DirGraph::new();
         let params = HashMap::new();
@@ -3734,9 +3722,7 @@ mod tests {
 
     #[test]
     fn test_property_with_special_chars() {
-        let mut query = parse_cypher(
-            "MATCH (n) WHERE n.`special-prop` = 42 RETURN n"
-        ).unwrap();
+        let mut query = parse_cypher("MATCH (n) WHERE n.`special-prop` = 42 RETURN n").unwrap();
 
         let graph = DirGraph::new();
         let params = HashMap::new();
@@ -3747,9 +3733,7 @@ mod tests {
 
     #[test]
     fn test_range_with_gt_lt() {
-        let mut query = parse_cypher(
-            "MATCH (n) WHERE n.x > 10 AND n.x < 20 RETURN n"
-        ).unwrap();
+        let mut query = parse_cypher("MATCH (n) WHERE n.x > 10 AND n.x < 20 RETURN n").unwrap();
 
         let graph = DirGraph::new();
         let params = HashMap::new();
@@ -3766,9 +3750,7 @@ mod tests {
 
     #[test]
     fn test_identity_function_pushdown() {
-        let mut query = parse_cypher(
-            "MATCH (n) WHERE id(n) = 999 RETURN n"
-        ).unwrap();
+        let mut query = parse_cypher("MATCH (n) WHERE id(n) = 999 RETURN n").unwrap();
 
         let graph = DirGraph::new();
         let params = HashMap::new();
@@ -3784,9 +3766,8 @@ mod tests {
 
     #[test]
     fn test_multiple_patterns() {
-        let mut query = parse_cypher(
-            "MATCH (a:A), (b:B) WHERE a.x = 1 AND b.y = 2 RETURN a, b"
-        ).unwrap();
+        let mut query =
+            parse_cypher("MATCH (a:A), (b:B) WHERE a.x = 1 AND b.y = 2 RETURN a, b").unwrap();
 
         let graph = DirGraph::new();
         let params = HashMap::new();
@@ -3800,9 +3781,8 @@ mod tests {
 
     #[test]
     fn test_in_operator_simple() {
-        let mut query = parse_cypher(
-            "MATCH (n) WHERE n.status IN ['active', 'pending'] RETURN n"
-        ).unwrap();
+        let mut query =
+            parse_cypher("MATCH (n) WHERE n.status IN ['active', 'pending'] RETURN n").unwrap();
 
         let graph = DirGraph::new();
         let params = HashMap::new();
@@ -3817,9 +3797,7 @@ mod tests {
 
     #[test]
     fn test_skip_clause_parsing() {
-        let mut query = parse_cypher(
-            "MATCH (n) RETURN n SKIP 5"
-        ).unwrap();
+        let mut query = parse_cypher("MATCH (n) RETURN n SKIP 5").unwrap();
 
         let graph = DirGraph::new();
         let params = HashMap::new();
@@ -3832,26 +3810,24 @@ mod tests {
 
     #[test]
     fn test_optional_match_preserved() {
-        let mut query = parse_cypher(
-            "MATCH (n) OPTIONAL MATCH (n)-[r]->(m) RETURN n, m"
-        ).unwrap();
+        let mut query = parse_cypher("MATCH (n) OPTIONAL MATCH (n)-[r]->(m) RETURN n, m").unwrap();
 
         let graph = DirGraph::new();
         let params = HashMap::new();
         optimize(&mut query, &graph, &params);
 
         // OptionalMatch clause should be preserved
-        let has_optional = query.clauses.iter().any(|c| {
-            matches!(c, Clause::OptionalMatch(_))
-        });
+        let has_optional = query
+            .clauses
+            .iter()
+            .any(|c| matches!(c, Clause::OptionalMatch(_)));
         assert!(has_optional);
     }
 
     #[test]
     fn test_where_with_and() {
-        let mut query = parse_cypher(
-            "MATCH (n:Person) WHERE n.age > 25 AND n.age < 65 RETURN n"
-        ).unwrap();
+        let mut query =
+            parse_cypher("MATCH (n:Person) WHERE n.age > 25 AND n.age < 65 RETURN n").unwrap();
 
         let graph = DirGraph::new();
         let params = HashMap::new();
@@ -3868,9 +3844,8 @@ mod tests {
     #[test]
     fn test_case_insensitive_type_function() {
         // Test that type() function matching is case-insensitive
-        let mut query = parse_cypher(
-            "MATCH (s)-[r]->(e) WHERE TYPE(r) = 'HasRole' RETURN r"
-        ).unwrap();
+        let mut query =
+            parse_cypher("MATCH (s)-[r]->(e) WHERE TYPE(r) = 'HasRole' RETURN r").unwrap();
 
         let graph = DirGraph::new();
         let params = HashMap::new();
@@ -3890,9 +3865,8 @@ mod tests {
 
     #[test]
     fn test_property_in_list_with_vars() {
-        let mut query = parse_cypher(
-            "MATCH (n) WHERE n.status IN ['a', 'b', 'c'] RETURN n"
-        ).unwrap();
+        let mut query =
+            parse_cypher("MATCH (n) WHERE n.status IN ['a', 'b', 'c'] RETURN n").unwrap();
 
         let graph = DirGraph::new();
         let params = HashMap::new();

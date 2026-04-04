@@ -302,8 +302,8 @@ mod tests {
         let result = expand_selection(&graph, &mut selection, 1);
         // Should return Result type
         match result {
-            Ok(_) => {},
-            Err(_) => {},
+            Ok(_) => {}
+            Err(_) => {}
         }
     }
 
@@ -315,8 +315,8 @@ mod tests {
         let result = extract_subgraph(&source, &selection);
         // Result should be Result<DirGraph, String>
         match result {
-            Ok(_graph) => {},
-            Err(_) => {},
+            Ok(_graph) => {}
+            Err(_) => {}
         }
     }
 
@@ -328,8 +328,8 @@ mod tests {
         let result = get_subgraph_stats(&source, &selection);
         // Result should be Result<SubgraphStats, String>
         match result {
-            Ok(_stats) => {},
-            Err(_) => {},
+            Ok(_stats) => {}
+            Err(_) => {}
         }
     }
 }

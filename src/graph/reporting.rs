@@ -175,13 +175,7 @@ mod tests {
 
     #[test]
     fn test_node_operation_report_new() {
-        let report = NodeOperationReport::new(
-            "add_nodes".to_string(),
-            5,
-            0,
-            0,
-            10.5,
-        );
+        let report = NodeOperationReport::new("add_nodes".to_string(), 5, 0, 0, 10.5);
         assert_eq!(report.operation_type, "add_nodes");
         assert_eq!(report.nodes_created, 5);
         assert_eq!(report.nodes_updated, 0);
@@ -193,26 +187,15 @@ mod tests {
     #[test]
     fn test_node_operation_report_with_errors() {
         let errors = vec!["error1".to_string(), "error2".to_string()];
-        let report = NodeOperationReport::new(
-            "add_nodes".to_string(),
-            5,
-            0,
-            0,
-            10.5,
-        ).with_errors(errors.clone());
+        let report = NodeOperationReport::new("add_nodes".to_string(), 5, 0, 0, 10.5)
+            .with_errors(errors.clone());
 
         assert_eq!(report.errors, errors);
     }
 
     #[test]
     fn test_connection_operation_report_new() {
-        let report = ConnectionOperationReport::new(
-            "add_connections".to_string(),
-            10,
-            2,
-            3,
-            20.5,
-        );
+        let report = ConnectionOperationReport::new("add_connections".to_string(), 10, 2, 3, 20.5);
         assert_eq!(report.operation_type, "add_connections");
         assert_eq!(report.connections_created, 10);
         assert_eq!(report.connections_skipped, 2);
@@ -224,13 +207,8 @@ mod tests {
     #[test]
     fn test_connection_operation_report_with_errors() {
         let errors = vec!["connection error".to_string()];
-        let report = ConnectionOperationReport::new(
-            "add_connections".to_string(),
-            10,
-            2,
-            3,
-            20.5,
-        ).with_errors(errors.clone());
+        let report = ConnectionOperationReport::new("add_connections".to_string(), 10, 2, 3, 20.5)
+            .with_errors(errors.clone());
 
         assert_eq!(report.errors, errors);
     }
@@ -281,7 +259,8 @@ mod tests {
             5,
             15.0,
             false,
-        ).with_errors(errors.clone());
+        )
+        .with_errors(errors.clone());
 
         assert_eq!(report.errors, errors);
     }
@@ -297,13 +276,7 @@ mod tests {
     #[test]
     fn test_operation_reports_add_single() {
         let mut reports = OperationReports::new();
-        let report = NodeOperationReport::new(
-            "test".to_string(),
-            1,
-            0,
-            0,
-            1.0,
-        );
+        let report = NodeOperationReport::new("test".to_string(), 1, 0, 0, 1.0);
         let index = reports.add_report(OperationReport::NodeOperation(report));
 
         assert_eq!(index, 1);
@@ -334,13 +307,7 @@ mod tests {
 
         // Add more than MAX_REPORT_HISTORY reports
         for i in 0..15 {
-            let report = NodeOperationReport::new(
-                format!("op{}", i),
-                i as usize,
-                0,
-                0,
-                1.0,
-            );
+            let report = NodeOperationReport::new(format!("op{}", i), i as usize, 0, 0, 1.0);
             reports.add_report(OperationReport::NodeOperation(report));
         }
 
@@ -355,13 +322,7 @@ mod tests {
 
         // Add 12 reports
         for i in 0..12 {
-            let report = NodeOperationReport::new(
-                format!("op{}", i),
-                i as usize,
-                0,
-                0,
-                1.0,
-            );
+            let report = NodeOperationReport::new(format!("op{}", i), i as usize, 0, 0, 1.0);
             reports.add_report(OperationReport::NodeOperation(report));
         }
 

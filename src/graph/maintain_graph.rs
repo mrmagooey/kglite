@@ -4462,7 +4462,16 @@ mod tests {
 
     #[test]
     fn test_is_aggregate_expr_all_valid() {
-        let agg_fns = vec!["count(*)", "sum(x)", "mean(x)", "avg(x)", "min(x)", "max(x)", "std(x)", "collect(x)"];
+        let agg_fns = vec![
+            "count(*)",
+            "sum(x)",
+            "mean(x)",
+            "avg(x)",
+            "min(x)",
+            "max(x)",
+            "std(x)",
+            "collect(x)",
+        ];
         for fn_name in agg_fns {
             assert!(is_aggregate_expr(fn_name));
         }
@@ -4517,7 +4526,13 @@ mod tests {
 
     #[test]
     fn test_is_spatial_compute_all_valid() {
-        let spatial_fns = vec!["distance", "area", "perimeter", "centroid_lat", "centroid_lon"];
+        let spatial_fns = vec![
+            "distance",
+            "area",
+            "perimeter",
+            "centroid_lat",
+            "centroid_lon",
+        ];
         for fn_name in spatial_fns {
             assert!(is_spatial_compute(fn_name));
         }
@@ -4640,7 +4655,7 @@ mod tests {
     fn test_property_spec_copy_all() {
         let spec = PropertySpec::CopyAll;
         match spec {
-            PropertySpec::CopyAll => {},
+            PropertySpec::CopyAll => {}
             _ => panic!("Expected CopyAll"),
         }
     }

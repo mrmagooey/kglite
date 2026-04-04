@@ -445,8 +445,7 @@ class TestAllShortestPaths:
     def test_diamond_returns_two_paths(self, diamond_graph):
         """Diamond graph has two shortest paths from A to D — both returned."""
         result = diamond_graph.cypher(
-            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[:EDGE*..10]->(b:Node {name: 'D'})) "
-            "RETURN length(p)"
+            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[:EDGE*..10]->(b:Node {name: 'D'})) RETURN length(p)"
         )
         assert len(result) == 2
         assert all(row["length(p)"] == 2 for row in result)
@@ -454,8 +453,7 @@ class TestAllShortestPaths:
     def test_diamond_all_intermediate_nodes_covered(self, diamond_graph):
         """The two paths through B and C are both found."""
         result = diamond_graph.cypher(
-            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[:EDGE*..10]->(b:Node {name: 'D'})) "
-            "RETURN nodes(p)"
+            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[:EDGE*..10]->(b:Node {name: 'D'})) RETURN nodes(p)"
         )
         intermediates = {row["nodes(p)"][1]["title"] for row in result}
         assert intermediates == {"B", "C"}
@@ -481,8 +479,7 @@ class TestAllShortestPaths:
     def test_length_function(self, diamond_graph):
         """length(p) works correctly for allShortestPaths results."""
         result = diamond_graph.cypher(
-            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[:EDGE*..10]->(b:Node {name: 'D'})) "
-            "RETURN length(p)"
+            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[:EDGE*..10]->(b:Node {name: 'D'})) RETURN length(p)"
         )
         for row in result:
             assert row["length(p)"] == 2
@@ -490,8 +487,7 @@ class TestAllShortestPaths:
     def test_nodes_function(self, diamond_graph):
         """nodes(p) returns correct node lists for each path."""
         result = diamond_graph.cypher(
-            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[:EDGE*..10]->(b:Node {name: 'D'})) "
-            "RETURN nodes(p)"
+            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[:EDGE*..10]->(b:Node {name: 'D'})) RETURN nodes(p)"
         )
         for row in result:
             nodes = row["nodes(p)"]
@@ -531,8 +527,7 @@ class TestAllShortestPaths:
     def test_adjacent_nodes_single_path(self, diamond_graph):
         """Directly connected nodes have exactly one shortest path."""
         result = diamond_graph.cypher(
-            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[:EDGE*..10]->(b:Node {name: 'B'})) "
-            "RETURN length(p)"
+            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[:EDGE*..10]->(b:Node {name: 'B'})) RETURN length(p)"
         )
         assert len(result) == 1
         assert result[0]["length(p)"] == 1
@@ -540,8 +535,7 @@ class TestAllShortestPaths:
     def test_shortcut_only_shortest_returned(self, shortcut_graph):
         """Only the shortest path (direct edge) is returned, not longer alternatives."""
         result = shortcut_graph.cypher(
-            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[*..10]->(b:Node {name: 'C'})) "
-            "RETURN length(p)"
+            "MATCH p = allShortestPaths((a:Node {name: 'A'})-[*..10]->(b:Node {name: 'C'})) RETURN length(p)"
         )
         # Direct shortcut A->C (length 1) is shorter than A->B->C (length 2)
         assert len(result) == 1

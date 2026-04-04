@@ -2696,7 +2696,11 @@ mod tests {
 
     #[test]
     fn test_json_value_edge_ref() {
-        let result = json_value(&Value::EdgeRef { edge_idx: 10, src_idx: 0, dst_idx: 1 });
+        let result = json_value(&Value::EdgeRef {
+            edge_idx: 10,
+            src_idx: 0,
+            dst_idx: 1,
+        });
         assert_eq!(result, "10");
     }
 
@@ -2762,11 +2766,7 @@ mod tests {
         let val_str = Value::String("test".to_string());
         let val_int = Value::Int64(42);
         let val_bool = Value::Boolean(true);
-        let props = vec![
-            ("str", &val_str),
-            ("num", &val_int),
-            ("flag", &val_bool),
-        ];
+        let props = vec![("str", &val_str), ("num", &val_int), ("flag", &val_bool)];
         let result = properties_to_json(props.into_iter());
         assert!(result.contains("\"str\""));
         assert!(result.contains("\"num\""));
@@ -2777,10 +2777,7 @@ mod tests {
     fn test_properties_to_json_multiple_properties() {
         let bob = Value::String("Bob".to_string());
         let age = Value::Int64(30);
-        let props = vec![
-            ("name", &bob),
-            ("age", &age),
-        ];
+        let props = vec![("name", &bob), ("age", &age)];
         let result = properties_to_json(props.into_iter());
         assert!(result.contains("\"name\""));
         assert!(result.contains("\"Bob\""));
@@ -2809,10 +2806,7 @@ mod tests {
     #[test]
     fn test_properties_to_json_special_names() {
         let v = Value::String("value".to_string());
-        let props = vec![
-            ("name-with-dash", &v),
-            ("name.with.dot", &v),
-        ];
+        let props = vec![("name-with-dash", &v), ("name.with.dot", &v)];
         let result = properties_to_json(props.into_iter());
         assert!(result.contains("\"name-with-dash\""));
         assert!(result.contains("\"name.with.dot\""));
@@ -2835,7 +2829,11 @@ mod tests {
     #[test]
     fn test_value_to_string_edge_ref() {
         assert_eq!(
-            value_to_string(&Value::EdgeRef { edge_idx: 10, src_idx: 0, dst_idx: 1 }),
+            value_to_string(&Value::EdgeRef {
+                edge_idx: 10,
+                src_idx: 0,
+                dst_idx: 1
+            }),
             "edge#10"
         );
     }
@@ -2855,7 +2853,10 @@ mod tests {
 
     #[test]
     fn test_value_to_string_large_int() {
-        assert_eq!(value_to_string(&Value::Int64(i64::MAX)), "9223372036854775807");
+        assert_eq!(
+            value_to_string(&Value::Int64(i64::MAX)),
+            "9223372036854775807"
+        );
     }
 
     #[test]
@@ -2878,7 +2879,14 @@ mod tests {
             (Value::Null, "string"),
             (Value::UniqueId(0), "int"),
             (Value::NodeRef(0), "int"),
-            (Value::EdgeRef { edge_idx: 0, src_idx: 0, dst_idx: 0 }, "int"),
+            (
+                Value::EdgeRef {
+                    edge_idx: 0,
+                    src_idx: 0,
+                    dst_idx: 0,
+                },
+                "int",
+            ),
         ];
         for (val, expected_type) in values {
             assert_eq!(value_type_name(&val), expected_type);
@@ -2888,7 +2896,11 @@ mod tests {
     #[test]
     fn test_value_type_name_edge_ref() {
         assert_eq!(
-            value_type_name(&Value::EdgeRef { edge_idx: 1, src_idx: 0, dst_idx: 2 }),
+            value_type_name(&Value::EdgeRef {
+                edge_idx: 1,
+                src_idx: 0,
+                dst_idx: 2
+            }),
             "int"
         );
     }

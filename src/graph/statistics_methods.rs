@@ -246,8 +246,14 @@ mod tests {
 
     #[test]
     fn test_try_convert_to_float_string() {
-        assert_eq!(try_convert_to_float(&Value::String("5.5".to_string())), Some(5.5));
-        assert_eq!(try_convert_to_float(&Value::String("not_a_number".to_string())), None);
+        assert_eq!(
+            try_convert_to_float(&Value::String("5.5".to_string())),
+            Some(5.5)
+        );
+        assert_eq!(
+            try_convert_to_float(&Value::String("not_a_number".to_string())),
+            None
+        );
     }
 
     #[test]
@@ -262,6 +268,11 @@ mod tests {
 
     #[test]
     fn test_try_convert_to_float_datetime() {
-        assert_eq!(try_convert_to_float(&Value::DateTime(chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap())), None);
+        assert_eq!(
+            try_convert_to_float(&Value::DateTime(
+                chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap()
+            )),
+            None
+        );
     }
 }

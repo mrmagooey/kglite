@@ -2186,10 +2186,8 @@ mod tests {
 
     #[test]
     fn test_embedding_export_filter_types() {
-        let filter = EmbeddingExportFilter::Types(vec![
-            "Person".to_string(),
-            "Company".to_string(),
-        ]);
+        let filter =
+            EmbeddingExportFilter::Types(vec!["Person".to_string(), "Company".to_string()]);
 
         match filter {
             EmbeddingExportFilter::Types(types) => {
@@ -2308,10 +2306,7 @@ mod tests {
         let deserialized: FileMetadata = serde_json::from_str(&json).unwrap();
 
         assert_eq!(deserialized.column_sections.len(), 1);
-        assert_eq!(
-            deserialized.column_sections[0].type_name,
-            "Node"
-        );
+        assert_eq!(deserialized.column_sections[0].type_name, "Node");
     }
 
     #[test]
@@ -2340,7 +2335,9 @@ mod tests {
     #[test]
     fn test_file_metadata_id_field_aliases() {
         let mut metadata = FileMetadata::default();
-        metadata.id_field_aliases.insert("Person".to_string(), "person_id".to_string());
+        metadata
+            .id_field_aliases
+            .insert("Person".to_string(), "person_id".to_string());
 
         let json = serde_json::to_string(&metadata).unwrap();
         let deserialized: FileMetadata = serde_json::from_str(&json).unwrap();
@@ -2353,7 +2350,9 @@ mod tests {
         let mut metadata = FileMetadata::default();
         let mut type_meta = HashMap::new();
         type_meta.insert("name".to_string(), "string".to_string());
-        metadata.node_type_metadata.insert("Person".to_string(), type_meta);
+        metadata
+            .node_type_metadata
+            .insert("Person".to_string(), type_meta);
 
         let json = serde_json::to_string(&metadata).unwrap();
         let deserialized: FileMetadata = serde_json::from_str(&json).unwrap();
@@ -2409,7 +2408,9 @@ mod tests {
     #[test]
     fn test_file_metadata_title_field_aliases() {
         let mut metadata = FileMetadata::default();
-        metadata.title_field_aliases.insert("Company".to_string(), "company_name".to_string());
+        metadata
+            .title_field_aliases
+            .insert("Company".to_string(), "company_name".to_string());
 
         let json = serde_json::to_string(&metadata).unwrap();
         let deserialized: FileMetadata = serde_json::from_str(&json).unwrap();

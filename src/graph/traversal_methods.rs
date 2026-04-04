@@ -4479,7 +4479,11 @@ mod tests {
 
     #[test]
     fn test_format_property_list_basic() {
-        let values = vec!["Alice".to_string(), "Bob".to_string(), "Charlie".to_string()];
+        let values = vec![
+            "Alice".to_string(),
+            "Bob".to_string(),
+            "Charlie".to_string(),
+        ];
         let result = format_property_list(&values, None);
         assert_eq!(result, "Alice, Bob, Charlie");
     }

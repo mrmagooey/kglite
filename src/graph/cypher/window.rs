@@ -263,7 +263,7 @@ impl CypherExecutor<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use petgraph::graph::{NodeIndex, EdgeIndex};
+    use petgraph::graph::{EdgeIndex, NodeIndex};
 
     #[test]
     fn test_bindings_with_window_functions() {
@@ -272,14 +272,18 @@ mod tests {
         bindings.insert("col2".to_string(), Value::String("test".to_string()));
 
         assert_eq!(bindings.get("col1"), Some(&Value::Int64(42)));
-        assert_eq!(bindings.get("col2"), Some(&Value::String("test".to_string())));
+        assert_eq!(
+            bindings.get("col2"),
+            Some(&Value::String("test".to_string()))
+        );
         assert_eq!(bindings.len(), 2);
     }
 
     #[test]
     fn test_result_row_projected_values() {
         let mut row = ResultRow::new();
-        row.projected.insert("row_number".to_string(), Value::Int64(1));
+        row.projected
+            .insert("row_number".to_string(), Value::Int64(1));
         row.projected.insert("rank".to_string(), Value::Int64(1));
         row.projected.insert("value".to_string(), Value::Int64(100));
 
@@ -354,11 +358,7 @@ mod tests {
 
     #[test]
     fn test_value_comparison_ordering() {
-        let vals = vec![
-            Value::Int64(3),
-            Value::Int64(1),
-            Value::Int64(2),
-        ];
+        let vals = vec![Value::Int64(3), Value::Int64(1), Value::Int64(2)];
 
         assert_ne!(vals[0], vals[1]);
         assert_ne!(vals[1], vals[2]);

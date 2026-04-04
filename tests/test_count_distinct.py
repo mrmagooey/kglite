@@ -98,16 +98,12 @@ class TestCountDistinctNode:
 
     def test_fan_in_counts_one_city(self, fan_in):
         """Two edges pointing to same city node → count(DISTINCT c) == 1."""
-        r = fan_in.cypher(
-            "MATCH (p:Person)-[:LIVES_IN]->(c:City) RETURN count(DISTINCT c) AS cnt"
-        )
+        r = fan_in.cypher("MATCH (p:Person)-[:LIVES_IN]->(c:City) RETURN count(DISTINCT c) AS cnt")
         assert r[0]["cnt"] == 1
 
     def test_fan_in_without_distinct_counts_edges(self, fan_in):
         """count(c) without DISTINCT counts each occurrence (one per edge)."""
-        r = fan_in.cypher(
-            "MATCH (p:Person)-[:LIVES_IN]->(c:City) RETURN count(c) AS cnt"
-        )
+        r = fan_in.cypher("MATCH (p:Person)-[:LIVES_IN]->(c:City) RETURN count(c) AS cnt")
         assert r[0]["cnt"] == 2
 
 
@@ -119,27 +115,21 @@ class TestCountDistinctNode:
 class TestCountDistinctGrouped:
     def test_grouped_by_city_distinct_age(self, people):
         """Each city has 2 people with the same age; distinct age count per city == 1."""
-        r = people.cypher(
-            "MATCH (n:Person) RETURN n.city, count(DISTINCT n.age) AS cnt ORDER BY n.city"
-        )
+        r = people.cypher("MATCH (n:Person) RETURN n.city, count(DISTINCT n.age) AS cnt ORDER BY n.city")
         by_city = {row["n.city"]: row["cnt"] for row in r}
         assert by_city["NYC"] == 1  # both age 30
-        assert by_city["LA"] == 1   # both age 25
+        assert by_city["LA"] == 1  # both age 25
 
     def test_grouped_by_city_plain_count(self, people):
         """Plain count(n.age) per city returns 2 for cities with 2 people."""
-        r = people.cypher(
-            "MATCH (n:Person) RETURN n.city, count(n.age) AS cnt ORDER BY n.city"
-        )
+        r = people.cypher("MATCH (n:Person) RETURN n.city, count(n.age) AS cnt ORDER BY n.city")
         by_city = {row["n.city"]: row["cnt"] for row in r}
         assert by_city["NYC"] == 2
         assert by_city["LA"] == 2
 
     def test_group_with_all_distinct_values(self, people):
         """count(DISTINCT n.name) per city == count(n.name) since names are unique."""
-        r = people.cypher(
-            "MATCH (n:Person) RETURN n.city, count(DISTINCT n.name) AS cnt ORDER BY n.city"
-        )
+        r = people.cypher("MATCH (n:Person) RETURN n.city, count(DISTINCT n.name) AS cnt ORDER BY n.city")
         by_city = {row["n.city"]: row["cnt"] for row in r}
         assert by_city["NYC"] == 2
         assert by_city["LA"] == 2
@@ -153,24 +143,19 @@ class TestCountDistinctGrouped:
 class TestCountDistinctWithClause:
     def test_with_count_distinct(self, people):
         """count(DISTINCT n.city) in WITH propagates correctly."""
-        r = people.cypher(
-            "MATCH (n:Person) WITH count(DISTINCT n.city) AS cnt RETURN cnt"
-        )
+        r = people.cypher("MATCH (n:Person) WITH count(DISTINCT n.city) AS cnt RETURN cnt")
         assert r[0]["cnt"] == 2
 
     def test_with_count_distinct_filtered(self, people):
         """WITH ... WHERE cnt > N filters on the distinct count."""
-        r = people.cypher(
-            "MATCH (n:Person) WITH count(DISTINCT n.city) AS cnt WHERE cnt > 1 RETURN cnt"
-        )
+        r = people.cypher("MATCH (n:Person) WITH count(DISTINCT n.city) AS cnt WHERE cnt > 1 RETURN cnt")
         assert len(r) == 1
         assert r[0]["cnt"] == 2
 
     def test_with_count_distinct_group_key(self, people):
         """GROUP BY city in WITH with count(DISTINCT n.age)."""
         r = people.cypher(
-            "MATCH (n:Person) WITH n.city AS city, count(DISTINCT n.age) AS cnt "
-            "RETURN city, cnt ORDER BY city"
+            "MATCH (n:Person) WITH n.city AS city, count(DISTINCT n.age) AS cnt RETURN city, cnt ORDER BY city"
         )
         by_city = {row["city"]: row["cnt"] for row in r}
         assert by_city["NYC"] == 1

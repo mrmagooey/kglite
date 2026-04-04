@@ -26,3 +26,4 @@ kglite.KnowledgeGraph.traverse
 # The overloads are correct for type-checking but structurally differ from runtime.
 kglite.KnowledgeGraph.sample
 kglite.KnowledgeGraph.embeddings
+kglite.to_neo4j
