@@ -1174,7 +1174,7 @@ impl<'a> PatternExecutor<'a> {
                         self.expand_from_node(source_idx, edge_pattern, node_pattern)?;
                     for (target_idx, edge_binding) in expansions {
                         expand_count += 1;
-                        if expand_count.is_multiple_of(1024) {
+                        if expand_count % 1024 == 0 {
                             if let Some(dl) = self.deadline {
                                 if Instant::now() > dl {
                                     return Err("Query timed out".to_string());
@@ -2046,7 +2046,7 @@ impl<'a> PatternExecutor<'a> {
         let mut vlp_count: usize = 0;
         while let Some((current, depth, path)) = queue.pop_front() {
             vlp_count += 1;
-            if vlp_count.is_multiple_of(512) {
+            if vlp_count % 512 == 0 {
                 if let Some(dl) = self.deadline {
                     if Instant::now() > dl {
                         return Err("Query timed out".to_string());

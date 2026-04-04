@@ -10,7 +10,7 @@ use rayon::prelude::*;
 
 use super::ast::{is_window_expression, Expression, OrderItem, ReturnClause};
 use super::executor::{return_item_column_name, CypherExecutor, RAYON_THRESHOLD};
-use super::result::{Bindings, ClauseStats, ResultRow, ResultSet};
+use super::result::{Bindings, ResultRow, ResultSet};
 use crate::datatypes::values::Value;
 use crate::graph::{filtering_methods, value_operations};
 

@@ -8698,7 +8698,7 @@ fn execute_merge(
 
             // Merge newly created bindings into our row and update property indexes
             if let Some(created_row) = created.rows.into_iter().next() {
-                for (var, idx) in &created_row.node_bindings {
+                for (_var, idx) in &created_row.node_bindings {
                     // Update property indexes for the newly created node
                     if let Some(node) = graph.graph.node_weight(*idx) {
                         let label = node.node_type.clone();
@@ -8821,7 +8821,7 @@ fn try_match_merge_pattern(
                         }
                     }
                     // Also check other primary types for secondary label match
-                    for (other_type, _) in &graph.type_indices {
+                    for other_type in graph.type_indices.keys() {
                         if other_type.as_str() == label {
                             continue;
                         }
@@ -8855,7 +8855,7 @@ fn try_match_merge_pattern(
                         }
                     }
                     // Secondary label: scan other type indexes
-                    for (other_type, _) in &graph.type_indices {
+                    for other_type in graph.type_indices.keys() {
                         if other_type.as_str() == label {
                             continue;
                         }

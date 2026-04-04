@@ -306,7 +306,7 @@ fn reconstruct_path_bfs(
     while let Some(current_idx) = queue.pop_front() {
         // Periodic timeout check (every 1000 nodes)
         visit_count += 1;
-        if visit_count.is_multiple_of(1000) {
+        if visit_count % 1000 == 0 {
             if let Some(dl) = deadline {
                 if Instant::now() > dl {
                     return None;
@@ -395,7 +395,7 @@ pub fn shortest_path_directed(
     while let Some(current_idx) = queue.pop_front() {
         // Periodic timeout check
         visit_count += 1;
-        if visit_count.is_multiple_of(1000) {
+        if visit_count % 1000 == 0 {
             if let Some(dl) = deadline {
                 if Instant::now() > dl {
                     return None;
@@ -496,7 +496,7 @@ pub fn all_shortest_paths(
                 }
 
                 visit_count += 1;
-                if visit_count.is_multiple_of(1000) {
+                if visit_count % 1000 == 0 {
                     if let Some(dl) = deadline {
                         if Instant::now() > dl {
                             return Vec::new();
@@ -616,7 +616,7 @@ pub fn all_shortest_paths_directed(
                 }
 
                 visit_count += 1;
-                if visit_count.is_multiple_of(1000) {
+                if visit_count % 1000 == 0 {
                     if let Some(dl) = deadline {
                         if Instant::now() > dl {
                             return Vec::new();
@@ -1139,7 +1139,7 @@ pub fn betweenness_centrality(
 
         for (source_counter, &s_idx) in source_indices.iter().enumerate() {
             // Periodic timeout check (every 10 source nodes)
-            if source_counter.is_multiple_of(10) {
+            if source_counter % 10 == 0 {
                 if let Some(dl) = deadline {
                     if Instant::now() > dl {
                         break;
@@ -1613,7 +1613,7 @@ pub fn closeness_centrality(
         let source = nodes[s_idx];
 
         // Periodic timeout check (every 10 source nodes)
-        if i.is_multiple_of(10) {
+        if i % 10 == 0 {
             if let Some(dl) = deadline {
                 if Instant::now() > dl {
                     break;

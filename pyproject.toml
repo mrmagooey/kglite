@@ -73,7 +73,7 @@ known-first-party = ["kglite"]
 force-sort-within-sections = true
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["E402"]
+"tests/*" = ["E402", "E501"]
 "benchmarks/*" = ["E402"]
 
 [tool.pytest.ini_options]
