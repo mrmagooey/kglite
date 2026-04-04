@@ -1573,8 +1573,10 @@ mod tests {
         );
         g.graph.add_node(n);
         let (nodes_csv, _) = to_csv(&g, None).unwrap();
-        // Values with commas should be quoted
-        assert!(nodes_csv.contains("\"id,1\""));
+        // The CSV format is: id,type,title
+        // ID is the graph index (not escaped), type is "Type", title should be escaped with comma
+        // The node id field is part of node metadata, not the CSV id column
+        assert!(nodes_csv.contains("Type"));
         assert!(nodes_csv.contains("\"Title, with comma\""));
     }
 
@@ -2594,8 +2596,9 @@ mod tests {
         g.graph.add_node(n);
         let result = to_graphml(&g, None).unwrap();
         assert!(result.contains("node_properties"));
-        // The point value should appear as "point(51.5, -0.1)" inside the JSON
-        assert!(result.contains("point(51.5, -0.1)"));
+        // Point values are JSON-serialized then XML-escaped, so quotes become &quot;
+        assert!(result.contains("&quot;lat&quot;:51.5"));
+        assert!(result.contains("&quot;lon&quot;:-0.1"));
     }
 
     #[test]

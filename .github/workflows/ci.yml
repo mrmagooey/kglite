@@ -31,6 +31,12 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+
       - name: Check formatting
         run: cargo fmt -- --check
 
@@ -38,10 +44,16 @@ jobs:
         run: cargo clippy -- -D warnings
 
       - name: Run Rust tests
-        run: cargo test
+        run: |
+          PYTHON_LIB=$(python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
+          PYTHON_VER=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+          RUSTFLAGS="-L${PYTHON_LIB} -lpython${PYTHON_VER}" cargo test
 
       - name: Run Rust FFI tests
-        run: cargo test --features ffi --no-default-features
+        run: |
+          PYTHON_LIB=$(python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
+          PYTHON_VER=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+          RUSTFLAGS="-L${PYTHON_LIB} -lpython${PYTHON_VER}" cargo test --features ffi --no-default-features
 
   rust-msrv:
     name: Rust MSRV

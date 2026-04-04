@@ -1019,7 +1019,7 @@ pub struct SaveMetadata {
 impl SaveMetadata {
     pub fn current() -> Self {
         SaveMetadata {
-            format_version: 2,
+            format_version: 3,
             library_version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }

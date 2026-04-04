@@ -410,6 +410,13 @@ fn load_v3(buf: &[u8]) -> io::Result<KnowledgeGraph> {
     let topology_start = metadata_end;
     let topology_end = topology_start + metadata.topology_compressed_size as usize;
 
+    // Check bounds before accessing topology section
+    if buf.len() < topology_end {
+        return Err(io::Error::other(
+            "v3 file is truncated — topology section incomplete.",
+        ));
+    }
+
     // Decompress + deserialize topology (properties are empty maps)
     let topology_compressed = &buf[topology_start..topology_end];
     let topology_raw = zstd_decompress(topology_compressed)?;
@@ -1346,12 +1353,15 @@ mod tests {
     fn test_load_file_large_file_uses_mmap_path() {
         // Write a valid v3 file larger than FILE_MMAP_THRESHOLD (64KB)
         let mut g = DirGraph::new();
-        // Add enough nodes to produce a file > 64KB
-        for i in 0..500 {
+        // Add enough nodes to produce a file > 64KB. Use unique per-node strings that
+        // are long enough that even with compression the file exceeds FILE_MMAP_THRESHOLD.
+        for i in 0..2000 {
             let mut props = HashMap::new();
+            // Build a unique 500-char string per node to resist compression
+            let unique_part: String = (0..50).map(|j| format!("{:010}", i * 50 + j)).collect();
             props.insert(
                 "data".to_string(),
-                Value::String(format!("value_{:0>100}", i)),
+                Value::String(unique_part),
             );
             let node = NodeData::new(
                 Value::Int64(i),
@@ -1387,7 +1397,7 @@ mod tests {
         );
 
         let kg = load_file(path).unwrap();
-        assert_eq!(kg.inner.graph.node_count(), 500);
+        assert_eq!(kg.inner.graph.node_count(), 2000);
     }
 
     #[test]
