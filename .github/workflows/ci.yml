@@ -197,6 +197,52 @@ jobs:
           comment-on-alert: true
           fail-on-alert: false
 
+  rust-benchmarks:
+    name: Rust Benchmarks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Cache cargo registry & target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-rustbench-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-rustbench-
+
+      - name: Run Rust benchmarks
+        run: |
+          PYTHON_LIB=$(python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
+          PYTHON_VER=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+          RUSTFLAGS="-L${PYTHON_LIB} -lpython${PYTHON_VER}" cargo bench --bench graph_benchmarks -- --output-format bencher 2>&1 | tee rust-benchmark-results.txt
+
+      - name: Store Rust benchmark result
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: 'cargo'
+          output-file-path: rust-benchmark-results.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          alert-threshold: '150%'
+          comment-on-alert: true
+          fail-on-alert: false
+          benchmark-data-dir-path: dev/bench/rust
+
   cargo-audit:
     name: Security audit
     runs-on: ubuntu-latest

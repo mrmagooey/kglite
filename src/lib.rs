@@ -101,8 +101,8 @@ static GLOBAL: tracking_alloc::TrackingAllocator = tracking_alloc::TrackingAlloc
 
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
-pub(crate) mod datatypes;
-pub(crate) mod graph;
+pub mod datatypes;
+pub mod graph;
 #[cfg(feature = "python")]
 use graph::cypher::{ResultIter, ResultView};
 #[cfg(feature = "python")]

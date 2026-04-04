@@ -11,7 +11,7 @@ license = "MIT"
 
 [lib]
 name = "kglite"
-crate-type = ["cdylib", "staticlib"]
+crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
 # python: enables PyO3 bindings (default for maturin / pip builds)
@@ -37,6 +37,11 @@ memmap2 = "0.9"
 
 [dev-dependencies]
 tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "graph_benchmarks"
+harness = false
 
 [profile.release]
 lto = "thin"
