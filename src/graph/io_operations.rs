@@ -1359,10 +1359,7 @@ mod tests {
             let mut props = HashMap::new();
             // Build a unique 500-char string per node to resist compression
             let unique_part: String = (0..50).map(|j| format!("{:010}", i * 50 + j)).collect();
-            props.insert(
-                "data".to_string(),
-                Value::String(unique_part),
-            );
+            props.insert("data".to_string(), Value::String(unique_part));
             let node = NodeData::new(
                 Value::Int64(i),
                 Value::String(format!("Node {}", i)),
