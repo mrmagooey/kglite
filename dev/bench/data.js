@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775279371894,
+  "lastUpdate": 1775282550325,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -297,6 +297,105 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.000014283953508395782",
             "extra": "mean: 744.6868389088679 usec\nrounds: 1136"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "b67cade34df8af5056bf6d1a8dd85c07bc697c60",
+          "message": "fix: resolve clippy errors and doc-test failures from pub module exposure\n\nClippy (14 errors fixed):\n- Make TemporalContext, MethodConfig, SpatialResolve pub to satisfy private\n  type in public interface lint (mod.rs, traversal_methods.rs)\n- Add is_empty() to TypedColumn, TypeSchema, EmbeddingStore (column_store.rs,\n  schema.rs)\n- Add Default impls for ResultRow, ResultSet, TypeSchema, SelectionLevel,\n  DirGraph (result.rs, schema.rs)\n- Allow result_unit_err on TypedColumn::push/set (column_store.rs)\n- Allow should_implement_trait on InternedKey::from_str (schema.rs)\n- Replace or_insert_with(TypeSchema::new) with or_default() (schema.rs)\n- Replace len() > 0 with !is_empty() (mod.rs)\n\nDoc-tests (16 failures fixed):\n- Convert RST-style indented code blocks to fenced ```python blocks in\n  result_view.rs and mod.rs\n- Remove extra 4-space indent from fenced code blocks in pymethods_export.rs,\n  pymethods_indexes.rs, mod.rs (caused Rust to misparse as indented blocks)\n\ncargo fmt: apply formatting to benches/graph_benchmarks.rs\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>",
+          "timestamp": "2026-04-04T16:43:26+11:00",
+          "tree_id": "b3dafd313b4e6716b5eb475ea7c5a8678b108aa1",
+          "url": "https://github.com/mrmagooey/kglite/commit/b67cade34df8af5056bf6d1a8dd85c07bc697c60"
+        },
+        "date": 1775282549474,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_nodes",
+            "value": 1109.966430617837,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000019680246053186494",
+            "extra": "mean: 900.9281473885416 usec\nrounds: 536"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_connections",
+            "value": 800.2646217469953,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000030854000577364795",
+            "extra": "mean: 1.249586665242027 msec\nrounds: 702"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_match",
+            "value": 12999.094086295385,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000008738991025911333",
+            "extra": "mean: 76.92843773277053 usec\nrounds: 7516"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_where",
+            "value": 1576.6555346826262,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00002308771747835966",
+            "extra": "mean: 634.2539495802395 usec\nrounds: 952"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_traversal",
+            "value": 695781.5840084944,
+            "unit": "iter/sec",
+            "range": "stddev: 3.9490233397047637e-7",
+            "extra": "mean: 1.4372326359068905 usec\nrounds: 73557"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_shortest_path",
+            "value": 136001.8125766214,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000011042630869721464",
+            "extra": "mean: 7.352843179473178 usec\nrounds: 23766"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_enable",
+            "value": 2891.4604546732785,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000012327320062986467",
+            "extra": "mean: 345.84598879219163 usec\nrounds: 5175"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_where",
+            "value": 1567.5420189444912,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000023876371918308484",
+            "extra": "mean: 637.9414318177912 usec\nrounds: 1232"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_match",
+            "value": 13530.550292137179,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000005551424554874794",
+            "extra": "mean: 73.90682406916709 usec\nrounds: 11550"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_save_kgl",
+            "value": 1296.9538267634,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001126790643153999",
+            "extra": "mean: 771.0374720860648 usec\nrounds: 1021"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_save_v3",
+            "value": 1321.0607395389861,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000210156836462854",
+            "extra": "mean: 756.9674656662436 usec\nrounds: 1267"
           }
         ]
       }
