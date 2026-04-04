@@ -24,13 +24,13 @@ impl KnowledgeGraph {
     ///     Dictionary with 'unique_values' count and success status
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     # Create an index for faster lookups
     ///     graph.create_index('Prospect', 'geoprovince')
     ///
     ///     # Now this filter will use the index (O(1) instead of O(n))
     ///     graph.select('Prospect').where({'geoprovince': 'North Sea'})
-    ///     ```
+    /// ```
     fn create_index(
         &mut self,
         py: Python<'_>,
@@ -68,11 +68,11 @@ impl KnowledgeGraph {
     ///     List of dictionaries with 'type' and 'property' keys
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     indexes = graph.list_indexes()
     ///     for idx in indexes:
     ///         print(f"{idx['type']}.{idx['property']}")
-    ///     ```
+    /// ```
     fn list_indexes(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let indexes = self.inner.list_indexes();
 
@@ -109,11 +109,11 @@ impl KnowledgeGraph {
     ///     Dictionary with index statistics, or None if index doesn't exist
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     stats = graph.index_stats('Prospect', 'geoprovince')
     ///     print(f"Unique values: {stats['unique_values']}")
     ///     print(f"Total entries: {stats['total_entries']}")
-    ///     ```
+    /// ```
     fn index_stats(&self, py: Python<'_>, node_type: &str, property: &str) -> PyResult<Py<PyAny>> {
         match self.inner.get_index_stats(node_type, property) {
             Some(stats) => {
@@ -142,11 +142,11 @@ impl KnowledgeGraph {
     ///     dict with keys: ``type``, ``property``, ``unique_values``, ``created``
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     graph.create_range_index('Person', 'age')
     ///     # Now range queries on age use the B-Tree index:
     ///     result = graph.select('Person').where({'age': {'>': 25}}).collect()
-    ///     ```
+    /// ```
     fn create_range_index(
         &mut self,
         py: Python<'_>,
@@ -213,7 +213,7 @@ impl KnowledgeGraph {
     ///     Number of unique value combinations indexed
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     # Create an index for queries filtering on both 'geoprovince' and 'status'
     ///     graph.create_composite_index('Prospect', ['geoprovince', 'status'])
     ///
@@ -222,7 +222,7 @@ impl KnowledgeGraph {
     ///         'geoprovince': 'N3',
     ///         'status': 'Active'
     ///     })
-    ///     ```
+    /// ```
     fn create_composite_index(
         &mut self,
         py: Python<'_>,

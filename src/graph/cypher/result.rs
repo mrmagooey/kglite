@@ -150,6 +150,12 @@ pub struct PathBinding {
     pub path: Vec<(NodeIndex, String)>,
 }
 
+impl Default for ResultRow {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ResultRow {
     pub fn new() -> Self {
         ResultRow {
@@ -187,6 +193,12 @@ pub struct ResultSet {
     pub rows: Vec<ResultRow>,
     /// Column names in output order (populated by RETURN)
     pub columns: Vec<String>,
+}
+
+impl Default for ResultSet {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ResultSet {

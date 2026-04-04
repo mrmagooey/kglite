@@ -120,8 +120,14 @@ impl TypedColumn {
         }
     }
 
+    /// Returns true if this column has no rows.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Push a value onto this column. Returns Ok(()) on success,
-    /// Err(value) if the value type doesn't match (caller should demote to Mixed).
+    /// Err(()) if the value type doesn't match (caller should demote to Mixed).
+    #[allow(clippy::result_unit_err)]
     pub fn push(&mut self, value: &Value) -> Result<(), ()> {
         match (self, value) {
             (TypedColumn::Int64 { data, nulls }, Value::Int64(v)) => {
@@ -304,6 +310,7 @@ impl TypedColumn {
 
     /// Update the value at the given row index.
     /// Returns Ok(()) on success, Err(()) on type mismatch.
+    #[allow(clippy::result_unit_err)]
     pub fn set(&mut self, row: u32, value: &Value) -> Result<(), ()> {
         let idx = row as usize;
         match (self, value) {

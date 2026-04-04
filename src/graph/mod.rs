@@ -191,7 +191,7 @@ pub struct KnowledgeGraph {
 /// Temporal context for automatic date filtering on select/traverse/collect.
 /// Set via the `date()` method. Carried through clone (fluent API chaining).
 #[derive(Clone, Debug, Default)]
-pub(crate) enum TemporalContext {
+pub enum TemporalContext {
     /// Use today's date (default). Resolved at query time.
     #[default]
     Today,
@@ -1332,7 +1332,7 @@ impl KnowledgeGraph {
                         store.set_embedding(node_idx.index(), vec);
                     }
                 }
-                if store.len() > 0 {
+                if !store.is_empty() {
                     graph
                         .embeddings
                         .insert((node_type.clone(), store_key), store);
@@ -1835,11 +1835,11 @@ impl KnowledgeGraph {
     ///     List of node type names (excludes internal SchemaNode type)
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     graph.add_nodes(df, 'Person', 'id', 'name')
     ///     graph.add_nodes(df2, 'Company', 'id', 'name')
     ///     print(graph.node_types)  # ['Person', 'Company']
-    ///     ```
+    /// ```
     #[getter]
     fn node_types(&self) -> Vec<String> {
         self.inner.get_node_types()
@@ -1861,7 +1861,7 @@ impl KnowledgeGraph {
     ///     Dict mapping node_type to count of nodes added
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     nodes = [
     ///         {'node_type': 'Person', 'unique_id_field': 'id',
     ///          'node_title_field': 'name', 'data': people_df},
@@ -1870,7 +1870,7 @@ impl KnowledgeGraph {
     ///     ]
     ///     stats = graph.add_nodes_bulk(nodes)
     ///     # {'Person': 100, 'Company': 50}
-    ///     ```
+    /// ```
     fn add_nodes_bulk(&mut self, py: Python<'_>, nodes: &Bound<'_, PyList>) -> PyResult<Py<PyAny>> {
         let result_dict = PyDict::new(py);
 
@@ -1951,7 +1951,7 @@ impl KnowledgeGraph {
     ///     Dict mapping connection_name to count of connections added
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     connections = [
     ///         {'source_type': 'Person', 'target_type': 'Company',
     ///          'connection_name': 'WORKS_AT', 'data': works_df},
@@ -1960,7 +1960,7 @@ impl KnowledgeGraph {
     ///     ]
     ///     stats = graph.add_connections_bulk(connections)
     ///     # {'WORKS_AT': 500, 'KNOWS': 1200}
-    ///     ```
+    /// ```
     fn add_connections_bulk(
         &mut self,
         py: Python<'_>,
@@ -1987,14 +1987,14 @@ impl KnowledgeGraph {
     ///     (only includes connections that were actually loaded)
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     # Data source provides all possible connections
     ///     all_connections = data_source.get_all_connections()
     ///
     ///     # Graph only has Person and Company loaded
     ///     # This will skip connections involving other node types
     ///     stats = graph.add_connections_from_source(all_connections)
-    ///     ```
+    /// ```
     fn add_connections_from_source(
         &mut self,
         py: Python<'_>,
@@ -2612,13 +2612,13 @@ impl KnowledgeGraph {
     ///   - 'report_index': Index of the operation report
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     result = graph.select('Discovery').where({'year': {'>=': 2020}}).update({
     ///         'is_recent': True
     ///     })
     ///     graph = result['graph']  # Use the returned graph with updates
     ///     print(f"Updated {result['nodes_updated']} nodes")
-    ///     ```
+    /// ```
     ///
     /// Args:
     ///     properties: Dictionary of property names and values to set
@@ -2922,7 +2922,7 @@ impl KnowledgeGraph {
     ///     limit: max output lines (default: 200)
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     print(graph.select("Discovery").show(["id", "title"]))
     ///     # Discovery(123, Johan Sverdrup)
     ///     # Discovery(456, Troll)
@@ -2932,7 +2932,7 @@ impl KnowledgeGraph {
     ///         .traverse("TESTED_BY_WELLBORE")
     ///         .show(["id", "title"]))
     ///     # Discovery(123, Johan Sverdrup) -> Prospect(456, Alpha) -> Wellbore(789, W1)
-    ///     ```
+    /// ```
     #[pyo3(signature = (columns=None, limit=200))]
     fn show(&self, columns: Option<Vec<String>>, limit: usize) -> PyResult<String> {
         use crate::graph::value_operations::format_value_compact;
@@ -3070,11 +3070,11 @@ impl KnowledgeGraph {
     /// Also available via Python's built-in len(): len(graph.select('User'))
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     count = graph.len()                      # total nodes in graph
     ///     count = graph.select('User').len()        # filtered count
     ///     count = len(graph.select('User'))         # same, via __len__
-    ///     ```
+    /// ```
     #[pyo3(name = "len")]
     fn py_len(&self) -> usize {
         if self.selection.has_active_selection() {
@@ -3092,9 +3092,9 @@ impl KnowledgeGraph {
     /// Much faster than collect() when you only need indices for further processing.
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     indices = graph.select('User').indices()
-    ///     ```
+    /// ```
     fn indices(&self) -> Vec<usize> {
         self.selection
             .current_node_indices()
@@ -3109,10 +3109,10 @@ impl KnowledgeGraph {
     ///     List of ID values (int, str, or whatever type the IDs are)
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     user_ids = graph.select('User').ids()
     ///     # Returns: [1, 2, 3, 4, 5, ...]
-    ///     ```
+    /// ```
     fn ids(&self) -> PyResult<Py<PyAny>> {
         Python::attach(|py| {
             let result = PyList::empty(py);
@@ -3140,9 +3140,9 @@ impl KnowledgeGraph {
     ///     Dict with all node properties, or None if not found
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     user = graph.node("User", 38870)
-    ///     ```
+    /// ```
     #[pyo3(signature = (node_type, node_id))]
     fn node(&mut self, node_type: &str, node_id: &Bound<'_, PyAny>) -> PyResult<Option<Py<PyAny>>> {
         // Convert Python value to Rust Value
@@ -3191,10 +3191,10 @@ impl KnowledgeGraph {
     ///     file_path, line_number, and optionally signature and visibility
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     results = graph.find("execute")
     ///     results = graph.find("KnowledgeGraph", node_type="Struct")
-    ///     ```
+    /// ```
     #[pyo3(signature = (name, node_type=None, match_type=None))]
     fn find(
         &self,
@@ -3270,10 +3270,10 @@ impl KnowledgeGraph {
     ///     Unknown names return {"name": ..., "error": "Node not found: ..."}.
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     loc = graph.source("execute_single_clause")
     ///     locs = graph.source(["KnowledgeGraph", "build", "execute"])
-    ///     ```
+    /// ```
     #[pyo3(signature = (name, node_type=None))]
     fn source(&self, name: &Bound<'_, PyAny>, node_type: Option<&str>) -> PyResult<Py<PyAny>> {
         // Check if name is a list/sequence of strings
@@ -3311,10 +3311,10 @@ impl KnowledgeGraph {
     ///     relationship groups (e.g. "HAS_METHOD", "CALLS", "CALLED_BY")
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     ctx = graph.context("KnowledgeGraph")
     ///     ctx = graph.context("kglite.code_tree.builder.build", hops=2)
-    ///     ```
+    /// ```
     #[pyo3(signature = (name, node_type=None, hops=None))]
     fn context(
         &self,
@@ -3531,9 +3531,9 @@ impl KnowledgeGraph {
     ///     Returns {"error": "..."} if file not found.
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     toc = graph.toc("src/graph/mod.rs")
-    ///     ```
+    /// ```
     #[pyo3(signature = (file_path))]
     fn toc(&self, file_path: &str) -> PyResult<Py<PyAny>> {
         let file_id = Value::String(file_path.to_string());
@@ -3651,9 +3651,9 @@ impl KnowledgeGraph {
     ///     node_types: List of node types to index. If None, indexes all types.
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     graph.build_id_indices(["User", "Product"])
-    ///     ```
+    /// ```
     #[pyo3(signature = (node_types=None))]
     fn build_id_indices(&mut self, node_types: Option<Vec<String>>) {
         let graph = Arc::make_mut(&mut self.inner);
@@ -3684,9 +3684,9 @@ impl KnowledgeGraph {
     /// index consistency.
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     graph.reindex()
-    ///     ```
+    /// ```
     fn reindex(&mut self) {
         let graph = Arc::make_mut(&mut self.inner);
         graph.reindex();
@@ -3699,10 +3699,10 @@ impl KnowledgeGraph {
     /// Automatically compacts properties first if not already compacted.
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     graph.enable_columnar()
     ///     assert graph.is_columnar()
-    ///     ```
+    /// ```
     fn enable_columnar(&mut self) {
         let graph = Arc::make_mut(&mut self.inner);
         graph.enable_columnar();
@@ -3727,11 +3727,11 @@ impl KnowledgeGraph {
     /// No-op if the graph is not in columnar mode.
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     graph.unspill()
     ///     info = graph.graph_info()
     ///     assert not info['columnar_is_mapped']
-    ///     ```
+    /// ```
     fn unspill(&mut self) {
         let graph = Arc::make_mut(&mut self.inner);
         if !graph.is_columnar() {
@@ -3764,12 +3764,12 @@ impl KnowledgeGraph {
     ///         - 'tombstones_removed': Number of tombstone slots reclaimed
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     info = graph.graph_info()
     ///     if info['fragmentation_ratio'] > 0.3:
     ///         result = graph.vacuum()
     ///         print(f"Reclaimed {result['tombstones_removed']} slots")
-    ///     ```
+    /// ```
     fn vacuum(&mut self) -> PyResult<Py<PyAny>> {
         let graph = get_graph_mut(&mut self.inner);
 
@@ -3809,11 +3809,11 @@ impl KnowledgeGraph {
     ///         - 'composite_index_count': Number of composite indexes
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     info = graph.graph_info()
     ///     if info['fragmentation_ratio'] > 0.3:
     ///         graph.vacuum()
-    ///     ```
+    /// ```
     fn graph_info(&self) -> PyResult<Py<PyAny>> {
         let info = self.inner.graph_info();
         Python::attach(|py| {
@@ -3857,11 +3857,11 @@ impl KnowledgeGraph {
     ///         Set to None to disable auto-vacuum entirely.
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     graph.set_auto_vacuum(0.2)   # more aggressive — vacuum at 20% fragmentation
     ///     graph.set_auto_vacuum(None)  # disable auto-vacuum
     ///     graph.set_auto_vacuum(0.3)   # restore default
-    ///     ```
+    /// ```
     #[pyo3(signature = (threshold))]
     fn set_auto_vacuum(&mut self, threshold: Option<f64>) -> PyResult<()> {
         if let Some(t) = threshold {
@@ -3887,11 +3887,11 @@ impl KnowledgeGraph {
     ///     spill_dir: Directory for spill files. Defaults to system temp dir.
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     graph.set_memory_limit(500_000_000)  # 500 MB limit
     ///     graph.enable_columnar()  # auto-spills if over limit
     ///     graph.set_memory_limit(None)  # disable limit
-    ///     ```
+    /// ```
     #[pyo3(signature = (limit_bytes, spill_dir=None))]
     fn set_memory_limit(
         &mut self,
@@ -3918,11 +3918,12 @@ impl KnowledgeGraph {
     /// Returns:
     ///     The current read-only state (after applying the change, if any).
     ///
-    /// Example::
-    ///
-    ///     graph.read_only(True)   # lock the graph
-    ///     graph.read_only()       # -> True
-    ///     graph.read_only(False)  # unlock
+    /// Example:
+    /// ```python
+    /// graph.read_only(True)   # lock the graph
+    /// graph.read_only()       # -> True
+    /// graph.read_only(False)  # unlock
+    /// ```
     #[pyo3(signature = (enabled=None))]
     fn read_only(&mut self, enabled: Option<bool>) -> bool {
         if let Some(v) = enabled {
@@ -4102,14 +4103,15 @@ impl KnowledgeGraph {
     /// Returns:
     ///     New KnowledgeGraph with traversal results selected.
     ///
-    /// Examples::
-    ///
-    ///     g.select('Field').traverse('HAS_LICENSEE')
-    ///     g.select('Field').traverse('OF_FIELD', direction='incoming',
-    ///         target_type='ProductionProfile')
-    ///     g.select('Field').traverse('HAS_LICENSEE',
-    ///         where={'title': 'Equinor Energy AS'})
-    ///     g.select('Field').traverse('HAS_LICENSEE', at='2005')
+    /// Examples:
+    /// ```python
+    /// g.select('Field').traverse('HAS_LICENSEE')
+    /// g.select('Field').traverse('OF_FIELD', direction='incoming',
+    ///     target_type='ProductionProfile')
+    /// g.select('Field').traverse('HAS_LICENSEE',
+    ///     where={'title': 'Equinor Energy AS'})
+    /// g.select('Field').traverse('HAS_LICENSEE', at='2005')
+    /// ```
     #[pyo3(signature = (connection_type, level_index=None, direction=None, filter_target=None, filter_connection=None, sort_target=None, limit=None, new_level=None, at=None, during=None, temporal=None, target_type=None, r#where=None, where_connection=None))]
     #[allow(clippy::too_many_arguments)]
     fn traverse(
@@ -4278,12 +4280,13 @@ impl KnowledgeGraph {
     /// Compare selected nodes against a target type using spatial, semantic,
     /// or clustering methods.
     ///
-    /// Examples::
-    ///
-    ///     g.select('Structure').compare('Well', 'contains')
-    ///     g.select('Well').compare('Well', {'type': 'distance', 'max_m': 5000})
-    ///     g.select('Well').compare('Well', {'type': 'text_score', 'property': 'name'})
-    ///     g.select('Well').compare('Well', {'type': 'cluster', 'k': 5})
+    /// Examples:
+    /// ```python
+    /// g.select('Structure').compare('Well', 'contains')
+    /// g.select('Well').compare('Well', {'type': 'distance', 'max_m': 5000})
+    /// g.select('Well').compare('Well', {'type': 'text_score', 'property': 'name'})
+    /// g.select('Well').compare('Well', {'type': 'cluster', 'k': 5})
+    /// ```
     #[pyo3(signature = (target_type, method, *, filter=None, sort=None, limit=None, level_index=None, new_level=None))]
     #[allow(clippy::too_many_arguments)]
     fn compare(
@@ -5747,7 +5750,7 @@ impl KnowledgeGraph {
     ///     'connection_type', and 'properties'.
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     # Find all plays with their prospects
     ///     matches = graph.match_pattern('(p:Play)-[:HAS_PROSPECT]->(pr:Prospect)')
     ///     for m in matches:
@@ -5760,7 +5763,7 @@ impl KnowledgeGraph {
     ///
     ///     # Limit results
     ///     top_10 = graph.match_pattern('(p:Person)-[:KNOWS]->(f:Person)', max_matches=10)
-    ///     ```
+    /// ```
     #[pyo3(signature = (pattern, max_matches=None))]
     fn match_pattern(
         &self,
@@ -5806,7 +5809,7 @@ impl KnowledgeGraph {
     ///     (list of row dicts mapping column name to value).
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     result = graph.cypher('''
     ///         MATCH (p:Person)-[:KNOWS]->(f:Person)
     ///         WHERE p.age > 25
@@ -5816,7 +5819,7 @@ impl KnowledgeGraph {
     ///     ''')
     ///     for row in result:
     ///         print(f"{row['person']}: {row['friends']} friends")
-    ///     ```
+    /// ```
     #[pyo3(signature = (query, *, to_df=false, params=None, timeout_ms=None))]
     fn cypher(
         slf: &Bound<'_, Self>,
@@ -6054,12 +6057,12 @@ impl KnowledgeGraph {
     /// Can also be used as a context manager:
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     with graph.begin() as tx:
     ///         tx.cypher("CREATE (n:Person {name: 'Alice', age: 30})")
     ///         tx.cypher("CREATE (n:Person {name: 'Bob', age: 25})")
     ///         # auto-commits on success, auto-rollbacks on exception
-    ///     ```
+    /// ```
     #[pyo3(signature = (timeout_ms=None))]
     fn begin(slf: Py<Self>, timeout_ms: Option<u64>) -> PyResult<Transaction> {
         let (working, version) = Python::attach(|py| {
@@ -6090,11 +6093,11 @@ impl KnowledgeGraph {
     /// Can also be used as a context manager:
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     with graph.begin_read() as tx:
     ///         result = tx.cypher("MATCH (n:Person) RETURN n.name")
     ///         # auto-closes on exit (no commit needed)
-    ///     ```
+    /// ```
     #[pyo3(signature = (timeout_ms=None))]
     fn begin_read(slf: Py<Self>, timeout_ms: Option<u64>) -> PyResult<Transaction> {
         let (snapshot, version) = Python::attach(|py| {

@@ -46,26 +46,27 @@ struct NodeConnections {
 /// ``cypher()`` calls fast even for large result sets — the cost is
 /// deferred to when you consume the data.
 ///
-/// Quick reference::
+/// Quick reference:
+/// ```python
+/// r = g.cypher("MATCH (n:Person) RETURN n.name, n.age ORDER BY n.age")
 ///
-///     r = g.cypher("MATCH (n:Person) RETURN n.name, n.age ORDER BY n.age")
+/// len(r)           # row count (O(1), no conversion)
+/// bool(r)          # True if non-empty
+/// r[0]             # single row as dict  {'n.name': 'Alice', 'n.age': 30}
+/// r[-1]            # last row
+/// r[1:3]           # slice -> new ResultView
+/// r.columns        # column names
+/// r.head(5)        # first 5 rows -> new ResultView
+/// r.tail(5)        # last 5 rows -> new ResultView
+/// r.to_list()      # all rows as list[dict]
+/// r.to_df()        # pandas DataFrame
+/// r.to_gdf()       # GeoDataFrame (requires geopandas)
+/// r.stats          # mutation stats (CREATE/SET/DELETE only)
+/// r.profile        # PROFILE stats (only with "PROFILE MATCH ...")
 ///
-///     len(r)           # row count (O(1), no conversion)
-///     bool(r)          # True if non-empty
-///     r[0]             # single row as dict  {'n.name': 'Alice', 'n.age': 30}
-///     r[-1]            # last row
-///     r[1:3]           # slice → new ResultView
-///     r.columns        # column names
-///     r.head(5)        # first 5 rows → new ResultView
-///     r.tail(5)        # last 5 rows → new ResultView
-///     r.to_list()      # all rows as list[dict]
-///     r.to_df()        # pandas DataFrame
-///     r.to_gdf()       # GeoDataFrame (requires geopandas)
-///     r.stats          # mutation stats (CREATE/SET/DELETE only)
-///     r.profile        # PROFILE stats (only with "PROFILE MATCH ...")
-///
-///     for row in r:    # iterate rows as dicts (one at a time)
-///         print(row)
+/// for row in r:    # iterate rows as dicts (one at a time)
+///     print(row)
+/// ```
 #[pyclass(name = "ResultView")]
 pub struct ResultView {
     columns: Vec<String>,
@@ -434,10 +435,11 @@ impl ResultView {
 
     /// Column names as a list of strings.
     ///
-    /// Example::
-    ///
-    ///     r = g.cypher("MATCH (n) RETURN n.name, n.age")
-    ///     r.columns   # ['n.name', 'n.age']
+    /// Example:
+    /// ```python
+    /// r = g.cypher("MATCH (n) RETURN n.name, n.age")
+    /// r.columns   # ['n.name', 'n.age']
+    /// ```
     #[getter]
     fn columns(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.columns.clone().into_py_any(py)
@@ -478,9 +480,10 @@ impl ResultView {
 
     /// Materialize all rows as a list of dicts.
     ///
-    /// Example::
-    ///
-    ///     r.to_list()  # [{'name': 'Alice', 'age': 30}, ...]
+    /// Example:
+    /// ```python
+    /// r.to_list()  # [{'name': 'Alice', 'age': 30}, ...]
+    /// ```
     fn to_list(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let list = pyo3::types::PyList::empty(py);
         for i in 0..self.rows.len() {
@@ -491,10 +494,11 @@ impl ResultView {
 
     /// First *n* rows as a new ResultView (default 5). Data stays lazy.
     ///
-    /// Example::
-    ///
-    ///     r.head()     # first 5 rows
-    ///     r.head(10)   # first 10 rows
+    /// Example:
+    /// ```python
+    /// r.head()     # first 5 rows
+    /// r.head(10)   # first 10 rows
+    /// ```
     #[pyo3(signature = (n=5))]
     fn head(&self, n: usize) -> Self {
         let take = n.min(self.rows.len());
@@ -509,10 +513,11 @@ impl ResultView {
 
     /// Last *n* rows as a new ResultView (default 5). Data stays lazy.
     ///
-    /// Example::
-    ///
-    ///     r.tail()     # last 5 rows
-    ///     r.tail(10)   # last 10 rows
+    /// Example:
+    /// ```python
+    /// r.tail()     # last 5 rows
+    /// r.tail(10)   # last 10 rows
+    /// ```
     #[pyo3(signature = (n=5))]
     fn tail(&self, n: usize) -> Self {
         let len = self.rows.len();
@@ -531,10 +536,11 @@ impl ResultView {
 
     /// Materialize as a pandas DataFrame.
     ///
-    /// Example::
-    ///
-    ///     df = r.to_df()
-    ///     df.plot(x='year', y='count')
+    /// Example:
+    /// ```python
+    /// df = r.to_df()
+    /// df.plot(x='year', y='count')
+    /// ```
     fn to_df(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         preprocessed_result_to_dataframe(py, &self.columns, &self.rows)
     }

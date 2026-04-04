@@ -26,7 +26,7 @@ impl KnowledgeGraph {
     ///     selection_only: If True, export only selected nodes (default: True if selection exists)
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     # Export entire graph to GraphML
     ///     graph.export('output.graphml')
     ///
@@ -35,7 +35,7 @@ impl KnowledgeGraph {
     ///
     ///     # Export to GEXF for Gephi
     ///     graph.export('network.gexf', format='gexf')
-    ///     ```
+    /// ```
     #[pyo3(signature = (path, format=None, selection_only=None))]
     fn export(
         &self,
@@ -134,7 +134,7 @@ impl KnowledgeGraph {
     ///     - "files_written": int — total files written
     ///
     /// Example:
-    ///     ```python
+    /// ```python
     ///     # Export entire graph
     ///     result = graph.export_csv('output/')
     ///
@@ -143,7 +143,7 @@ impl KnowledgeGraph {
     ///
     ///     # With progress output
     ///     result = graph.export_csv('output/', verbose=True)
-    ///     ```
+    /// ```
     #[pyo3(signature = (path, selection_only=None, verbose=false))]
     fn export_csv(
         &self,

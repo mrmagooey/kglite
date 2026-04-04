@@ -24,10 +24,7 @@ fn build_chain_via_cypher(n: usize) -> DirGraph {
 
     // Create all nodes
     for i in 0..n {
-        let q = format!(
-            "CREATE (n:Node {{id: {id}, name: 'Node_{id}'}})",
-            id = i
-        );
+        let q = format!("CREATE (n:Node {{id: {id}, name: 'Node_{id}'}})", id = i);
         let parsed = parse_cypher(&q).expect("node create should parse");
         execute_mutable(&mut graph, &parsed, params.clone(), None)
             .expect("node create should succeed");
@@ -92,8 +89,7 @@ fn bench_shortest_path(c: &mut Criterion) {
 
     c.bench_function("shortest_path_cost_chain_50", |b| {
         b.iter(|| {
-            let cost =
-                shortest_path_cost(black_box(&graph), black_box(source), black_box(target));
+            let cost = shortest_path_cost(black_box(&graph), black_box(source), black_box(target));
             black_box(cost)
         });
     });
@@ -128,8 +124,12 @@ fn bench_cypher_create(c: &mut Criterion) {
     c.bench_function("cypher_create_5_nodes", |b| {
         b.iter(|| {
             let mut graph = DirGraph::new();
-            let result =
-                execute_mutable(black_box(&mut graph), black_box(&parsed), params.clone(), None);
+            let result = execute_mutable(
+                black_box(&mut graph),
+                black_box(&parsed),
+                params.clone(),
+                None,
+            );
             black_box(result)
         });
     });
@@ -152,8 +152,7 @@ fn bench_save_load_roundtrip(c: &mut Criterion) {
             prepare_save(&mut arc);
             let graph = Arc::try_unwrap(arc).unwrap_or_else(|_| panic!("sole owner"));
 
-            write_graph_v3(black_box(&graph), black_box(&path_str))
-                .expect("write failed");
+            write_graph_v3(black_box(&graph), black_box(&path_str)).expect("write failed");
 
             let kg = load_file(black_box(&path_str)).expect("load failed");
             black_box(kg);

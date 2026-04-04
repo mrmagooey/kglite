@@ -23,6 +23,7 @@ impl InternedKey {
     /// (uses Rust's default SipHash which is seeded per-process, but that's
     /// fine since InternedKeys are never persisted as u64 — they serialize
     /// as their original string).
+    #[allow(clippy::should_implement_trait)]
     #[inline]
     pub fn from_str(s: &str) -> Self {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -222,6 +223,12 @@ pub struct TypeSchema {
     key_to_slot: HashMap<InternedKey, u16>,
 }
 
+impl Default for TypeSchema {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TypeSchema {
     /// Create an empty schema.
     pub fn new() -> Self {
@@ -254,6 +261,12 @@ impl TypeSchema {
     #[inline]
     pub fn len(&self) -> usize {
         self.slots.len()
+    }
+
+    /// Returns true if the schema has no slots.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
     }
 
     /// Add a new key to the schema. Returns the new slot index.
@@ -794,6 +807,12 @@ pub struct SelectionLevel {
     pub operations: Vec<SelectionOperation>,
 }
 
+impl Default for SelectionLevel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SelectionLevel {
     pub fn new() -> Self {
         SelectionLevel {
@@ -1145,6 +1164,12 @@ impl EmbeddingStore {
     pub fn len(&self) -> usize {
         self.slot_to_node.len()
     }
+
+    /// Returns true if no embeddings are stored.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.slot_to_node.is_empty()
+    }
 }
 
 /// Core graph storage: a directed graph (petgraph `StableDiGraph`) with fast
@@ -1311,6 +1336,12 @@ impl Drop for DirGraph {
                 }
             }
         }
+    }
+}
+
+impl Default for DirGraph {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -2299,9 +2330,7 @@ impl DirGraph {
         if schemas.is_empty() {
             for node_idx in self.graph.node_indices() {
                 if let Some(node) = self.graph.node_weight(node_idx) {
-                    let schema = schemas
-                        .entry(node.node_type.clone())
-                        .or_insert_with(TypeSchema::new);
+                    let schema = schemas.entry(node.node_type.clone()).or_default();
                     if let PropertyStorage::Map(map) = &node.properties {
                         for &key in map.keys() {
                             schema.add_key(key);
@@ -2353,9 +2382,7 @@ impl DirGraph {
         if schemas.is_empty() {
             for node_idx in self.graph.node_indices() {
                 if let Some(node) = self.graph.node_weight(node_idx) {
-                    let schema = schemas
-                        .entry(node.node_type.clone())
-                        .or_insert_with(TypeSchema::new);
+                    let schema = schemas.entry(node.node_type.clone()).or_default();
                     if let PropertyStorage::Map(map) = &node.properties {
                         for &key in map.keys() {
                             schema.add_key(key);
