@@ -334,7 +334,7 @@ fn is_count_of_var_or_star(expr: &Expression, node_var: Option<&str>) -> bool {
         distinct,
     } = expr
     {
-        if name.to_lowercase() != "count" || *distinct {
+        if name != "count" || *distinct {
             return false;
         }
         if args.len() == 1 {
@@ -375,7 +375,7 @@ fn is_node_type_accessor(expr: &Expression, node_var: Option<&str>) -> bool {
             is_type_prop && node_var.is_some_and(|nv| variable == nv)
         }
         Expression::FunctionCall { name, args, .. } => {
-            if name.to_lowercase() == "labels" && args.len() == 1 {
+            if name == "labels" && args.len() == 1 {
                 if let Expression::Variable(v) = &args[0] {
                     return node_var.is_some_and(|nv| v == nv);
                 }
@@ -407,7 +407,7 @@ fn identify_edge_type_count_pair(
 /// Check if expression is `type(r)`.
 fn is_edge_type_function(expr: &Expression, edge_var: Option<&str>) -> bool {
     if let Expression::FunctionCall { name, args, .. } = expr {
-        if name.to_lowercase() == "type" && args.len() == 1 {
+        if name == "type" && args.len() == 1 {
             if let Expression::Variable(v) = &args[0] {
                 return edge_var.is_some_and(|ev| v == ev);
             }
@@ -1502,7 +1502,7 @@ fn fuse_node_scan_aggregate(query: &mut CypherQuery) {
                             return false; // DISTINCT not supported inline
                         }
                         matches!(
-                            name.to_lowercase().as_str(),
+                            name.as_str(),
                             "count" | "sum" | "avg" | "mean" | "average" | "min" | "max"
                         )
                     }
@@ -2711,7 +2711,7 @@ fn estimate_expression_cost(expr: &Expression) -> u32 {
         Expression::Variable(_) => 1,
         Expression::Star => 1,
         Expression::FunctionCall { name, args, .. } => {
-            let base = match name.to_lowercase().as_str() {
+            let base = match name.as_str() {
                 "point" => 3,
                 "distance" => 10,
                 "contains" => 50,

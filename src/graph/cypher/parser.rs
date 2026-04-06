@@ -1323,7 +1323,7 @@ impl CypherParser {
         }
 
         Ok(Expression::FunctionCall {
-            name,
+            name: name.to_ascii_lowercase(),
             args,
             distinct,
         })

@@ -135,6 +135,74 @@ fn bench_cypher_create(c: &mut Criterion) {
     });
 }
 
+/// Benchmark: function dispatch (toUpper, toLower, toString) on every row of a 200-node scan.
+/// Targets the parse-time lowercase normalisation of function names (optimization 1).
+fn bench_function_dispatch(c: &mut Criterion) {
+    let graph = build_chain_via_cypher(200);
+    let query_str = "MATCH (n:Node) RETURN toUpper(n.name), toLower(n.name), toString(n.id)";
+    let parsed = parse_cypher(query_str).expect("query should parse");
+    let params: HashMap<String, kglite::datatypes::values::Value> = HashMap::new();
+
+    c.bench_function("bench_function_dispatch", |b| {
+        b.iter(|| {
+            let executor = CypherExecutor::with_params(black_box(&graph), &params, None);
+            let result = executor.execute(black_box(&parsed));
+            black_box(result)
+        });
+    });
+}
+
+/// Benchmark: COUNT(DISTINCT n) on a 200-node graph.
+/// Targets the HashSet<usize> key optimisation instead of format! string keys (optimization 2).
+fn bench_count_distinct(c: &mut Criterion) {
+    let graph = build_chain_via_cypher(200);
+    let query_str = "MATCH (n:Node) RETURN count(DISTINCT n)";
+    let parsed = parse_cypher(query_str).expect("query should parse");
+    let params: HashMap<String, kglite::datatypes::values::Value> = HashMap::new();
+
+    c.bench_function("bench_count_distinct", |b| {
+        b.iter(|| {
+            let executor = CypherExecutor::with_params(black_box(&graph), &params, None);
+            let result = executor.execute(black_box(&parsed));
+            black_box(result)
+        });
+    });
+}
+
+/// Benchmark: edge type access via a GROUP BY query on a chain graph.
+/// Targets Arc<HashMap> return from get_edge_type_counts() instead of clone (optimization 3).
+fn bench_edge_type_counts(c: &mut Criterion) {
+    let graph = build_chain_via_cypher(200);
+    let query_str = "MATCH (a)-[r]->(b) RETURN type(r), count(*)";
+    let parsed = parse_cypher(query_str).expect("query should parse");
+    let params: HashMap<String, kglite::datatypes::values::Value> = HashMap::new();
+
+    c.bench_function("bench_edge_type_counts", |b| {
+        b.iter(|| {
+            let executor = CypherExecutor::with_params(black_box(&graph), &params, None);
+            let result = executor.execute(black_box(&parsed));
+            black_box(result)
+        });
+    });
+}
+
+/// Benchmark: rand() called once per row on a 50-node graph.
+/// Targets thread-local RNG vs re-seeding from SystemTime per call (optimization 4).
+fn bench_rand_function(c: &mut Criterion) {
+    let graph = make_chain_50();
+    let query_str = "MATCH (n:Node) RETURN rand()";
+    let parsed = parse_cypher(query_str).expect("query should parse");
+    let params: HashMap<String, kglite::datatypes::values::Value> = HashMap::new();
+
+    c.bench_function("bench_rand_function", |b| {
+        b.iter(|| {
+            let executor = CypherExecutor::with_params(black_box(&graph), &params, None);
+            let result = executor.execute(black_box(&parsed));
+            black_box(result)
+        });
+    });
+}
+
 /// Benchmark: save/load roundtrip for a 20-node graph.
 fn bench_save_load_roundtrip(c: &mut Criterion) {
     let tmp_dir = tempfile::tempdir().expect("tempdir");
@@ -170,5 +238,9 @@ criterion_group!(
     bench_cypher_match,
     bench_cypher_create,
     bench_save_load_roundtrip,
+    bench_function_dispatch,
+    bench_count_distinct,
+    bench_edge_type_counts,
+    bench_rand_function,
 );
 criterion_main!(benches);

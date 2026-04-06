@@ -558,9 +558,8 @@ pub struct YieldItem {
 pub fn is_aggregate_expression(expr: &Expression) -> bool {
     match expr {
         Expression::FunctionCall { name, args, .. } => {
-            let lower = name.to_lowercase();
             if matches!(
-                lower.as_str(),
+                name.as_str(),
                 "count"
                     | "sum"
                     | "avg"

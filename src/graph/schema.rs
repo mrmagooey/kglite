@@ -1260,7 +1260,8 @@ pub struct DirGraph {
     /// Lazy edge-type count cache — avoids O(E) rescan for FusedCountEdgesByType.
     /// Invalidated on edge mutations (add/remove).
     #[serde(skip)]
-    pub(crate) edge_type_counts_cache: Arc<RwLock<Option<HashMap<String, usize>>>>,
+    #[allow(clippy::type_complexity)]
+    pub(crate) edge_type_counts_cache: Arc<RwLock<Option<Arc<HashMap<String, usize>>>>>,
     /// Columnar embedding storage: (node_type, property_name) -> EmbeddingStore.
     /// Stored separately from NodeData.properties — invisible to normal node API.
     /// Persisted as a separate section in v2 .kgl files.
@@ -1631,12 +1632,14 @@ impl DirGraph {
     }
 
     /// Compute edge counts grouped by connection type. Lazily cached.
-    pub fn get_edge_type_counts(&self) -> HashMap<String, usize> {
-        // Fast path: return cached result
+    /// Returns an `Arc`-wrapped map so callers get a cheap reference-counted
+    /// pointer rather than a full heap clone.
+    pub fn get_edge_type_counts(&self) -> Arc<HashMap<String, usize>> {
+        // Fast path: return cached Arc (cheap clone)
         {
             let read = self.edge_type_counts_cache.read().unwrap();
             if let Some(ref cached) = *read {
-                return cached.clone();
+                return Arc::clone(cached);
             }
         }
         // Slow path: compute O(E) and cache
@@ -1645,9 +1648,10 @@ impl DirGraph {
             let ct_str = self.interner.resolve(edge.connection_type).to_string();
             *counts.entry(ct_str).or_insert(0) += 1;
         }
+        let arc = Arc::new(counts);
         let mut write = self.edge_type_counts_cache.write().unwrap();
-        *write = Some(counts.clone());
-        counts
+        *write = Some(Arc::clone(&arc));
+        arc
     }
 
     /// Invalidate the edge type count cache (call after edge mutations).

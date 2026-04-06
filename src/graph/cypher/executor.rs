@@ -464,7 +464,7 @@ impl<'a> CypherExecutor<'a> {
             } => {
                 let counts = self.graph.get_edge_type_counts();
                 let mut result_rows = Vec::with_capacity(counts.len());
-                for (edge_type, count) in &counts {
+                for (edge_type, count) in counts.iter() {
                     let mut projected = Bindings::with_capacity(2);
                     projected.insert(type_alias.clone(), Value::String(edge_type.clone()));
                     projected.insert(count_alias.clone(), Value::Int64(*count as i64));
@@ -2372,7 +2372,7 @@ impl<'a> CypherExecutor<'a> {
                             // DISTINCT aggregation not supported by inline — shouldn't reach here
                             Value::Null
                         } else {
-                            match name.to_lowercase().as_str() {
+                            match name.as_str() {
                                 "count" => Value::Int64(acc.counts[ai]),
                                 "sum" => {
                                     if acc.counts[ai] == 0 {
@@ -3293,7 +3293,7 @@ impl<'a> CypherExecutor<'a> {
         inclusive: bool,
     ) -> Option<DistanceFilterSpec> {
         if let Expression::FunctionCall { name, args, .. } = expr {
-            if name.to_lowercase() != "distance" {
+            if name != "distance" {
                 return None;
             }
             match args.len() {
@@ -3342,7 +3342,7 @@ impl<'a> CypherExecutor<'a> {
     /// Extract (variable, lat_prop, lon_prop) from point(n.lat, n.lon)
     fn extract_point_var_props(expr: &Expression) -> Option<(String, String, String)> {
         if let Expression::FunctionCall { name, args, .. } = expr {
-            if name.to_lowercase() != "point" || args.len() != 2 {
+            if name != "point" || args.len() != 2 {
                 return None;
             }
             let (var1, lat_prop) = Self::extract_prop_access(&args[0])?;
@@ -3364,7 +3364,7 @@ impl<'a> CypherExecutor<'a> {
             return Some((*lat, *lon));
         }
         if let Expression::FunctionCall { name, args, .. } = expr {
-            if name.to_lowercase() != "point" || args.len() != 2 {
+            if name != "point" || args.len() != 2 {
                 return None;
             }
             let lat = Self::extract_literal_f64(&args[0])?;
@@ -3491,8 +3491,10 @@ impl<'a> CypherExecutor<'a> {
                 if is_aggregate_expression(expr) {
                     return false;
                 }
-                // Check that the function name is a known scalar (not aggregate)
-                let _ = name;
+                // Non-deterministic functions must be evaluated per-row
+                if matches!(name.as_str(), "rand" | "random") {
+                    return false;
+                }
                 args.iter().all(Self::is_row_independent)
             }
             Expression::Add(l, r)
@@ -3823,12 +3825,11 @@ impl<'a> CypherExecutor<'a> {
                 // Without this, nodes(p) returns a JSON string that parse_list_value
                 // cannot split correctly (commas inside JSON objects).
                 if let Expression::FunctionCall { name, args, .. } = list_expr.as_ref() {
-                    let fn_lower = name.to_lowercase();
-                    if fn_lower == "nodes" || fn_lower == "relationships" || fn_lower == "rels" {
+                    if name == "nodes" || name == "relationships" || name == "rels" {
                         if let Some(Expression::Variable(path_var)) = args.first() {
                             if let Some(path) = row.path_bindings.get(path_var) {
                                 let path = path.clone();
-                                return if fn_lower == "nodes" {
+                                return if name == "nodes" {
                                     self.list_comp_nodes(variable, &path, filter, map_expr, row)
                                 } else {
                                     self.list_comp_relationships(
@@ -4598,7 +4599,7 @@ impl<'a> CypherExecutor<'a> {
         args: &[Expression],
         row: &ResultRow,
     ) -> Result<Value, String> {
-        match name.to_lowercase().as_str() {
+        match name {
             "toupper" | "touppercase" => {
                 let val = self.evaluate_expression(&args[0], row)?;
                 match val {
@@ -5398,7 +5399,7 @@ impl<'a> CypherExecutor<'a> {
                 let (ts, channel, _config) = self.resolve_timeseries_channel(&args[0], row)?;
                 let (lo, hi) = self.resolve_ts_range(ts, &args[1..], row)?;
                 let slice = &channel[lo..hi];
-                match name.to_lowercase().as_str() {
+                match name {
                     "ts_sum" => Ok(Value::Float64(timeseries::ts_sum(slice))),
                     "ts_avg" => {
                         let v = timeseries::ts_avg(slice);
@@ -5650,18 +5651,29 @@ impl<'a> CypherExecutor<'a> {
             }
             "pi" => Ok(Value::Float64(std::f64::consts::PI)),
             "rand" | "random" => {
-                // Simple time-seeded PRNG (no external crate needed)
+                // Thread-local xorshift64 PRNG — seeded once per thread from
+                // SystemTime so subsequent calls within the same query do not
+                // re-seed and are both fast and distinct.
+                use std::cell::Cell;
                 use std::time::SystemTime;
-                let seed = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos();
-                // xorshift64
-                let mut x = seed as u64 | 1;
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                Ok(Value::Float64((x as f64) / (u64::MAX as f64)))
+                thread_local! {
+                    static XORSHIFT_STATE: Cell<u64> = Cell::new(
+                        SystemTime::now()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos() as u64
+                            | 1,
+                    );
+                }
+                let val = XORSHIFT_STATE.with(|state| {
+                    let mut x = state.get();
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    state.set(x);
+                    (x as f64) / (u64::MAX as f64)
+                });
+                Ok(Value::Float64(val))
             }
 
             // ── Temporal filtering functions ──────────────────────────────
@@ -6247,16 +6259,15 @@ impl<'a> CypherExecutor<'a> {
                 name,
                 args,
                 distinct,
-            } => match name.to_lowercase().as_str() {
+            } => match name.as_str() {
                 "count" => {
                     if args.len() == 1 && matches!(args[0], Expression::Star) {
                         Ok(Value::Int64(rows.len() as i64))
                     } else {
                         let mut count = 0i64;
-                        let mut seen = HashSet::new();
-                        // For DISTINCT on a node/edge variable, use the binding
-                        // index as the identity key so that two distinct nodes
-                        // with the same title are not incorrectly merged.
+                        // For DISTINCT on a node/edge variable, use the raw
+                        // petgraph index (usize) as key — no heap allocation.
+                        // Only fall back to string-keyed dedup for value exprs.
                         let var_name = if *distinct {
                             match &args[0] {
                                 Expression::Variable(v) => Some(v.as_str()),
@@ -6265,22 +6276,25 @@ impl<'a> CypherExecutor<'a> {
                         } else {
                             None
                         };
+                        let mut seen_nodes: HashSet<usize> = HashSet::new();
+                        let mut seen_edges: HashSet<usize> = HashSet::new();
+                        let mut seen_vals: HashSet<String> = HashSet::new();
                         for row in rows {
                             let val = self.evaluate_expression(&args[0], row)?;
                             if !matches!(val, Value::Null) {
                                 if *distinct {
-                                    let identity = if let Some(vn) = var_name {
+                                    let inserted = if let Some(vn) = var_name {
                                         if let Some(&idx) = row.node_bindings.get(vn) {
-                                            format!("n:{}", idx.index())
+                                            seen_nodes.insert(idx.index())
                                         } else if let Some(eb) = row.edge_bindings.get(vn) {
-                                            format!("e:{}", eb.edge_index.index())
+                                            seen_edges.insert(eb.edge_index.index())
                                         } else {
-                                            format_value_compact(&val)
+                                            seen_vals.insert(format_value_compact(&val))
                                         }
                                     } else {
-                                        format_value_compact(&val)
+                                        seen_vals.insert(format_value_compact(&val))
                                     };
-                                    if seen.insert(identity) {
+                                    if inserted {
                                         count += 1;
                                     }
                                 } else {
@@ -6601,7 +6615,7 @@ impl<'a> CypherExecutor<'a> {
                     if *distinct {
                         return Ok(None); // DISTINCT needs dedup — bail
                     }
-                    let kind = match name.to_lowercase().as_str() {
+                    let kind = match name.as_str() {
                         "count" => {
                             if args.len() == 1 && matches!(args[0], Expression::Star) {
                                 AggKind::CountStar
@@ -12118,5 +12132,97 @@ mod tests {
         assert_eq!(result.rows.len(), 2);
         assert_eq!(result.rows[0][0], Value::String("x".to_string()));
         assert_eq!(result.rows[1][0], Value::String("y".to_string()));
+    }
+
+    // ========================================================================
+    // Fix 1: Case-insensitive function dispatch tests
+    // ========================================================================
+
+    #[test]
+    fn test_function_dispatch_mixed_case() {
+        // Function names must be dispatched case-insensitively.
+        // UPPER(), toLower() etc. should work regardless of casing used in query.
+        let mut graph = DirGraph::new();
+        let setup =
+            super::super::parser::parse_cypher("CREATE (n:Item {name: 'Hello World'})").unwrap();
+        execute_mutable(&mut graph, &setup, HashMap::new(), None).unwrap();
+
+        // Mixed-case toUpper (canonical: toUpper, also toUpperCase)
+        let q =
+            super::super::parser::parse_cypher("MATCH (n:Item) RETURN toUpper(n.name)").unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(result.rows[0][0], Value::String("HELLO WORLD".to_string()));
+
+        // Mixed-case toLower
+        let q2 =
+            super::super::parser::parse_cypher("MATCH (n:Item) RETURN toLower(n.name)").unwrap();
+        let no_params2 = HashMap::new();
+        let executor2 = CypherExecutor::with_params(&graph, &no_params2, None);
+        let result2 = executor2.execute(&q2).unwrap();
+        assert_eq!(result2.rows[0][0], Value::String("hello world".to_string()));
+    }
+
+    // ========================================================================
+    // Fix 2: count(DISTINCT) tests
+    // ========================================================================
+
+    #[test]
+    fn test_count_distinct_nodes() {
+        // COUNT(DISTINCT n) should count unique nodes, not duplicate rows.
+        let mut graph = DirGraph::new();
+        let setup = super::super::parser::parse_cypher(
+            "CREATE (a:Person {name: 'Alice'}), \
+             (b:Person {name: 'Bob'}), \
+             (c:Person {name: 'Charlie'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &setup, HashMap::new(), None).unwrap();
+
+        let q = super::super::parser::parse_cypher("MATCH (n:Person) RETURN COUNT(DISTINCT n)")
+            .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0][0], Value::Int64(3));
+    }
+
+    // ========================================================================
+    // Fix 4: rand() thread-local RNG tests
+    // ========================================================================
+
+    #[test]
+    fn test_rand_values_in_range() {
+        // rand() must return values in [0.0, 1.0) and not all identical.
+        let mut graph = DirGraph::new();
+        let setup =
+            super::super::parser::parse_cypher("CREATE (a:X), (b:X), (c:X), (d:X), (e:X)").unwrap();
+        execute_mutable(&mut graph, &setup, HashMap::new(), None).unwrap();
+
+        let q = super::super::parser::parse_cypher("MATCH (n:X) RETURN rand()").unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(result.rows.len(), 5);
+
+        let mut values: Vec<f64> = result
+            .rows
+            .iter()
+            .map(|r| match r[0] {
+                Value::Float64(v) => v,
+                _ => panic!("expected Float64"),
+            })
+            .collect();
+
+        // All values must be in [0.0, 1.0)
+        for &v in &values {
+            assert!(v >= 0.0 && v < 1.0, "rand() out of range: {}", v);
+        }
+
+        // Not all identical (would indicate re-seeding with same value)
+        values.dedup();
+        assert!(values.len() > 1, "rand() returned all identical values");
     }
 }
