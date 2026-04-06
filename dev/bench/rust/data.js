@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775445997094,
+  "lastUpdate": 1775449725271,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -157,6 +157,106 @@ window.BENCHMARK_DATA = {
             "name": "bench_property_scan",
             "value": 83269,
             "range": "± 364",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "0880e2358304efac71dd633388163a95a6adb3fd",
+          "message": "fix: HAVING clause now correctly evaluates aggregate expressions post-aggregation\n\nHAVING count(n) > N and similar predicates previously raised \"Aggregate\nfunction cannot be used outside of RETURN/WITH\" because evaluate_expression\ndispatched aggregate names to evaluate_scalar_function. In the fused path\nthis was swallowed by unwrap_or(false), silently dropping all rows; in the\ngeneral path it propagated as an error.\n\nFix: before scalar dispatch, check if the expression is an aggregate and\nlook up the pre-computed value from row.projected using expression_to_string\nas the key — consistent with standard HAVING semantics.\n\nAlso adds regression tests for 13 other confirmed-working behaviours\n(shortestPath multi-type, WHERE pushdown + aggregation, multi-hop path\nvariables) so future regressions are caught immediately.\n\nUpdates CYPHER.md: labels() return type, label model description,\nfunction name case-insensitivity, rand() per-row distinctness,\nsubstring() Unicode correctness, SET/REMOVE label support, XOR/!=\noperators, and architectural differences table.\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>",
+          "timestamp": "2026-04-06T14:23:49+10:00",
+          "tree_id": "f61348f6c7a1b60df6aaf7a8e02f75f67f21265f",
+          "url": "https://github.com/mrmagooey/kglite/commit/0880e2358304efac71dd633388163a95a6adb3fd"
+        },
+        "date": 1775449724779,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph_100_nodes_cypher",
+            "value": 968974,
+            "range": "± 5750",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_parse_match_where_return",
+            "value": 6382,
+            "range": "± 76",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "shortest_path_cost_chain_50",
+            "value": 387,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_match_node_scan_50",
+            "value": 15815,
+            "range": "± 104",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_create_5_nodes",
+            "value": 8813,
+            "range": "± 51",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "save_load_roundtrip_20_nodes",
+            "value": 522924,
+            "range": "± 20517",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_function_dispatch",
+            "value": 224449,
+            "range": "± 2297",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_count_distinct",
+            "value": 42477,
+            "range": "± 300",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_edge_type_counts",
+            "value": 125716,
+            "range": "± 693",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_rand_function",
+            "value": 17049,
+            "range": "± 37",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_iter",
+            "value": 88000,
+            "range": "± 3320",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_substring",
+            "value": 219945,
+            "range": "± 523",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_scan",
+            "value": 81464,
+            "range": "± 1745",
             "unit": "ns/iter"
           }
         ]
