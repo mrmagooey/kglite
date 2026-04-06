@@ -198,6 +198,7 @@ pub enum Token {
     GreaterThan, // >
     LessThan,    // <
     Star,        // * (for variable-length paths)
+    Dot,         // .  (for property access: .propName)
     DotDot,      // .. (for range in variable-length)
     Pipe,        // | (for multi-type edges: [:A|B])
     Identifier(String),
@@ -289,6 +290,9 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                     tokens.push(Token::FloatLit(
                         num_str.parse().map_err(|_| format!("Invalid float: {}", num_str))?
                     ));
+                } else if chars.peek().is_some_and(|c| c.is_ascii_alphabetic() || *c == '_') {
+                    // property access: .propertyName
+                    tokens.push(Token::Dot);
                 } else {
                     return Err("Unexpected single '.', expected '..' or a digit".to_string());
                 }
@@ -455,6 +459,7 @@ impl Parser {
             Token::GreaterThan => ">",
             Token::LessThan => "<",
             Token::Star => "*",
+            Token::Dot => ".",
             Token::DotDot => "..",
             Token::Identifier(_) => "identifier",
             Token::StringLit(_) => "string",
@@ -2255,6 +2260,30 @@ mod tests {
                 Token::RBrace,
             ]
         );
+    }
+
+    #[test]
+    fn test_tokenize_dot_property_access() {
+        // .propertyName is valid Cypher syntax (map projection / property access).
+        // The tokenizer must emit Token::Dot followed by the identifier rather than error.
+        let tokens = tokenize("{.name}").unwrap();
+        assert_eq!(
+            tokens,
+            vec![
+                Token::LBrace,
+                Token::Dot,
+                Token::Identifier("name".to_string()),
+                Token::RBrace,
+            ]
+        );
+        // Also verify underscore-prefixed property names are accepted
+        let tokens2 = tokenize("{._internal}").unwrap();
+        assert!(tokens2.contains(&Token::Dot));
+        assert!(tokens2.contains(&Token::Identifier("_internal".to_string())));
+        // Verify '..' (range) is still tokenized correctly and not confused with '.'
+        let range_tokens = tokenize("*1..3").unwrap();
+        assert!(range_tokens.contains(&Token::DotDot));
+        assert!(!range_tokens.contains(&Token::Dot));
     }
 
     #[test]
