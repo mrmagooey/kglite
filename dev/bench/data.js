@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775445836354,
+  "lastUpdate": 1775449577436,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -495,6 +495,105 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0000661640795453938",
             "extra": "mean: 726.225645490362 usec\nrounds: 1275"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "0880e2358304efac71dd633388163a95a6adb3fd",
+          "message": "fix: HAVING clause now correctly evaluates aggregate expressions post-aggregation\n\nHAVING count(n) > N and similar predicates previously raised \"Aggregate\nfunction cannot be used outside of RETURN/WITH\" because evaluate_expression\ndispatched aggregate names to evaluate_scalar_function. In the fused path\nthis was swallowed by unwrap_or(false), silently dropping all rows; in the\ngeneral path it propagated as an error.\n\nFix: before scalar dispatch, check if the expression is an aggregate and\nlook up the pre-computed value from row.projected using expression_to_string\nas the key — consistent with standard HAVING semantics.\n\nAlso adds regression tests for 13 other confirmed-working behaviours\n(shortestPath multi-type, WHERE pushdown + aggregation, multi-hop path\nvariables) so future regressions are caught immediately.\n\nUpdates CYPHER.md: labels() return type, label model description,\nfunction name case-insensitivity, rand() per-row distinctness,\nsubstring() Unicode correctness, SET/REMOVE label support, XOR/!=\noperators, and architectural differences table.\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>",
+          "timestamp": "2026-04-06T14:23:49+10:00",
+          "tree_id": "f61348f6c7a1b60df6aaf7a8e02f75f67f21265f",
+          "url": "https://github.com/mrmagooey/kglite/commit/0880e2358304efac71dd633388163a95a6adb3fd"
+        },
+        "date": 1775449576666,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_nodes",
+            "value": 1128.601385698063,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000024436692574012925",
+            "extra": "mean: 886.0524297349499 usec\nrounds: 491"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_connections",
+            "value": 896.3282704429122,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000026129745693162888",
+            "extra": "mean: 1.1156626795960138 msec\nrounds: 593"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_match",
+            "value": 13720.470349927687,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000028858242022309472",
+            "extra": "mean: 72.8837987689883 usec\nrounds: 4711"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_where",
+            "value": 1459.363527978494,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001496050305033366",
+            "extra": "mean: 685.230225936369 usec\nrounds: 748"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_traversal",
+            "value": 630087.1166406268,
+            "unit": "iter/sec",
+            "range": "stddev: 2.9619925975106933e-7",
+            "extra": "mean: 1.5870821249791636 usec\nrounds: 57449"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_shortest_path",
+            "value": 133475.48022620342,
+            "unit": "iter/sec",
+            "range": "stddev: 7.263471608426735e-7",
+            "extra": "mean: 7.492012752494174 usec\nrounds: 18898"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_enable",
+            "value": 2957.1165664107543,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00004609125018665433",
+            "extra": "mean: 338.16725771272695 usec\nrounds: 2658"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_where",
+            "value": 1480.0465514233592,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00005676912688270436",
+            "extra": "mean: 675.6544238681555 usec\nrounds: 972"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_match",
+            "value": 14743.350879876272,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000002724657794592375",
+            "extra": "mean: 67.82718583771454 usec\nrounds: 5790"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_save_kgl",
+            "value": 1507.6649013009517,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001062767278357748",
+            "extra": "mean: 663.2773629850428 usec\nrounds: 978"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_save_v3",
+            "value": 1522.3693921390393,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000016837153629853622",
+            "extra": "mean: 656.8707996650717 usec\nrounds: 1198"
           }
         ]
       }
