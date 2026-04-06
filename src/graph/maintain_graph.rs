@@ -14,7 +14,7 @@ use std::sync::Arc;
 fn check_data_validity(df_data: &DataFrame, unique_id_field: &str) -> Result<(), String> {
     // Remove strict UniqueId type verification to allow nulls
     if !df_data.verify_column(unique_id_field) {
-        let available_cols: Vec<_> = df_data.get_column_names();
+        let available_cols: Vec<&str> = df_data.column_name_iter().collect();
         return Err(format!(
             "Column '{}' not found in DataFrame. Available columns: [{}]",
             unique_id_field,
@@ -26,9 +26,9 @@ fn check_data_validity(df_data: &DataFrame, unique_id_field: &str) -> Result<(),
 
 fn get_column_types(df_data: &DataFrame) -> HashMap<String, String> {
     let mut types = HashMap::new();
-    for col_name in df_data.get_column_names() {
-        let col_type = df_data.get_column_type(&col_name);
-        types.insert(col_name.clone(), col_type.to_string());
+    for col_name in df_data.column_name_iter() {
+        let col_type = df_data.get_column_type(col_name);
+        types.insert(col_name.to_string(), col_type.to_string());
     }
     types
 }
@@ -104,13 +104,12 @@ pub fn add_nodes(
     // OPTIMIZATION: Pre-compute property column info (name + index) to avoid repeated lookups
     // This avoids: 1) string comparisons in the loop, 2) HashMap lookups per property
     let property_columns: Vec<(String, usize)> = df_data
-        .get_column_names()
-        .into_iter()
+        .column_name_iter()
         .filter_map(|col_name| {
             if col_name != unique_id_field && col_name != title_field {
                 df_data
-                    .get_column_index(&col_name)
-                    .map(|idx| (col_name, idx))
+                    .get_column_index(col_name)
+                    .map(|idx| (col_name.to_string(), idx))
             } else {
                 None
             }
@@ -279,7 +278,7 @@ pub fn add_connections(
     // Track errors
     let mut errors = Vec::new();
 
-    let available_cols: Vec<_> = df_data.get_column_names();
+    let available_cols: Vec<&str> = df_data.column_name_iter().collect();
     if !df_data.verify_column(&source_id_field) {
         return Err(format!(
             "Source ID column '{}' not found in DataFrame. Available columns: [{}]",
@@ -350,18 +349,18 @@ pub fn add_connections(
     // Cache column names and pre-compute which columns are property columns (not ID or title fields)
     // This avoids repeated allocations and string comparisons in the loop
     let property_columns: Vec<String> = df_data
-        .get_column_names()
-        .into_iter()
+        .column_name_iter()
         .filter(|col_name| {
             let is_id_field = *col_name == source_id_field || *col_name == target_id_field;
             let is_source_title = source_title_field
                 .as_ref()
-                .is_some_and(|field| *col_name == *field);
+                .is_some_and(|field| *col_name == field.as_str());
             let is_target_title = target_title_field
                 .as_ref()
-                .is_some_and(|field| *col_name == *field);
+                .is_some_and(|field| *col_name == field.as_str());
             !is_id_field && !is_source_title && !is_target_title
         })
+        .map(|s| s.to_string())
         .collect();
 
     for row_idx in 0..df_data.row_count() {

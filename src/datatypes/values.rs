@@ -168,6 +168,15 @@ impl Value {
             _ => None,
         }
     }
+
+    /// Return a borrowed `&str` for `Value::String` variants.
+    /// Prefer this over `as_string()` when ownership is not needed.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Value::String(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -302,6 +311,12 @@ impl DataFrame {
 
     pub fn get_column_names(&self) -> Vec<String> {
         self.columns.iter().map(|col| col.name.clone()).collect()
+    }
+
+    /// Iterate over column names without allocating a `Vec<String>`.
+    /// Prefer this over `get_column_names()` when ownership is not needed.
+    pub fn column_name_iter(&self) -> impl Iterator<Item = &str> {
+        self.columns.iter().map(|col| col.name.as_str())
     }
 
     pub fn get_column_type(&self, col_name: &str) -> ColumnType {
@@ -664,6 +679,58 @@ mod tests {
         assert_eq!(Value::Boolean(true).as_string(), None);
         assert_eq!(Value::Null.as_string(), None);
         assert_eq!(Value::UniqueId(1).as_string(), None);
+    }
+
+    // ========================================================================
+    // Value::as_str (Fix 3)
+    // ========================================================================
+
+    #[test]
+    fn test_as_str_returns_borrow_for_string_variant() {
+        let v = Value::String("hello".to_string());
+        assert_eq!(v.as_str(), Some("hello"));
+        // Verify it's actually a borrow (no clone needed)
+        let s = "world".to_string();
+        let v2 = Value::String(s);
+        assert_eq!(v2.as_str(), Some("world"));
+    }
+
+    #[test]
+    fn test_as_str_returns_none_for_non_string_variants() {
+        assert_eq!(Value::Int64(42).as_str(), None);
+        assert_eq!(Value::Float64(3.14).as_str(), None);
+        assert_eq!(Value::Boolean(true).as_str(), None);
+        assert_eq!(Value::Null.as_str(), None);
+        assert_eq!(Value::UniqueId(1).as_str(), None);
+        assert_eq!(Value::NodeRef(5).as_str(), None);
+    }
+
+    // ========================================================================
+    // DataFrame::column_name_iter (Fix 4)
+    // ========================================================================
+
+    #[test]
+    fn test_column_name_iter_matches_get_column_names() {
+        let df = DataFrame::new(vec![
+            ("alpha".to_string(), ColumnType::Int64),
+            ("beta".to_string(), ColumnType::String),
+            ("gamma".to_string(), ColumnType::Float64),
+        ]);
+        let names_iter: Vec<&str> = df.column_name_iter().collect();
+        assert_eq!(names_iter, vec!["alpha", "beta", "gamma"]);
+        // Verify it equals get_column_names() but without allocating owned strings
+        let names_owned = df.get_column_names();
+        assert_eq!(
+            names_iter,
+            names_owned.iter().map(|s| s.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_column_name_iter_empty_dataframe() {
+        let df = DataFrame::new(vec![]);
+        let names: Vec<&str> = df.column_name_iter().collect();
+        assert!(names.is_empty());
     }
 
     // ========================================================================

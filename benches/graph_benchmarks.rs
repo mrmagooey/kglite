@@ -203,6 +203,95 @@ fn bench_rand_function(c: &mut Criterion) {
     });
 }
 
+/// Benchmark: PropertyStorage iterator — property access on every node during WHERE + RETURN.
+/// 200 nodes × 5 properties each. Exercises `keys()` / `iter()` via PropertyKeyIter / PropertyIter
+/// enum dispatch instead of heap-allocated Box<dyn Iterator> (optimization 1).
+fn bench_property_iter(c: &mut Criterion) {
+    // Build a 200-node graph where each node has 5 properties.
+    let mut graph = DirGraph::new();
+    let params: HashMap<String, kglite::datatypes::values::Value> = HashMap::new();
+    for i in 0..200usize {
+        let q = format!(
+            "CREATE (n:Node {{id: {id}, name: 'Node_{id:03}', score: {score}, tag: 'T{tag}', active: true}})",
+            id = i,
+            score = i * 10,
+            tag = i % 10,
+        );
+        let parsed = parse_cypher(&q).expect("create should parse");
+        execute_mutable(&mut graph, &parsed, params.clone(), None)
+            .expect("create should succeed");
+    }
+
+    // WHERE n.id > 50 triggers property access on every node; RETURN n.name, n.id adds more.
+    let query_str = "MATCH (n:Node) WHERE n.id > 50 RETURN n.name, n.id";
+    let parsed = parse_cypher(query_str).expect("query should parse");
+
+    c.bench_function("bench_property_iter", |b| {
+        b.iter(|| {
+            let executor = CypherExecutor::with_params(black_box(&graph), &params, None);
+            let result = executor.execute(black_box(&parsed));
+            black_box(result)
+        });
+    });
+}
+
+/// Benchmark: `substring()` Cypher function — eliminates intermediate Vec<char> allocation.
+/// 200 nodes × 2 substring() calls per row = 400 calls per iteration (optimization 2).
+fn bench_substring(c: &mut Criterion) {
+    let mut graph = DirGraph::new();
+    let params: HashMap<String, kglite::datatypes::values::Value> = HashMap::new();
+    for i in 0..200usize {
+        let q = format!(
+            "CREATE (n:Node {{id: {id}, name: 'Node_{id:03}'}})",
+            id = i,
+        );
+        let parsed = parse_cypher(&q).expect("create should parse");
+        execute_mutable(&mut graph, &parsed, params.clone(), None)
+            .expect("create should succeed");
+    }
+
+    // substring(n.name, 0, 4) and substring(n.name, 5) — two calls per row × 200 rows
+    let query_str = "MATCH (n:Node) RETURN substring(n.name, 0, 4), substring(n.name, 5)";
+    let parsed = parse_cypher(query_str).expect("query should parse");
+
+    c.bench_function("bench_substring", |b| {
+        b.iter(|| {
+            let executor = CypherExecutor::with_params(black_box(&graph), &params, None);
+            let result = executor.execute(black_box(&parsed));
+            black_box(result)
+        });
+    });
+}
+
+/// Benchmark: `STARTS WITH` string scan — exercises `Value::as_str()` borrowed accessor
+/// and `DataFrame::column_name_iter()` zero-alloc iterator (optimizations 3 & 4).
+/// 200 nodes scanned, string comparison on each row.
+fn bench_property_scan(c: &mut Criterion) {
+    let mut graph = DirGraph::new();
+    let params: HashMap<String, kglite::datatypes::values::Value> = HashMap::new();
+    for i in 0..200usize {
+        let q = format!(
+            "CREATE (n:Node {{id: {id}, name: 'Node_{id:03}'}})",
+            id = i,
+        );
+        let parsed = parse_cypher(&q).expect("create should parse");
+        execute_mutable(&mut graph, &parsed, params.clone(), None)
+            .expect("create should succeed");
+    }
+
+    // STARTS WITH triggers as_str() on every row's name value; RETURN n.name exercises column iter
+    let query_str = "MATCH (n:Node) WHERE n.name STARTS WITH 'Node' RETURN n.name";
+    let parsed = parse_cypher(query_str).expect("query should parse");
+
+    c.bench_function("bench_property_scan", |b| {
+        b.iter(|| {
+            let executor = CypherExecutor::with_params(black_box(&graph), &params, None);
+            let result = executor.execute(black_box(&parsed));
+            black_box(result)
+        });
+    });
+}
+
 /// Benchmark: save/load roundtrip for a 20-node graph.
 fn bench_save_load_roundtrip(c: &mut Criterion) {
     let tmp_dir = tempfile::tempdir().expect("tempdir");
@@ -242,5 +331,8 @@ criterion_group!(
     bench_count_distinct,
     bench_edge_type_counts,
     bench_rand_function,
+    bench_property_iter,
+    bench_substring,
+    bench_property_scan,
 );
 criterion_main!(benches);

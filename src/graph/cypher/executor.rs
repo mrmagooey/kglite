@@ -4905,19 +4905,17 @@ impl<'a> CypherExecutor<'a> {
                 let start_val = self.evaluate_expression(&args[1], row)?;
                 match (&str_val, &start_val) {
                     (Value::String(s), Value::Int64(start)) => {
-                        let chars: Vec<char> = s.chars().collect();
-                        let start_idx = (*start as usize).min(chars.len());
+                        let start_idx = (*start as usize).min(s.chars().count());
                         let substr = if args.len() == 3 {
                             let len_val = self.evaluate_expression(&args[2], row)?;
                             match len_val {
                                 Value::Int64(len) => {
-                                    let end_idx = (start_idx + len as usize).min(chars.len());
-                                    chars[start_idx..end_idx].iter().collect()
+                                    s.chars().skip(start_idx).take(len as usize).collect()
                                 }
                                 _ => return Ok(Value::Null),
                             }
                         } else {
-                            chars[start_idx..].iter().collect()
+                            s.chars().skip(start_idx).collect()
                         };
                         Ok(Value::String(substr))
                     }
@@ -11111,6 +11109,43 @@ mod tests {
     fn test_substring_three_args() {
         let val = eval_string_fn("MATCH (n:Item) RETURN substring(n.name, 0, 5)");
         assert_eq!(val, Value::String("hello".to_string()));
+    }
+
+    #[test]
+    fn test_substring_unicode_two_args() {
+        // "héllo" has a multi-byte character at index 1; substring(s, 2) should skip 'h' and 'é'
+        let mut graph = DirGraph::new();
+        let setup =
+            super::super::parser::parse_cypher("CREATE (n:Unicode {word: 'héllo'})").unwrap();
+        execute_mutable(&mut graph, &setup, HashMap::new(), None).unwrap();
+        let q = super::super::parser::parse_cypher("MATCH (n:Unicode) RETURN substring(n.word, 2)")
+            .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(
+            result.rows[0].get(0),
+            Some(&Value::String("llo".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_substring_unicode_three_args() {
+        // substring("héllo", 0, 2) should return "hé" (2 Unicode chars, not 2 bytes)
+        let mut graph = DirGraph::new();
+        let setup =
+            super::super::parser::parse_cypher("CREATE (n:Unicode2 {word: 'héllo'})").unwrap();
+        execute_mutable(&mut graph, &setup, HashMap::new(), None).unwrap();
+        let q =
+            super::super::parser::parse_cypher("MATCH (n:Unicode2) RETURN substring(n.word, 0, 2)")
+                .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(
+            result.rows[0].get(0),
+            Some(&Value::String("hé".to_string()))
+        );
     }
 
     #[test]
