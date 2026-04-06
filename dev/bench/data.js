@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775282550325,
+  "lastUpdate": 1775445836354,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -396,6 +396,105 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0000210156836462854",
             "extra": "mean: 756.9674656662436 usec\nrounds: 1267"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "576b4f4e283667552660365d685ca4fbce4ed2ac",
+          "message": "fix: allow dot-property access in pattern_matching tokenizer\n\nThe '.' tokenizer arm rejected any '.' not followed by '.' or a digit,\ncausing parse errors on valid Cypher property access syntax (.propName).\nAdd Token::Dot and emit it when '.' is followed by a letter or '_'.\nThe hard error is preserved as the fallback for genuinely unexpected '.'.\n\nFixes: \"Unexpected single '.', expected '..' or a digit\" on queries\nusing map projection or property access patterns like {.property}.\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>",
+          "timestamp": "2026-04-06T13:15:07+10:00",
+          "tree_id": "4b24e1fe6dafe8c9e13115b709f97ef0e2973e3d",
+          "url": "https://github.com/mrmagooey/kglite/commit/576b4f4e283667552660365d685ca4fbce4ed2ac"
+        },
+        "date": 1775445835836,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_nodes",
+            "value": 1081.808426499488,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000019997051318811744",
+            "extra": "mean: 924.3780834983849 usec\nrounds: 503"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_connections",
+            "value": 791.8233292252258,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000027036256155598235",
+            "extra": "mean: 1.2629079784482589 msec\nrounds: 696"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_match",
+            "value": 12304.64304605584,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000004501936017008121",
+            "extra": "mean: 81.27013487973895 usec\nrounds: 6984"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_where",
+            "value": 1589.3936203070136,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00010720463569933643",
+            "extra": "mean: 629.1707650159285 usec\nrounds: 949"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_traversal",
+            "value": 701300.5013756528,
+            "unit": "iter/sec",
+            "range": "stddev: 4.878440975662674e-7",
+            "extra": "mean: 1.4259222659023143 usec\nrounds: 71706"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_shortest_path",
+            "value": 136091.87234493173,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000001077205839634753",
+            "extra": "mean: 7.347977382994992 usec\nrounds: 22461"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_enable",
+            "value": 2765.229187767326,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000010498369607950288",
+            "extra": "mean: 361.6336773905566 usec\nrounds: 4476"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_where",
+            "value": 1580.286940223332,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00004589782821590314",
+            "extra": "mean: 632.7964716703134 usec\nrounds: 1359"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_match",
+            "value": 12440.550758326905,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000050127155109673015",
+            "extra": "mean: 80.38229331050029 usec\nrounds: 10569"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_save_kgl",
+            "value": 1375.9415306072415,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001874964091018661",
+            "extra": "mean: 726.7750683843899 usec\nrounds: 1009"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_save_v3",
+            "value": 1376.9824932645831,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000661640795453938",
+            "extra": "mean: 726.225645490362 usec\nrounds: 1275"
           }
         ]
       }
