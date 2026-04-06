@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **HAVING clause on aggregation queries** — `HAVING count(n) > N` and similar post-aggregation filters now work correctly on all graph sizes. Previously, aggregate function calls inside the HAVING predicate (e.g. `count(n)`, `sum(x)`) raised "Aggregate function cannot be used outside of RETURN/WITH" because the per-row evaluator didn't look up the already-computed projected value. The fix resolves aggregate expressions in HAVING by looking up the matching column from the projected row, consistent with how databases evaluate HAVING clauses.
+
 ### Added
 
 - **Multi-label nodes** — nodes can carry additional labels beyond their primary type. `CREATE (n:Person:Director {name:"Alice"})` stores `Person` as the primary label and `Director` as an extra label. Extra labels are preserved across saves/loads (backward-compatible with existing `.kgl` files).

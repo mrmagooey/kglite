@@ -2,7 +2,7 @@
 
 Full Cypher subset supported by KGLite. For a quick overview, see the [Cypher guide](https://kglite.readthedocs.io/en/latest/guides/cypher.html).
 
-> **Single-label note:** Each node has exactly one type. `labels(n)` returns a string, not a list. `SET n:OtherLabel` is not supported.
+> **Label model:** Each node has a primary type plus optional secondary labels. `labels(n)` returns a single-element list `["Label"]`. `SET n:OtherLabel` adds a secondary label; `REMOVE n:OtherLabel` removes it. The primary type (used for indexing) is immutable — change it via `SET n.type = 'NewType'`.
 
 ---
 
@@ -31,8 +31,11 @@ df = graph.cypher("MATCH (n:Person) RETURN n.name, n.age ORDER BY n.age", to_df=
 # Comparisons: =, <>, <, >, <=, >=
 graph.cypher("MATCH (n:Product) WHERE n.price >= 500 RETURN n.title, n.price")
 
-# Boolean operators: AND, OR, NOT
+# Boolean operators: AND, OR, NOT, XOR
 graph.cypher("MATCH (n:Person) WHERE n.age > 25 AND NOT n.city = 'Oslo' RETURN n.name")
+graph.cypher("MATCH (n:Person) WHERE n.active = true XOR n.pending = true RETURN n.name")
+
+# Boolean literals are case-insensitive: true, True, TRUE, false, False, FALSE all work
 
 # Null checks
 graph.cypher("MATCH (n:Person) WHERE n.email IS NOT NULL RETURN n.name")
@@ -147,6 +150,8 @@ graph.cypher("""
 
 ## Built-in Functions
 
+> **Function names are case-insensitive.** `toUpper()`, `TOUPPER()`, and `ToUpper()` are all equivalent — the name is normalized to lowercase at parse time.
+
 | Function | Description |
 |----------|-------------|
 | `toUpper(expr)` | Convert to uppercase |
@@ -157,7 +162,7 @@ graph.cypher("""
 | `size(expr)` | Length of string or list |
 | `type(r)` | Relationship type |
 | `id(n)` | Node ID |
-| `labels(n)` | Node type (string, not list — single-label) |
+| `labels(n)` | Node labels as a list, e.g. `["Person"]`; includes secondary labels if any |
 | `keys(n)` / `keys(r)` | Property names of a node or relationship (as JSON list) |
 | `date(str)` / `datetime(str)` | Parse date string to DateTime (`date('2020-01-15')`) |
 | `date_diff(d1, d2)` | Days between two dates (`d1 - d2`); also supports `date - date` arithmetic |
@@ -329,7 +334,7 @@ graph.cypher("MATCH (e:Estimate) WHERE valid_at(e, date('2020-06-15'), 'date_fro
 | `exp(x)` | e^x |
 | `pow(x, y)` / `power(x, y)` | x^y |
 | `pi()` | π constant |
-| `rand()` / `random()` | Random float [0, 1) |
+| `rand()` / `random()` | Random float [0, 1); distinct per row (thread-local PRNG, not re-seeded per call) |
 
 ## String Functions
 
@@ -337,7 +342,7 @@ graph.cypher("MATCH (e:Estimate) WHERE valid_at(e, date('2020-06-15'), 'date_fro
 |----------|-------------|
 | `split(str, delim)` | Split string into list |
 | `replace(str, search, repl)` | Replace all occurrences of `search` with `repl` |
-| `substring(str, start [, len])` | Extract substring (0-indexed) |
+| `substring(str, start [, len])` | Extract substring (0-indexed, Unicode char-indexed) |
 | `left(str, n)` | First `n` characters |
 | `right(str, n)` | Last `n` characters |
 | `trim(str)` | Remove leading/trailing whitespace |
@@ -834,7 +839,7 @@ graph.cypher("MATCH (f:Field) RETURN ts_at(f.oil, '2020')")
 |----------|-----------|
 | **Clauses** | `MATCH`, `OPTIONAL MATCH`, `WHERE`, `RETURN`, `WITH`, `ORDER BY`, `SKIP`, `LIMIT`, `UNWIND`, `UNION`/`UNION ALL`, `CREATE`, `SET`, `DELETE`, `DETACH DELETE`, `REMOVE`, `MERGE`, `EXPLAIN`, `PROFILE` |
 | **Patterns** | Node `(n:Type)`, relationship `-[:REL]->`, variable-length `*1..3`, undirected `-[:REL]-`, properties `{key: val, key: $param, key: var}`, `p = shortestPath(...)` |
-| **WHERE** | `=`, `<>`, `<`, `>`, `<=`, `>=`, `=~` (regex), `AND`, `OR`, `NOT`, `IS NULL`, `IS NOT NULL`, `IN [...]`, `CONTAINS`, `STARTS WITH`, `ENDS WITH`, `EXISTS { pattern WHERE ... }`, `EXISTS(( pattern ))`, inline pattern predicates, `any/all/none/single(x IN list WHERE ...)` |
+| **WHERE** | `=`, `<>`, `!=`, `<`, `>`, `<=`, `>=`, `=~` (regex), `AND`, `OR`, `NOT`, `XOR`, `IS NULL`, `IS NOT NULL`, `IN [...]`, `CONTAINS`, `STARTS WITH`, `ENDS WITH`, `EXISTS { pattern WHERE ... }`, `EXISTS(( pattern ))`, inline pattern predicates, `any/all/none/single(x IN list WHERE ...)` |
 | **RETURN** | `n.prop`, `r.prop`, `AS` aliases, `DISTINCT`, arithmetic `+`/`-`/`*`/`/`, string concat `\|\|`, map projections `n {.prop}`, map literals `{k: expr}`, list slicing `[i..j]` |
 | **Aggregation** | `count(*)`, `count(expr)`, `sum`, `avg`/`mean`, `min`, `max`, `collect`, `std` |
 | **Expressions** | `CASE WHEN...THEN...ELSE...END`, `$param`, `[x IN list WHERE ... \| expr]`, `any/all/none/single(...)` |
@@ -847,7 +852,7 @@ graph.cypher("MATCH (f:Field) RETURN ts_at(f.oil, '2020')")
 | **Timeseries** | `ts_sum`, `ts_avg`, `ts_min`, `ts_max`, `ts_count`, `ts_at`, `ts_first`, `ts_last`, `ts_delta`, `ts_series` — date-string args with resolution validation |
 | **Mutations** | `CREATE (n:Label {props})`, `CREATE (a)-[:TYPE]->(b)`, `SET n.prop = expr`, `DELETE`, `DETACH DELETE`, `REMOVE n.prop`, `MERGE ... ON CREATE SET ... ON MATCH SET` |
 | **Procedures** | `CALL pagerank/betweenness/degree/closeness() YIELD node, score`, `CALL louvain/label_propagation() YIELD node, community`, `CALL connected_components() YIELD node, component`, `CALL cluster({method, ...}) YIELD node, cluster`, `CALL list_procedures()` |
-| **Operators** | `+`, `-`, `*`, `/`, `\|\|` (string concat), `=~` (regex), `IN`, `STARTS WITH`, `ENDS WITH`, `CONTAINS`, `IS NULL`, `IS NOT NULL` |
+| **Operators** | `+`, `-`, `*`, `/`, `\|\|` (string concat), `=~` (regex), `IN`, `STARTS WITH`, `ENDS WITH`, `CONTAINS`, `IS NULL`, `IS NOT NULL`, `XOR`, `!=` (alias for `<>`) |
 
 ## openCypher Compatibility Matrix
 
@@ -867,9 +872,9 @@ Clause-by-clause comparison with the openCypher specification.
 | `UNWIND` | Full | List expansion, works with `collect()` round-trips |
 | `UNION` / `UNION ALL` | Full | |
 | `CREATE` | Full | Nodes, relationships, inline properties |
-| `SET` | Full | `n.prop = expr`, `n += {map}` |
+| `SET` | Full | `n.prop = expr`, `n += {map}`, `SET n:Label` (adds secondary label) |
 | `DELETE` / `DETACH DELETE` | Full | |
-| `REMOVE` | Full | `REMOVE n.prop` — property removal |
+| `REMOVE` | Full | `REMOVE n.prop` — property removal; `REMOVE n:Label` — removes secondary label |
 | `MERGE` | Full | `ON CREATE SET`, `ON MATCH SET` |
 | `EXPLAIN` | Full | Structured `ResultView` with cardinality estimates |
 | `PROFILE` | Full | Execute + per-clause stats (rows_in, rows_out, elapsed_us) |
@@ -886,7 +891,7 @@ Clause-by-clause comparison with the openCypher specification.
 | Arithmetic (`+`, `-`, `*`, `/`) | Full | |
 | String concat (`\|\|`) | Full | Auto-converts non-strings |
 | Comparison (`=`, `<>`, `<`, `>`, `<=`, `>=`) | Full | Three-valued logic (Null = false) |
-| Boolean (`AND`, `OR`, `NOT`) | Full | |
+| Boolean (`AND`, `OR`, `NOT`, `XOR`) | Full | |
 | `IS NULL` / `IS NOT NULL` | Full | Also works as expressions in RETURN/WITH |
 | `IN [list]` | Full | |
 | `CONTAINS` / `STARTS WITH` / `ENDS WITH` | Full | |
@@ -915,7 +920,7 @@ Clause-by-clause comparison with the openCypher specification.
 | `size`, `length` | Full | Strings, lists, and paths |
 | `type(r)` | Full | Returns relationship type |
 | `id(n)` | Full | Returns node id |
-| `labels(n)` | Full | Returns single label (string, not list — single-label model) |
+| `labels(n)` | Full | Returns a list, e.g. `["Person"]`; multi-label nodes include all labels |
 | `keys(n)` / `keys(r)` | Full | Returns property names as JSON list |
 | `date(str)` / `datetime(str)` | Full | Parse date string to DateTime; `d.year`, `d.month`, `d.day` accessors; `date ± N`, `date - date`, `date_diff()` |
 | `coalesce` | Full | |
@@ -931,9 +936,9 @@ Clause-by-clause comparison with the openCypher specification.
 
 | Feature | KGLite | Neo4j | Rationale |
 |---------|--------|-------|-----------|
-| Labels per node | Single label | Multiple | Simplifies indexing, type_indices are `HashMap<String, Vec<NodeIndex>>` |
-| `labels(n)` return type | `String` | `List[String]` | Single-label model |
-| `SET n:Label` | Not supported | Supported | Single-label model — change type via `SET n.type = 'NewType'` |
+| Labels per node | Primary + optional secondary labels | Multiple | Primary label drives `type_indices`; secondary labels via `SET n:Label` |
+| `labels(n)` return type | `List[String]` | `List[String]` | Returns `["PrimaryLabel"]` or `["Primary", "Secondary", ...]` |
+| `SET n:Label` / `REMOVE n:Label` | Supported (secondary labels only) | Supported | Adds/removes secondary labels; primary type is immutable (use `SET n.type` to retype) |
 | Storage | In-memory (petgraph) | Disk-based | Embedded use case, explicit `save()`/`load()` |
 | Transactions | Snapshot isolation + OCC | Full ACID | GIL serializes Python access; OCC catches conflicts |
 | Indexing | Type indices + vector index | Schema indexes | Automatic type-based lookup, no manual `CREATE INDEX` |

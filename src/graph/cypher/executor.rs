@@ -3790,7 +3790,30 @@ impl<'a> CypherExecutor<'a> {
                 let val = self.evaluate_expression(inner, row)?;
                 Ok(arithmetic_negate(&val))
             }
-            Expression::FunctionCall { name, args, .. } => {
+            Expression::FunctionCall {
+                name,
+                args,
+                distinct,
+            } => {
+                // HAVING context: aggregate function calls reference already-computed projected
+                // values (e.g. `count(n)` in HAVING resolves to the `count(n)` column).
+                if is_aggregate_expression(expr) {
+                    let col_key = expression_to_string(expr);
+                    if let Some(val) = row.projected.get(&col_key) {
+                        return Ok(val.clone());
+                    }
+                    // Also try without DISTINCT suffix in case alias was set differently
+                    if *distinct {
+                        let col_key_no_distinct = format!("{}({})", name, {
+                            let args_str: Vec<String> =
+                                args.iter().map(expression_to_string).collect();
+                            args_str.join(", ")
+                        });
+                        if let Some(val) = row.projected.get(&col_key_no_distinct) {
+                            return Ok(val.clone());
+                        }
+                    }
+                }
                 // Non-aggregate functions evaluated per-row
                 self.evaluate_scalar_function(name, args, row)
             }
@@ -10963,6 +10986,102 @@ mod tests {
     }
 
     // ========================================================================
+    // BUG-06: multi-hop path variable captures full path
+    // ========================================================================
+
+    #[test]
+    fn test_multihop_path_variable_length() {
+        // Create chain: A -[:KNOWS]-> B -[:KNOWS]-> C
+        // MATCH p=(a)-[:KNOWS*2]->(c) RETURN length(p)
+        // Should return 2, not 1
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'})-[:KNOWS]->(c:Person {name:'C'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let read_q = super::super::parser::parse_cypher(
+            "MATCH p=(a:Person)-[:KNOWS*2]->(c:Person) RETURN length(p)",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&read_q).unwrap();
+
+        assert_eq!(result.rows.len(), 1, "expected exactly one 2-hop path");
+        assert_eq!(
+            result.rows[0][0],
+            Value::Int64(2),
+            "length(p) should be 2 for a 2-hop path, got {:?}",
+            result.rows[0][0]
+        );
+    }
+
+    #[test]
+    fn test_multihop_path_variable_nodes() {
+        // Create chain: A -[:KNOWS]-> B -[:KNOWS]-> C
+        // MATCH p=(a)-[:KNOWS*2]->(c) RETURN nodes(p)
+        // nodes(p) should contain 3 nodes: A, B, C
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'})-[:KNOWS]->(c:Person {name:'C'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let read_q = super::super::parser::parse_cypher(
+            "MATCH p=(a:Person)-[:KNOWS*2]->(c:Person) RETURN size(nodes(p)) AS node_count",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&read_q).unwrap();
+
+        assert_eq!(result.rows.len(), 1, "expected exactly one 2-hop path");
+        assert_eq!(
+            result.rows[0][0],
+            Value::Int64(3),
+            "nodes(p) should contain 3 nodes for a 2-hop path, got {:?}",
+            result.rows[0][0]
+        );
+    }
+
+    #[test]
+    fn test_multihop_path_variable_range() {
+        // Create chain: A -> B -> C -> D
+        // MATCH p=(a)-[:KNOWS*2..3]->(d) should find 2-hop and 3-hop paths
+        // length(p) should be 2 or 3, never 1
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'})-[:KNOWS]->(c:Person {name:'C'})-[:KNOWS]->(d:Person {name:'D'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let read_q = super::super::parser::parse_cypher(
+            "MATCH p=(a:Person)-[:KNOWS*2..3]->(x:Person) RETURN length(p) ORDER BY length(p)",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&read_q).unwrap();
+
+        // Should find: A->B->C (len=2), A->B->C->D (len=3), B->C->D (len=2)
+        assert!(
+            result.rows.len() >= 2,
+            "expected multiple paths, got {}",
+            result.rows.len()
+        );
+        for row in &result.rows {
+            match &row[0] {
+                Value::Int64(n) => assert!(*n >= 2, "all paths should have length >= 2, got {}", n),
+                other => panic!("Expected Int64, got {:?}", other),
+            }
+        }
+    }
+
+    // ========================================================================
     // parse_list_value + split_top_level_commas tests
     // ========================================================================
 
@@ -12259,5 +12378,461 @@ mod tests {
         // Not all identical (would indicate re-seeding with same value)
         values.dedup();
         assert!(values.len() > 1, "rand() returned all identical values");
+    }
+
+    // ========================================================================
+    // shortestPath — pipe-separated multi-type relationship list
+    // ========================================================================
+
+    /// Build a small graph with two edge types:
+    ///   A -[TypeA]-> B -[TypeB]-> C
+    fn build_multi_type_path_graph() -> DirGraph {
+        let mut graph = DirGraph::new();
+
+        let mut add_node = |name: &str| -> petgraph::graph::NodeIndex {
+            let nd = NodeData::new(
+                Value::UniqueId(0),
+                Value::String(name.to_string()),
+                "X".to_string(),
+                HashMap::from([("name".to_string(), Value::String(name.to_string()))]),
+                &mut graph.interner,
+            );
+            let idx = graph.graph.add_node(nd);
+            graph
+                .type_indices
+                .entry("X".to_string())
+                .or_default()
+                .push(idx);
+            idx
+        };
+
+        let a = add_node("A");
+        let b = add_node("B");
+        let c = add_node("C");
+
+        let e_ab = EdgeData::new("TypeA".to_string(), HashMap::new(), &mut graph.interner);
+        let e_bc = EdgeData::new("TypeB".to_string(), HashMap::new(), &mut graph.interner);
+        graph.graph.add_edge(a, b, e_ab);
+        graph.graph.add_edge(b, c, e_bc);
+        graph.register_connection_type("TypeA".to_string());
+        graph.register_connection_type("TypeB".to_string());
+
+        graph
+    }
+
+    #[test]
+    fn test_shortest_path_multi_type_finds_path_via_either_type() {
+        // MATCH p=shortestPath((a:X)-[:TypeA|TypeB*..5]->(c:X)) must find A->B->C
+        // (two hops using TypeA then TypeB).  When only TypeA is allowed no path
+        // to C exists, so the result must be empty.
+        let mut graph = build_multi_type_path_graph();
+
+        let query = super::super::parser::parse_cypher(
+            "MATCH p=shortestPath((a:X {name:'A'})-[:TypeA|TypeB*..5]->(c:X {name:'C'})) RETURN p",
+        )
+        .unwrap();
+        let result = execute_mutable(&mut graph, &query, HashMap::new(), None).unwrap();
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "shortestPath should find the A->B->C path via TypeA|TypeB"
+        );
+
+        let query_single = super::super::parser::parse_cypher(
+            "MATCH p=shortestPath((a:X {name:'A'})-[:TypeA*..5]->(c:X {name:'C'})) RETURN p",
+        )
+        .unwrap();
+        let result_single =
+            execute_mutable(&mut graph, &query_single, HashMap::new(), None).unwrap();
+        assert_eq!(
+            result_single.rows.len(),
+            0,
+            "shortestPath should NOT find A->C when only TypeA is allowed"
+        );
+    }
+
+    #[test]
+    fn test_shortest_path_multi_type_pipe_pattern_no_star() {
+        // Pattern without a variable-length specifier: (a)-[:TypeA|TypeB]->(b)
+        // BFS traverses all reachable nodes regardless of hop count, so A->B
+        // (one TypeA hop) must be found.
+        let mut graph = build_multi_type_path_graph();
+
+        let query = super::super::parser::parse_cypher(
+            "MATCH p=shortestPath((a:X {name:'A'})-[:TypeA|TypeB]->(b:X {name:'B'})) RETURN p",
+        )
+        .unwrap();
+        let result = execute_mutable(&mut graph, &query, HashMap::new(), None).unwrap();
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "shortestPath with pipe-separated types (no star) should find A->B"
+        );
+    }
+
+    // ========================================================================
+    // BUG-01: inline pattern properties with aggregation should not drop filter
+    // ========================================================================
+
+    /// Build a graph with 3 active and 2 inactive Person nodes for BUG-01 tests.
+    fn build_active_persons_graph() -> DirGraph {
+        let mut graph = DirGraph::new();
+        let setup_queries = [
+            "CREATE (n:Person {name: 'Alice', active: true})",
+            "CREATE (n:Person {name: 'Bob', active: true})",
+            "CREATE (n:Person {name: 'Carol', active: true})",
+            "CREATE (n:Person {name: 'Dave', active: false})",
+            "CREATE (n:Person {name: 'Eve', active: false})",
+        ];
+        for q in &setup_queries {
+            let query = super::super::parser::parse_cypher(q).unwrap();
+            execute_mutable(&mut graph, &query, HashMap::new(), None).unwrap();
+        }
+        graph
+    }
+
+    /// BUG-01: MATCH (n:Person {active: true}) RETURN count(n) should return 3, not 5.
+    ///
+    /// Reproduces the issue where the inline property filter is dropped when a
+    /// fuse optimisation rewrites the MATCH+RETURN aggregate path.
+    #[test]
+    fn test_bug01_inline_props_with_count_aggregate() {
+        let graph = build_active_persons_graph();
+        let params = HashMap::new();
+
+        let q =
+            super::super::parser::parse_cypher("MATCH (n:Person {active: true}) RETURN count(n)")
+                .unwrap();
+        let executor = CypherExecutor::with_params(&graph, &params, None);
+        let result = executor.execute(&q).unwrap();
+
+        assert_eq!(result.rows.len(), 1, "expected 1 row");
+        assert_eq!(
+            result.rows[0][0],
+            Value::Int64(3),
+            "expected count 3 (only active=true nodes), got {:?}",
+            result.rows[0][0]
+        );
+    }
+
+    /// BUG-01 variant: WHERE clause version should also return 3.
+    #[test]
+    fn test_bug01_where_clause_with_count_aggregate() {
+        let graph = build_active_persons_graph();
+        let params = HashMap::new();
+
+        let q = super::super::parser::parse_cypher(
+            "MATCH (n:Person) WHERE n.active = true RETURN count(n)",
+        )
+        .unwrap();
+        let executor = CypherExecutor::with_params(&graph, &params, None);
+        let result = executor.execute(&q).unwrap();
+
+        assert_eq!(result.rows.len(), 1, "expected 1 row");
+        assert_eq!(
+            result.rows[0][0],
+            Value::Int64(3),
+            "expected count 3 (WHERE active=true), got {:?}",
+            result.rows[0][0]
+        );
+    }
+
+    /// BUG-01 diagnostic: confirm the planner does NOT fuse away inline property filters.
+    /// For `MATCH (n:Person {active: true}) RETURN count(n)`, the planner must NOT
+    /// produce FusedCountTypedNode (which ignores properties) — it must fall through
+    /// to the normal MATCH+RETURN path that respects inline properties.
+    #[test]
+    fn test_bug01_planner_does_not_fuse_when_inline_props() {
+        let graph = build_active_persons_graph();
+        let params = HashMap::new();
+
+        let mut q =
+            super::super::parser::parse_cypher("MATCH (n:Person {active: true}) RETURN count(n)")
+                .unwrap();
+        super::super::optimize(&mut q, &graph, &params);
+
+        // Must NOT be FusedCountTypedNode — that path ignores inline properties
+        assert!(
+            !matches!(
+                &q.clauses[0],
+                super::super::ast::Clause::FusedCountTypedNode { .. }
+            ),
+            "planner must not produce FusedCountTypedNode when node has inline properties, got {:?}",
+            q.clauses[0]
+        );
+        // Must NOT be FusedCountAll — ignores type and properties
+        assert!(
+            !matches!(
+                &q.clauses[0],
+                super::super::ast::Clause::FusedCountAll { .. }
+            ),
+            "planner must not produce FusedCountAll when node has inline properties"
+        );
+        // Must NOT be FusedNodeScanAggregate without the property filter (planner bails
+        // on inline props → fused scan aggregate, so it should remain as Match+Return)
+        // The first clause should still be a plain Match
+        assert!(
+            matches!(&q.clauses[0], super::super::ast::Clause::Match(_)),
+            "expected plain Match clause when inline props present, got {:?}",
+            q.clauses[0]
+        );
+    }
+
+    /// BUG-01 variant: inline props + GROUP BY aggregation should also respect the filter.
+    #[test]
+    fn test_bug01_inline_props_with_group_by_aggregate() {
+        let graph = build_active_persons_graph();
+        let params = HashMap::new();
+
+        // Group by active field (all matching nodes have active=true, so 1 group with count 3)
+        let q = super::super::parser::parse_cypher(
+            "MATCH (n:Person {active: true}) RETURN n.active, count(n)",
+        )
+        .unwrap();
+        let executor = CypherExecutor::with_params(&graph, &params, None);
+        let result = executor.execute(&q).unwrap();
+
+        assert_eq!(result.rows.len(), 1, "expected 1 group");
+        assert_eq!(
+            result.rows[0][1],
+            Value::Int64(3),
+            "expected count 3 in group, got {:?}",
+            result.rows[0][1]
+        );
+    }
+}
+
+#[cfg(test)]
+mod bug03_having_tests {
+    use super::*;
+    use crate::datatypes::values::Value;
+    use crate::graph::schema::{DirGraph, EdgeData, NodeData};
+
+    /// Build a DirGraph with `city_a_count` Person nodes tagged city="A" and
+    /// `city_b_count` Person nodes tagged city="B".
+    fn build_city_graph(city_a_count: usize, city_b_count: usize) -> DirGraph {
+        let mut graph = DirGraph::new();
+        let total = city_a_count + city_b_count;
+        for i in 0..total {
+            let city = if i < city_a_count { "A" } else { "B" };
+            let node = NodeData::new(
+                Value::UniqueId(i as u32 + 1),
+                Value::String(format!("Person{}", i)),
+                "Person".to_string(),
+                HashMap::from([("city".to_string(), Value::String(city.to_string()))]),
+                &mut graph.interner,
+            );
+            let idx = graph.graph.add_node(node);
+            graph
+                .type_indices
+                .entry("Person".to_string())
+                .or_default()
+                .push(idx);
+        }
+        graph
+    }
+
+    /// BUG-03 (small graph, fused-node-scan path):
+    /// HAVING must filter groups when total nodes < RAYON_THRESHOLD.
+    #[test]
+    fn test_having_small_graph_fused_node_scan() {
+        // 5 nodes in city A, 3 in city B — total 8, below RAYON_THRESHOLD=256
+        let graph = build_city_graph(5, 3);
+        let q = super::super::parser::parse_cypher(
+            "MATCH (n:Person) RETURN n.city, count(n) HAVING count(n) > 4",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "HAVING should filter out city B (count=3); got {} rows: {:?}",
+            result.rows.len(),
+            result.rows
+        );
+        assert_eq!(result.rows[0][0], Value::String("A".to_string()));
+        assert_eq!(result.rows[0][1], Value::Int64(5));
+    }
+
+    /// BUG-03 (large graph, fused-node-scan path):
+    /// 300 Person nodes total — city A: 200, city B: 100. Total > RAYON_THRESHOLD=256.
+    /// HAVING count(n) > 150 must keep only city A.
+    #[test]
+    fn test_having_large_graph_fused_node_scan() {
+        let graph = build_city_graph(200, 100);
+        let q = super::super::parser::parse_cypher(
+            "MATCH (n:Person) RETURN n.city, count(n) HAVING count(n) > 150",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "HAVING should filter out city B (count=100); got {} rows: {:?}",
+            result.rows.len(),
+            result.rows
+        );
+        assert_eq!(result.rows[0][0], Value::String("A".to_string()));
+        assert_eq!(result.rows[0][1], Value::Int64(200));
+    }
+
+    /// BUG-03 (edge-pattern fused path — execute_fused_match_return_aggregate):
+    /// HAVING clause must be applied when the edge-aggregation fused path runs.
+    /// 200 persons linked to city A + 100 linked to city B.
+    /// HAVING count(r) > 150 must keep only city A.
+    #[test]
+    fn test_having_large_graph_fused_match_return_aggregate() {
+        let mut graph = DirGraph::new();
+
+        // Two City nodes
+        let city_a = NodeData::new(
+            Value::UniqueId(1),
+            Value::String("CityA".to_string()),
+            "City".to_string(),
+            HashMap::from([("name".to_string(), Value::String("A".to_string()))]),
+            &mut graph.interner,
+        );
+        let city_b = NodeData::new(
+            Value::UniqueId(2),
+            Value::String("CityB".to_string()),
+            "City".to_string(),
+            HashMap::from([("name".to_string(), Value::String("B".to_string()))]),
+            &mut graph.interner,
+        );
+        let city_a_idx = graph.graph.add_node(city_a);
+        let city_b_idx = graph.graph.add_node(city_b);
+        graph
+            .type_indices
+            .entry("City".to_string())
+            .or_default()
+            .extend([city_a_idx, city_b_idx]);
+
+        // 200 persons → city A, 100 persons → city B (via HAS_RESIDENT edge)
+        for i in 0..300usize {
+            let city_idx = if i < 200 { city_a_idx } else { city_b_idx };
+            let person = NodeData::new(
+                Value::UniqueId(100 + i as u32),
+                Value::String(format!("P{}", i)),
+                "Person".to_string(),
+                HashMap::new(),
+                &mut graph.interner,
+            );
+            let person_idx = graph.graph.add_node(person);
+            graph
+                .type_indices
+                .entry("Person".to_string())
+                .or_default()
+                .push(person_idx);
+
+            let edge = EdgeData::new(
+                "HAS_RESIDENT".to_string(),
+                HashMap::new(),
+                &mut graph.interner,
+            );
+            graph.graph.add_edge(city_idx, person_idx, edge);
+        }
+        // Register the connection type so the pattern executor can find edges
+        graph.register_connection_type("HAS_RESIDENT".to_string());
+
+        let q = super::super::parser::parse_cypher(
+            "MATCH (c:City)-[r:HAS_RESIDENT]->(p:Person) \
+             RETURN c.name, count(r) HAVING count(r) > 150",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "HAVING should filter out city B (count=100); got {} rows: {:?}",
+            result.rows.len(),
+            result.rows
+        );
+        // c.name resolves to the node title ("CityA" / "CityB")
+        assert_eq!(result.rows[0][0], Value::String("CityA".to_string()));
+        assert_eq!(result.rows[0][1], Value::Int64(200));
+    }
+
+    /// Debug helper: edge-pattern HAVING without the threshold, to verify HAVING works
+    /// on small graphs via the non-fused path.
+    #[test]
+    fn test_having_edge_pattern_small() {
+        let mut graph = DirGraph::new();
+
+        let city_a = NodeData::new(
+            Value::UniqueId(1),
+            Value::String("CityA".to_string()),
+            "City".to_string(),
+            HashMap::from([("name".to_string(), Value::String("A".to_string()))]),
+            &mut graph.interner,
+        );
+        let city_b = NodeData::new(
+            Value::UniqueId(2),
+            Value::String("CityB".to_string()),
+            "City".to_string(),
+            HashMap::from([("name".to_string(), Value::String("B".to_string()))]),
+            &mut graph.interner,
+        );
+        let city_a_idx = graph.graph.add_node(city_a);
+        let city_b_idx = graph.graph.add_node(city_b);
+        graph
+            .type_indices
+            .entry("City".to_string())
+            .or_default()
+            .extend([city_a_idx, city_b_idx]);
+
+        // 5 persons → city A, 3 persons → city B
+        for i in 0..8usize {
+            let city_idx = if i < 5 { city_a_idx } else { city_b_idx };
+            let person = NodeData::new(
+                Value::UniqueId(100 + i as u32),
+                Value::String(format!("P{}", i)),
+                "Person".to_string(),
+                HashMap::new(),
+                &mut graph.interner,
+            );
+            let person_idx = graph.graph.add_node(person);
+            graph
+                .type_indices
+                .entry("Person".to_string())
+                .or_default()
+                .push(person_idx);
+
+            use crate::graph::schema::EdgeData;
+            let edge = EdgeData::new(
+                "HAS_RESIDENT".to_string(),
+                HashMap::new(),
+                &mut graph.interner,
+            );
+            graph.graph.add_edge(city_idx, person_idx, edge);
+        }
+        // Register the connection type so the pattern executor can find edges
+        graph.register_connection_type("HAS_RESIDENT".to_string());
+
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+
+        // HAVING count(r) > 4 should keep only city A (count=5), not city B (count=3)
+        let q = super::super::parser::parse_cypher(
+            "MATCH (c:City)-[r:HAS_RESIDENT]->(p:Person) \
+             RETURN c.name, count(r) HAVING count(r) > 4",
+        )
+        .unwrap();
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "HAVING should filter out city B (count=3); got {} rows: {:?}",
+            result.rows.len(),
+            result.rows
+        );
+        // c.name resolves to the node title ("CityA" / "CityB")
+        assert_eq!(result.rows[0][0], Value::String("CityA".to_string()));
+        assert_eq!(result.rows[0][1], Value::Int64(5));
     }
 }

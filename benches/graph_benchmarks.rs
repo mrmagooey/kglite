@@ -218,8 +218,7 @@ fn bench_property_iter(c: &mut Criterion) {
             tag = i % 10,
         );
         let parsed = parse_cypher(&q).expect("create should parse");
-        execute_mutable(&mut graph, &parsed, params.clone(), None)
-            .expect("create should succeed");
+        execute_mutable(&mut graph, &parsed, params.clone(), None).expect("create should succeed");
     }
 
     // WHERE n.id > 50 triggers property access on every node; RETURN n.name, n.id adds more.
@@ -241,13 +240,9 @@ fn bench_substring(c: &mut Criterion) {
     let mut graph = DirGraph::new();
     let params: HashMap<String, kglite::datatypes::values::Value> = HashMap::new();
     for i in 0..200usize {
-        let q = format!(
-            "CREATE (n:Node {{id: {id}, name: 'Node_{id:03}'}})",
-            id = i,
-        );
+        let q = format!("CREATE (n:Node {{id: {id}, name: 'Node_{id:03}'}})", id = i,);
         let parsed = parse_cypher(&q).expect("create should parse");
-        execute_mutable(&mut graph, &parsed, params.clone(), None)
-            .expect("create should succeed");
+        execute_mutable(&mut graph, &parsed, params.clone(), None).expect("create should succeed");
     }
 
     // substring(n.name, 0, 4) and substring(n.name, 5) — two calls per row × 200 rows
@@ -270,13 +265,9 @@ fn bench_property_scan(c: &mut Criterion) {
     let mut graph = DirGraph::new();
     let params: HashMap<String, kglite::datatypes::values::Value> = HashMap::new();
     for i in 0..200usize {
-        let q = format!(
-            "CREATE (n:Node {{id: {id}, name: 'Node_{id:03}'}})",
-            id = i,
-        );
+        let q = format!("CREATE (n:Node {{id: {id}, name: 'Node_{id:03}'}})", id = i,);
         let parsed = parse_cypher(&q).expect("create should parse");
-        execute_mutable(&mut graph, &parsed, params.clone(), None)
-            .expect("create should succeed");
+        execute_mutable(&mut graph, &parsed, params.clone(), None).expect("create should succeed");
     }
 
     // STARTS WITH triggers as_str() on every row's name value; RETURN n.name exercises column iter
