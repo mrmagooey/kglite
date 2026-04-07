@@ -3720,7 +3720,12 @@ impl<'a> CypherExecutor<'a> {
                 if let Some(path) = row.path_bindings.get(name) {
                     let mut nodes = Vec::new();
                     let mut edges = Vec::new();
-                    nodes.push(serde_json::json!(path.source.index()));
+                    // Emit source node as a full property object.
+                    if let Some(src_node) = self.graph.graph.node_weight(path.source) {
+                        nodes.push(node_to_path_json(path.source, src_node, &self.graph.interner));
+                    } else {
+                        nodes.push(serde_json::json!({"__node_idx": path.source.index()}));
+                    }
                     let mut prev = path.source;
                     for (next, edge_type) in &path.path {
                         let et_key = crate::graph::schema::InternedKey::from_str(edge_type);
@@ -3745,7 +3750,12 @@ impl<'a> CypherExecutor<'a> {
                             }
                         }
                         edges.push(serde_json::json!({"__edge_idx": eidx, "__src_idx": si, "__dst_idx": di, "__type": edge_type}));
-                        nodes.push(serde_json::json!(next.index()));
+                        // Emit each intermediate/destination node as a full property object.
+                        if let Some(next_node) = self.graph.graph.node_weight(*next) {
+                            nodes.push(node_to_path_json(*next, next_node, &self.graph.interner));
+                        } else {
+                            nodes.push(serde_json::json!({"__node_idx": next.index()}));
+                        }
                         prev = *next;
                     }
                     let path_json =
@@ -9435,6 +9445,75 @@ fn resolve_edge_property(graph: &DirGraph, edge: &EdgeBinding, property: &str) -
 /// Convert a NodeData to a representative Value (title string)
 fn node_to_map_value(node: &NodeData) -> Value {
     node.title.clone()
+}
+
+/// Serialize a node as a full JSON object for path results.
+/// Emits `__node_idx`, `__labels`, plus all stored properties (id, title, type, and
+/// every extra property stored in PropertyStorage).  This matches the format that
+/// `jsonToNode` in the Go kglite-dawgs layer expects so that path nodes carry full
+/// property data rather than just a bare integer index.
+fn node_to_path_json(node_idx: petgraph::graph::NodeIndex, node: &NodeData, interner: &crate::graph::schema::StringInterner) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+
+    // Internal graph index — used by the consumer to identify the node.
+    map.insert("__node_idx".to_string(), serde_json::json!(node_idx.index()));
+
+    // Build label list: primary node_type + extra_labels + __kinds property.
+    let mut all_labels: Vec<String> = std::iter::once(&node.node_type)
+        .chain(node.extra_labels.iter())
+        .cloned()
+        .collect();
+    if let Some(kinds_cow) = node.get_property("__kinds") {
+        if let Value::String(kinds_json) = kinds_cow.as_ref() {
+            if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str(kinds_json.as_str()) {
+                for item in &arr {
+                    if let serde_json::Value::String(s) = item {
+                        if !all_labels.contains(s) {
+                            all_labels.push(s.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    all_labels.sort_unstable();
+    all_labels.dedup();
+    map.insert("__labels".to_string(), serde_json::Value::Array(
+        all_labels.into_iter().map(serde_json::Value::String).collect()
+    ));
+
+    // Core identity fields.
+    map.insert("id".to_string(), value_to_serde_json(&node.id));
+    map.insert("title".to_string(), value_to_serde_json(&node.title));
+    map.insert("type".to_string(), serde_json::Value::String(node.node_type.clone()));
+
+    // All stored properties (iterates over whatever PropertyStorage variant is active).
+    for (key, val) in node.properties.iter_owned(interner) {
+        // Skip internal keys we already emitted above, and the redundant __kinds.
+        match key.as_str() {
+            "id" | "title" | "type" | "__kinds" => continue,
+            _ => {}
+        }
+        map.insert(key, value_to_serde_json(&val));
+    }
+
+    serde_json::Value::Object(map)
+}
+
+/// Convert a kglite `Value` to a `serde_json::Value` for path/node serialization.
+fn value_to_serde_json(val: &Value) -> serde_json::Value {
+    match val {
+        Value::Null => serde_json::Value::Null,
+        Value::String(s) => serde_json::Value::String(s.clone()),
+        Value::Int64(i) => serde_json::json!(i),
+        Value::Float64(f) => serde_json::json!(f),
+        Value::Boolean(b) => serde_json::Value::Bool(*b),
+        Value::UniqueId(u) => serde_json::json!(u),
+        Value::DateTime(d) => serde_json::Value::String(d.format("%Y-%m-%d").to_string()),
+        Value::Point { lat, lon } => serde_json::json!({"latitude": lat, "longitude": lon}),
+        Value::NodeRef(idx) => serde_json::json!(idx),
+        Value::EdgeRef { edge_idx, .. } => serde_json::json!(edge_idx),
+    }
 }
 
 /// Parse a list value from string format "[a, b, c]".
