@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775534284301,
+  "lastUpdate": 1775551014476,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -693,6 +693,105 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.000015717936945657997",
             "extra": "mean: 734.6626461763416 usec\nrounds: 1334"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "e79413101747fea06464eb12d310b1a4bf119aef",
+          "message": "fix: improve __kinds secondary label matching, NULL logic, and path construction\n\n- pattern_matching: use node_matches_label() for edge target node type\n  checks so nodes with the label in __kinds are matched when traversing\n  relationships (fixes Azure AZServicePrincipal, Domain trust queries)\n\n- pattern_matching: always scan for __kinds nodes in find_matching_nodes\n  even when secondary_label_index has entries for the label, so nodes\n  that gained a label via SET __kinds are discoverable alongside nodes\n  with the label as extra_labels (fixes MATCH (n:Group) after analysis)\n\n- executor: implement three-valued NULL propagation for NOT + string\n  predicates (Contains/StartsWith/EndsWith) — NOT (NULL CONTAINS x)\n  now returns false (excluded) instead of true, matching Neo4j semantics\n\n- executor: deduplicate undirected shortestPath pairs to avoid returning\n  both (A,B) and (B,A) paths for the same node pair\n\n- executor: append fixed-length edges after VLP in path assignments so\n  p=(u)-[*0..4]->()-[r:AdminTo]->(c) includes the AdminTo edge in the\n  path, not just the variable-length portion\n\n- executor: set has_secondary_labels flag when __kinds is SET via Cypher\n  so the pattern executor uses the __kinds fallback scan\n\n- executor: resolve n.name from property storage before falling back to\n  node title, matching Neo4j semantics for property access\n\n- executor: preserve __kinds insertion order in labels() output instead\n  of sorting alphabetically, matching Neo4j label ordering\n\n- parser: add test coverage for inline relationship properties and\n  negative pattern predicates\n\nCo-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-04-07T18:31:20+10:00",
+          "tree_id": "f73b123fba054849af5050da6bf49f6abc22e38e",
+          "url": "https://github.com/mrmagooey/kglite/commit/e79413101747fea06464eb12d310b1a4bf119aef"
+        },
+        "date": 1775551014195,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_nodes",
+            "value": 1086.684872759302,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000029217638642963798",
+            "extra": "mean: 920.2299811727457 usec\nrounds: 478"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_connections",
+            "value": 794.7879973029845,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00002823449130734252",
+            "extra": "mean: 1.258197158730853 msec\nrounds: 693"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_match",
+            "value": 14342.720745706396,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000004850684045429736",
+            "extra": "mean: 69.72177857533465 usec\nrounds: 7244"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_where",
+            "value": 1643.0721880430845,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000020955892782573982",
+            "extra": "mean: 608.6159861247545 usec\nrounds: 1009"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_traversal",
+            "value": 668568.5661646071,
+            "unit": "iter/sec",
+            "range": "stddev: 4.233672426090956e-7",
+            "extra": "mean: 1.4957328995240136 usec\nrounds: 70393"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_shortest_path",
+            "value": 132613.7952188068,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000013309804921404067",
+            "extra": "mean: 7.540693623540786 usec\nrounds: 21219"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_enable",
+            "value": 2884.103613773035,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000028077805891653767",
+            "extra": "mean: 346.72818106274013 usec\nrounds: 5175"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_where",
+            "value": 1594.581973603957,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00003024587901626869",
+            "extra": "mean: 627.1236076624355 usec\nrounds: 1305"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_match",
+            "value": 14610.114142204011,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000004217013865899588",
+            "extra": "mean: 68.44573493860089 usec\nrounds: 9926"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_save_kgl",
+            "value": 1318.3333054687769,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001510233491418825",
+            "extra": "mean: 758.5335179288496 usec\nrounds: 1004"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_save_v3",
+            "value": 1344.0688974257878,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000015069461542296302",
+            "extra": "mean: 744.0094789152836 usec\nrounds: 1328"
           }
         ]
       }
