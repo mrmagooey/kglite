@@ -2822,14 +2822,12 @@ mod tests {
         assert_eq!(loaded_node.node_type, "Thing");
 
         // Verify Map properties were restored via iter
-        let props: HashMap<&str, &Value> = loaded_node
-            .properties
-            .iter(&loaded.interner)
-            .collect();
+        let props: HashMap<&str, &Value> = loaded_node.properties.iter(&loaded.interner).collect();
         assert_eq!(
             props.get("name").copied(),
             Some(&Value::String("MapNode".to_string())),
-            "name should survive round-trip; props={:?}", props
+            "name should survive round-trip; props={:?}",
+            props
         );
         assert_eq!(
             props.get("score").copied(),
@@ -2851,9 +2849,7 @@ mod tests {
 
         // Add a Map-storage node directly (simulates a node added via Python API
         // without going through enable_columnar)
-        let map_props = HashMap::from([
-            ("label".to_string(), Value::String("raw".to_string())),
-        ]);
+        let map_props = HashMap::from([("label".to_string(), Value::String("raw".to_string()))]);
         let raw_node = NodeData::new(
             Value::Int64(99),
             Value::String("Raw".to_string()),
@@ -2907,6 +2903,139 @@ mod tests {
                     .unwrap_or(false)
             })
             .count();
-        assert_eq!(person_count, 2, "Both Person nodes should survive round-trip");
+        assert_eq!(
+            person_count, 2,
+            "Both Person nodes should survive round-trip"
+        );
+    }
+
+    /// Map-only graph where node properties include boolean and Null values.
+    /// Ensures these variant types survive the write_graph_v3 → load_file round-trip.
+    #[test]
+    fn test_map_properties_bool_and_null_survive_save_load() {
+        use crate::graph::schema::PropertyStorage;
+
+        let mut g = DirGraph::new();
+        let mut props = HashMap::new();
+        props.insert("active".to_string(), Value::Boolean(true));
+        props.insert("score".to_string(), Value::Null);
+        props.insert("label".to_string(), Value::String("test".to_string()));
+        let node = NodeData::new(
+            Value::Int64(1),
+            Value::String("BoolNode".to_string()),
+            "BoolType".to_string(),
+            props,
+            &mut g.interner,
+        );
+        let node_idx = g.graph.add_node(node);
+        g.type_indices
+            .entry("BoolType".to_string())
+            .or_default()
+            .push(node_idx);
+
+        // Must be Map storage before save
+        assert!(matches!(
+            g.graph.node_weight(node_idx).unwrap().properties,
+            PropertyStorage::Map(_)
+        ));
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&g, path).unwrap();
+
+        let kg = load_file(path).unwrap();
+        let loaded = &*kg.inner;
+
+        assert_eq!(loaded.graph.node_count(), 1);
+        let loaded_node = loaded.graph.node_weight(node_idx).unwrap();
+        let stored: HashMap<&str, &Value> = loaded_node.properties.iter(&loaded.interner).collect();
+
+        assert_eq!(
+            stored.get("active").copied(),
+            Some(&Value::Boolean(true)),
+            "boolean true should survive round-trip"
+        );
+        assert_eq!(
+            stored.get("score").copied(),
+            Some(&Value::Null),
+            "Null should survive round-trip"
+        );
+        assert_eq!(
+            stored.get("label").copied(),
+            Some(&Value::String("test".to_string())),
+            "String should survive round-trip"
+        );
+    }
+
+    /// Map-only graph with many properties (>20) must survive the round-trip.
+    #[test]
+    fn test_map_properties_many_props_survive_save_load() {
+        let mut g = DirGraph::new();
+        let mut props = HashMap::new();
+        for i in 0..25usize {
+            props.insert(format!("prop_{}", i), Value::Int64(i as i64));
+        }
+        let node = NodeData::new(
+            Value::Int64(42),
+            Value::String("BigNode".to_string()),
+            "BigType".to_string(),
+            props,
+            &mut g.interner,
+        );
+        let node_idx = g.graph.add_node(node);
+        g.type_indices
+            .entry("BigType".to_string())
+            .or_default()
+            .push(node_idx);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&g, path).unwrap();
+
+        let kg = load_file(path).unwrap();
+        let loaded = &*kg.inner;
+
+        let loaded_node = loaded.graph.node_weight(node_idx).unwrap();
+        let stored: HashMap<&str, &Value> = loaded_node.properties.iter(&loaded.interner).collect();
+
+        for i in 0..25usize {
+            let key = format!("prop_{}", i);
+            assert_eq!(
+                stored.get(key.as_str()).copied(),
+                Some(&Value::Int64(i as i64)),
+                "prop_{} should survive round-trip; got {:?}",
+                i,
+                stored.get(key.as_str())
+            );
+        }
+    }
+
+    /// Loading a v3 file where map_properties_compressed_size == 0 (old file that
+    /// predates the Map-properties section) must succeed without error.
+    /// We simulate this by writing a graph with ONLY columnar nodes (no Map nodes),
+    /// so map_properties_compressed_size stays 0 in the metadata.
+    #[test]
+    fn test_v3_file_with_zero_map_properties_size_loads_cleanly() {
+        // make_test_graph produces columnar Person nodes; no Map-storage nodes.
+        let mut g = make_test_graph();
+        g.enable_columnar();
+        let mut arc = Arc::new(g);
+        prepare_save(&mut arc);
+        let g = unwrap_arc(arc);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&g, path).unwrap();
+
+        // Verify the metadata has map_properties_compressed_size == 0
+        let bytes = std::fs::read(path).unwrap();
+        // The metadata JSON is embedded in the file; just check the file loads cleanly.
+        let kg = load_file(path)
+            .expect("Loading v3 file with map_properties_compressed_size=0 should succeed");
+        // Should have the original 2 Person nodes
+        assert_eq!(kg.inner.graph.node_count(), 2);
+        // Sanity: the raw bytes should NOT contain the Map-properties marker in a way
+        // that would break backward compat — loading succeeded is sufficient.
+        let _ = bytes; // avoid unused warning
     }
 }

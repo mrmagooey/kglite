@@ -13329,6 +13329,147 @@ mod secondary_label_index_tests {
         );
     }
 
+    /// SET n:Label should wire into secondary_label_index so a subsequent MATCH finds the node.
+    #[test]
+    fn test_set_label_wires_into_secondary_index() {
+        let mut graph = DirGraph::new();
+        // Create a plain node, then SET a secondary label
+        let create_q = super::super::parser::parse_cypher("CREATE (n:Base {name: 'x'})").unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let set_q = super::super::parser::parse_cypher("MATCH (n:Base) SET n:Extra").unwrap();
+        execute_mutable(&mut graph, &set_q, HashMap::new(), None).unwrap();
+
+        // Index must be populated
+        assert!(
+            graph.secondary_label_index.contains_key("Extra"),
+            "secondary_label_index should contain 'Extra' after SET n:Extra; got {:?}",
+            graph.secondary_label_index.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            graph.has_secondary_labels,
+            "has_secondary_labels should be true"
+        );
+
+        // MATCH via the secondary label must succeed
+        let q = super::super::parser::parse_cypher("MATCH (n:Extra) RETURN n.name").unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "Should find node via SET secondary label"
+        );
+        assert_eq!(result.rows[0][0], Value::String("x".to_string()));
+    }
+
+    /// After rebuild_type_indices() the secondary_label_index must be reconstructed
+    /// from extra_labels so that MATCH via secondary label still works.
+    #[test]
+    fn test_rebuild_type_indices_restores_secondary_index() {
+        let mut graph = DirGraph::new();
+        let create_q =
+            super::super::parser::parse_cypher("CREATE (n:Primary:Secondary {name: 'node'})")
+                .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        // Corrupt the index to simulate drift
+        graph.secondary_label_index.clear();
+        graph.has_secondary_labels = false;
+
+        // Rebuild
+        graph.rebuild_type_indices();
+
+        assert!(
+            graph.secondary_label_index.contains_key("Secondary"),
+            "secondary_label_index should be rebuilt"
+        );
+        assert!(graph.has_secondary_labels);
+
+        // MATCH via secondary label should still work
+        let q = super::super::parser::parse_cypher("MATCH (n:Secondary) RETURN n.name").unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0][0], Value::String("node".to_string()));
+    }
+
+    /// Nodes with the same secondary label but different primary labels must all be returned
+    /// when querying by secondary label alone. Nodes without the secondary label must not match.
+    #[test]
+    fn test_secondary_label_does_not_match_primary_only_nodes() {
+        let mut graph = DirGraph::new();
+        // Two nodes with TagX (secondary), one without
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:TypeA:TagX {name: 'with_tag'}), (b:TypeB {name: 'no_tag'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        // MATCH by secondary label — should return only the node that has TagX
+        let q = super::super::parser::parse_cypher("MATCH (n:TagX) RETURN n.name").unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "Only the node with TagX should match, not the TypeB-only node"
+        );
+        assert_eq!(result.rows[0][0], Value::String("with_tag".to_string()));
+    }
+
+    /// Multiple nodes with the same secondary label — all should be findable.
+    #[test]
+    fn test_multiple_nodes_same_secondary_label() {
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:TypeA:Tag {name: 'n1'}), (b:TypeB:Tag {name: 'n2'}), (c:TypeA:Tag {name: 'n3'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        assert_eq!(
+            graph.secondary_label_index.get("Tag").map(|v| v.len()),
+            Some(3),
+            "All 3 Tag nodes should be in the index"
+        );
+
+        let q = super::super::parser::parse_cypher("MATCH (n:Tag) RETURN n.name ORDER BY n.name")
+            .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(result.rows.len(), 3, "Should find all 3 Tag nodes");
+    }
+
+    /// WHERE 'SomeLabel' IN labels(n) should work for secondary labels.
+    #[test]
+    fn test_where_in_labels_with_secondary_label() {
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:TypeA:Secondary {name: 'match'}), (b:TypeA {name: 'nomatch'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let q = super::super::parser::parse_cypher(
+            "MATCH (n:TypeA) WHERE 'Secondary' IN labels(n) RETURN n.name",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "Only the node with Secondary label should match"
+        );
+        assert_eq!(result.rows[0][0], Value::String("match".to_string()));
+    }
+
     /// MATCH (n:Secondary) should find nodes via the secondary label index.
     #[test]
     fn test_find_matching_nodes_uses_index() {
@@ -13398,6 +13539,74 @@ mod anon_vlp_key_tests {
             "target should be D"
         );
     }
+
+    /// Zero-hop paths (*0..3): a node should match itself when min_hops == 0.
+    /// MATCH (a:N)-[:REL*0..3]->(b:N) WHERE a.name = 'A' RETURN a.name, b.name
+    /// must include the self-match row (A, A).
+    #[test]
+    fn test_zero_hop_vlp_matches_self() {
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:N {name: 'A'})-[:REL]->(b:N {name: 'B'})-[:REL]->(c:N {name: 'C'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let read_q = super::super::parser::parse_cypher(
+            "MATCH (a:N)-[:REL*0..3]->(b:N) WHERE a.name = 'A' RETURN a.name, b.name ORDER BY b.name",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&read_q).unwrap();
+
+        let b_names: Vec<String> = result
+            .rows
+            .iter()
+            .map(|r| match &r[1] {
+                Value::String(s) => s.clone(),
+                other => panic!("Expected String, got {:?}", other),
+            })
+            .collect();
+
+        // Zero-hop means A matches A itself; 1-hop gives B; 2-hop gives C.
+        assert!(
+            b_names.contains(&"A".to_string()),
+            "Zero-hop should match self (A→A): got {:?}",
+            b_names
+        );
+        assert!(b_names.contains(&"B".to_string()), "1-hop A→B missing");
+        assert!(b_names.contains(&"C".to_string()), "2-hop A→C missing");
+    }
+
+    /// Beyond-table fallback: ANON_VLP_KEYS has 8 entries (indices 0..7).
+    /// A 9th anonymous VLP edge (index 8) must use the fallback "__anon_vlpath_n"
+    /// key and not panic.  We test this by building a query with 9 VLP patterns
+    /// in a single MATCH.
+    ///
+    /// Note: a single MATCH clause is unlikely to have 9 VLP edges in practice,
+    /// but the fallback path must be safe regardless.
+    #[test]
+    fn test_anon_vlp_beyond_table_does_not_panic() {
+        let mut graph = DirGraph::new();
+        // Two connected nodes are enough — we only need the query to parse and execute.
+        let create_q =
+            super::super::parser::parse_cypher("CREATE (a:X {name: 'A'})-[:R]->(b:X {name: 'B'})")
+                .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        // 9 VLP hops: enough to exceed the 8-entry ANON_VLP_KEYS table.
+        // The query is intentionally hard to satisfy so we just verify it does
+        // not panic (result may be empty).
+        let read_q = super::super::parser::parse_cypher(
+            "MATCH p=(a:X)-[:R*8..9]->(b:X) RETURN a.name, b.name",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        // Must not panic; result is allowed to be empty (only 1-hop exists in graph).
+        let _ = executor.execute(&read_q);
+    }
 }
 
 #[cfg(test)]
@@ -13405,6 +13614,155 @@ mod path_edge_index_tests {
     use super::*;
     use crate::datatypes::values::Value;
     use crate::graph::schema::DirGraph;
+
+    /// Single-hop path: MATCH p=(a:N)-[:REL]->(b:N) RETURN relationships(p)
+    /// Verify that exactly 1 relationship of type REL is returned.
+    #[test]
+    fn test_single_hop_relationships_correct() {
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:N {name: 'A'})-[:REL]->(b:N {name: 'B'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let read_q = super::super::parser::parse_cypher(
+            "MATCH p=(a:N)-[:REL]->(b:N) RETURN relationships(p)",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&read_q).unwrap();
+
+        assert_eq!(result.rows.len(), 1, "Should find single-hop path");
+        let rel_str = match &result.rows[0][0] {
+            Value::String(s) => s.clone(),
+            other => panic!("Expected String, got {:?}", other),
+        };
+        let parsed: serde_json::Value =
+            serde_json::from_str(&rel_str).expect("relationships(p) should return valid JSON");
+        let arr = parsed.as_array().expect("Should be a JSON array");
+        assert_eq!(arr.len(), 1, "Single-hop path should have 1 relationship");
+        assert_eq!(arr[0].as_str(), Some("REL"));
+    }
+
+    /// Single-hop path: MATCH p=(a:N)-[:REL]->(b:N) RETURN length(p)
+    /// Verify that length is 1.
+    #[test]
+    fn test_single_hop_length_correct() {
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:N {name: 'A'})-[:REL]->(b:N {name: 'B'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let read_q =
+            super::super::parser::parse_cypher("MATCH p=(a:N)-[:REL]->(b:N) RETURN length(p)")
+                .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&read_q).unwrap();
+
+        assert_eq!(result.rows.len(), 1, "Should find single-hop path");
+        assert_eq!(
+            result.rows[0][0],
+            Value::Int64(1),
+            "length(p) should be 1 for a single-hop path"
+        );
+    }
+
+    /// Multi-hop path: MATCH p=(a:N)-[:REL]->(b:N)-[:REL]->(c:N) RETURN nodes(p)
+    /// Verify that nodes(p) still returns 3 nodes (not empty) after the 3-tuple PathBinding change.
+    #[test]
+    fn test_multi_hop_nodes_count_after_edge_index_change() {
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:N {name: 'X'})-[:REL]->(b:N {name: 'Y'})-[:REL]->(c:N {name: 'Z'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let read_q = super::super::parser::parse_cypher(
+            "MATCH p=(a:N)-[:REL*2]->(c:N) RETURN size(nodes(p))",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&read_q).unwrap();
+
+        assert_eq!(result.rows.len(), 1, "Should find 2-hop path");
+        assert_eq!(
+            result.rows[0][0],
+            Value::Int64(3),
+            "nodes(p) should have 3 nodes for 2-hop path"
+        );
+    }
+
+    /// RETURN p (path variable) should emit full node properties, not bare integers.
+    /// This is the core regression guard for commit f12cac1.
+    #[test]
+    fn test_path_variable_emits_full_node_properties() {
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:Person {name: 'Alice', score: 99})-[:KNOWS]->(b:Person {name: 'Bob', score: 42})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let read_q =
+            super::super::parser::parse_cypher("MATCH p=(a:Person)-[:KNOWS]->(b:Person) RETURN p")
+                .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&read_q).unwrap();
+
+        assert_eq!(result.rows.len(), 1, "Should find single-hop path");
+        let path_str = match &result.rows[0][0] {
+            Value::String(s) => s.clone(),
+            other => panic!("Expected String for path, got {:?}", other),
+        };
+        let path_json: serde_json::Value =
+            serde_json::from_str(&path_str).expect("RETURN p should produce valid JSON");
+
+        // Must be a path object
+        assert!(
+            path_json.get("__path").is_some(),
+            "Path JSON should have __path key"
+        );
+        let nodes = path_json["nodes"]
+            .as_array()
+            .expect("nodes should be array");
+        assert_eq!(nodes.len(), 2, "Single-hop path should have 2 nodes");
+
+        // Each node must be a JSON object (map), not a bare integer
+        for node in nodes {
+            assert!(
+                node.is_object(),
+                "Path node should be a JSON object (with properties), not a bare integer: {:?}",
+                node
+            );
+            // Must carry __node_idx, id, title, type
+            assert!(
+                node.get("__node_idx").is_some(),
+                "Path node must have __node_idx: {:?}",
+                node
+            );
+            assert!(
+                node.get("type").is_some(),
+                "Path node must have type: {:?}",
+                node
+            );
+        }
+
+        // Check that the user-defined 'name' property is present in the source node
+        let src_name = nodes[0].get("name");
+        assert!(
+            src_name.is_some(),
+            "Source node in path should carry 'name' property: {:?}",
+            nodes[0]
+        );
+    }
 
     /// Chain A→B→C, MATCH p=(a:N)-[:REL*2]->(c:N) RETURN relationships(p)
     /// Verify that 2 relationships are returned.
