@@ -7680,6 +7680,12 @@ mod tests {
             .unwrap()
             .extra_labels
             .push("Employee".to_string());
+        // Update the secondary_label_index so nodes_matching_label can find it
+        dg.secondary_label_index
+            .entry("Employee".to_string())
+            .or_default()
+            .push(alice_idx);
+        dg.has_secondary_labels = true;
 
         let matches = dg.nodes_matching_label("Employee");
         assert_eq!(matches.len(), 1);
