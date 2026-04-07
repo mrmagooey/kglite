@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775605586673,
+  "lastUpdate": 1775606021269,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -990,6 +990,105 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.000014468140061755718",
             "extra": "mean: 743.0183153225072 usec\nrounds: 1240"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "e489d422bf18c7cad434d3b90b41463b7ee3a526",
+          "message": "fix: update test to populate secondary_label_index after direct mutation\n\nThe dirgraph_nodes_matching_label_extra_labels test directly pushed to\nextra_labels without updating secondary_label_index. This worked with\nthe old O(N) scan but fails with the new O(1) index lookup.\n\nCo-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-04-08T09:50:51+10:00",
+          "tree_id": "89550246653ebd51d573f69f65e3d23b3582eafb",
+          "url": "https://github.com/mrmagooey/kglite/commit/e489d422bf18c7cad434d3b90b41463b7ee3a526"
+        },
+        "date": 1775606020852,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_nodes",
+            "value": 1069.9599702146475,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000017364734201106645",
+            "extra": "mean: 934.6144041252192 usec\nrounds: 485"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_connections",
+            "value": 794.549871379619,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000030055652007613233",
+            "extra": "mean: 1.2585742393534682 msec\nrounds: 681"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_match",
+            "value": 14065.46759052361,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000019784291787428165",
+            "extra": "mean: 71.09610779479057 usec\nrounds: 7069"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_where",
+            "value": 1614.4527154359344,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000022533192153311582",
+            "extra": "mean: 619.4049478432572 usec\nrounds: 997"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_traversal",
+            "value": 725845.4670171929,
+            "unit": "iter/sec",
+            "range": "stddev: 3.9183965448126544e-7",
+            "extra": "mean: 1.3777037199246065 usec\nrounds: 70943"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_shortest_path",
+            "value": 130607.39770934581,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000013144364747468904",
+            "extra": "mean: 7.656534143842324 usec\nrounds: 19579"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_enable",
+            "value": 2904.5708705749757,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00001344083802176689",
+            "extra": "mean: 344.28493727957976 usec\nrounds: 4815"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_where",
+            "value": 1589.9895187488034,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000026320840438796057",
+            "extra": "mean: 628.9349635379491 usec\nrounds: 1289"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_match",
+            "value": 14727.546943884263,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000004457175805297565",
+            "extra": "mean: 67.89997029445955 usec\nrounds: 11917"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_save_kgl",
+            "value": 1286.9493093055496,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00028876931118928037",
+            "extra": "mean: 777.0313817096725 usec\nrounds: 1006"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_save_v3",
+            "value": 1356.7748894842302,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000152720778997355",
+            "extra": "mean: 737.0419424405355 usec\nrounds: 1303"
           }
         ]
       }
