@@ -9269,9 +9269,13 @@ fn evaluate_comparison(
     right: &Value,
     regex_cache: Option<&RwLock<HashMap<String, regex::Regex>>>,
 ) -> Result<bool, String> {
-    // Three-valued logic: comparisons involving Null propagate Null → false
-    // (except IS NULL / IS NOT NULL which are handled elsewhere, and
-    // Equals/NotEquals which handle Null explicitly via values_equal).
+    // Three-valued logic: comparisons involving Null propagate Null → false.
+    // IS NULL / IS NOT NULL are handled elsewhere.
+    // For Equals/NotEquals, NULL compared to anything (including NULL) is false,
+    // so we check for Null before calling values_equal.
+    if matches!(left, Value::Null) || matches!(right, Value::Null) {
+        return Ok(false);
+    }
     match op {
         ComparisonOp::Equals => Ok(filtering_methods::values_equal(left, right)),
         ComparisonOp::NotEquals => Ok(!filtering_methods::values_equal(left, right)),

@@ -397,20 +397,29 @@ impl CypherParser {
         let mut parts = Vec::new();
         let mut paren_depth = 0i32;
         let mut bracket_depth = 0i32;
+        let mut brace_depth = 0i32;
 
         while self.has_tokens() {
-            // Stop at closing brace (the EXISTS boundary)
-            if paren_depth == 0 && bracket_depth == 0 && self.check(&CypherToken::RBrace) {
+            // Stop at closing brace only when not inside a nested property map.
+            // brace_depth == 0 means this RBrace closes the EXISTS { ... } itself.
+            if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0
+                && self.check(&CypherToken::RBrace)
+            {
                 break;
             }
 
-            // Stop at comma at top level (pattern separator)
-            if paren_depth == 0 && bracket_depth == 0 && self.check(&CypherToken::Comma) {
+            // Stop at comma at top level (pattern separator), but not inside property maps.
+            if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0
+                && self.check(&CypherToken::Comma)
+            {
                 break;
             }
 
-            // Stop at WHERE keyword (EXISTS { MATCH ... WHERE ... } subquery)
-            if paren_depth == 0 && bracket_depth == 0 && self.check(&CypherToken::Where) {
+            // Stop at WHERE keyword (EXISTS { MATCH ... WHERE ... } subquery),
+            // but not when inside a property map.
+            if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0
+                && self.check(&CypherToken::Where)
+            {
                 break;
             }
 
@@ -433,8 +442,14 @@ impl CypherParser {
                     bracket_depth -= 1;
                     parts.push("]".to_string());
                 }
-                CypherToken::LBrace => parts.push("{".to_string()),
-                CypherToken::RBrace => parts.push("}".to_string()),
+                CypherToken::LBrace => {
+                    brace_depth += 1;
+                    parts.push("{".to_string());
+                }
+                CypherToken::RBrace => {
+                    brace_depth -= 1;
+                    parts.push("}".to_string());
+                }
                 CypherToken::Colon => parts.push(":".to_string()),
                 CypherToken::Comma => parts.push(",".to_string()),
                 CypherToken::Dash => parts.push("-".to_string()),
@@ -479,21 +494,28 @@ impl CypherParser {
         let mut parts = Vec::new();
         let mut paren_depth = 0i32;
         let mut bracket_depth = 0i32;
+        let mut brace_depth = 0i32;
 
         while self.has_tokens() {
-            // Stop at clause boundaries (only at top level)
-            if paren_depth == 0 && bracket_depth == 0 && self.at_clause_boundary() {
+            // Stop at clause boundaries (only at top level, and not inside property maps)
+            if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0
+                && self.at_clause_boundary()
+            {
                 break;
             }
 
-            // Stop at comma at top level (pattern separator)
-            if paren_depth == 0 && bracket_depth == 0 && self.check(&CypherToken::Comma) {
+            // Stop at comma at top level (pattern separator), but not inside property maps
+            if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0
+                && self.check(&CypherToken::Comma)
+            {
                 break;
             }
 
-            // Stop at AND/OR at top level (boolean operators in WHERE)
+            // Stop at AND/OR at top level (boolean operators in WHERE),
+            // but not inside property maps
             if paren_depth == 0
                 && bracket_depth == 0
+                && brace_depth == 0
                 && (self.check(&CypherToken::And) || self.check(&CypherToken::Or))
             {
                 break;
@@ -523,8 +545,14 @@ impl CypherParser {
                     bracket_depth -= 1;
                     parts.push("]".to_string());
                 }
-                CypherToken::LBrace => parts.push("{".to_string()),
-                CypherToken::RBrace => parts.push("}".to_string()),
+                CypherToken::LBrace => {
+                    brace_depth += 1;
+                    parts.push("{".to_string());
+                }
+                CypherToken::RBrace => {
+                    brace_depth -= 1;
+                    parts.push("}".to_string());
+                }
                 CypherToken::Colon => parts.push(":".to_string()),
                 CypherToken::Comma => parts.push(",".to_string()),
                 CypherToken::Dash => parts.push("-".to_string()),
@@ -794,12 +822,16 @@ impl CypherParser {
             Some(CypherToken::GreaterThanEquals) => ComparisonOp::GreaterThanEq,
             Some(CypherToken::RegexMatch) => ComparisonOp::RegexMatch,
             _ => {
-                // No operator - the expression itself is a boolean predicate
-                // Convert expression to a comparison: expr <> false (truthy check)
+                // No operator - the expression itself is a boolean predicate.
+                // Convert expression to a comparison: expr = true (truthy check).
+                // Using `= true` (Equals) rather than `<> false` (NotEquals) ensures
+                // that NULL evaluates to false in boolean context, because
+                // values_equal(NULL, true) = false, whereas !values_equal(NULL, false)
+                // would incorrectly return true.
                 return Ok(Predicate::Comparison {
                     left: left.clone(),
-                    operator: ComparisonOp::NotEquals,
-                    right: Expression::Literal(Value::Boolean(false)),
+                    operator: ComparisonOp::Equals,
+                    right: Expression::Literal(Value::Boolean(true)),
                 });
             }
         };
