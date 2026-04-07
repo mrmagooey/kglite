@@ -283,6 +283,46 @@ fn bench_property_scan(c: &mut Criterion) {
     });
 }
 
+/// Benchmark: variable-length path expansion across a dense graph.
+/// 100 nodes each connected to 3 others via NEXT edges, then queried for
+/// all 2-hop paths. Exercises the VLP expansion inner loop where the
+/// ANON_VLP_KEYS optimisation eliminates format! allocations.
+fn bench_vlp_expansion(c: &mut Criterion) {
+    // Build 100 nodes
+    let mut graph = DirGraph::new();
+    let params: HashMap<String, kglite::datatypes::values::Value> = HashMap::new();
+    for i in 0..100usize {
+        let q = format!("CREATE (n:Node {{id: {id}}})", id = i);
+        let parsed = parse_cypher(&q).expect("node create should parse");
+        execute_mutable(&mut graph, &parsed, params.clone(), None).expect("node create failed");
+    }
+    // Each node i connects to (i+1)%100, (i+2)%100, (i+3)%100 — 3 outgoing NEXT edges
+    for i in 0..100usize {
+        for offset in 1usize..=3 {
+            let target = (i + offset) % 100;
+            let q = format!(
+                "MATCH (a:Node {{id: {a}}}) MATCH (b:Node {{id: {b}}}) CREATE (a)-[:NEXT]->(b)",
+                a = i,
+                b = target
+            );
+            let parsed = parse_cypher(&q).expect("edge create should parse");
+            execute_mutable(&mut graph, &parsed, params.clone(), None)
+                .expect("edge create failed");
+        }
+    }
+
+    let query_str = "MATCH (a:Node)-[:NEXT*2]->(b:Node) RETURN count(*)";
+    let parsed = parse_cypher(query_str).expect("query should parse");
+
+    c.bench_function("bench_vlp_expansion", |b| {
+        b.iter(|| {
+            let executor = CypherExecutor::with_params(black_box(&graph), &params, None);
+            let result = executor.execute(black_box(&parsed));
+            black_box(result)
+        });
+    });
+}
+
 /// Benchmark: save/load roundtrip for a 20-node graph.
 fn bench_save_load_roundtrip(c: &mut Criterion) {
     let tmp_dir = tempfile::tempdir().expect("tempdir");
@@ -308,6 +348,65 @@ fn bench_save_load_roundtrip(c: &mut Criterion) {
     });
 }
 
+
+/// Benchmark: RETURN n.city, count(n) aggregation over 300 nodes with 5 city groups.
+/// This exercises the single-key fast path in execute_return_with_aggregation.
+fn bench_group_by_single_key(c: &mut Criterion) {
+    // Build graph once outside the timed loop
+    let mut graph = DirGraph::new();
+    let params: HashMap<String, kglite::datatypes::values::Value> = HashMap::new();
+    let cities = ["NYC", "LA", "SF", "CHI", "HOU"];
+    for i in 0..300usize {
+        let city = cities[i % 5];
+        let q = format!("CREATE (n:Node {{city: \'{city}\', id: {i}}})");
+        let parsed = parse_cypher(&q).expect("create should parse");
+        execute_mutable(&mut graph, &parsed, params.clone(), None).expect("create should succeed");
+    }
+
+    let query = parse_cypher("MATCH (n:Node) RETURN n.city, count(n)").expect("query should parse");
+
+    c.bench_function("bench_group_by_single_key", |b| {
+        b.iter(|| {
+            let executor = CypherExecutor::with_params(black_box(&graph), &params, None);
+            let result = executor.execute(black_box(&query));
+            black_box(result)
+        });
+    });
+}
+
+/// Benchmark: wide aggregation with 6 RETURN items over 10 groups.
+/// 300 nodes, category = i % 10 giving 10 groups of 30 nodes each.
+/// Query: MATCH (n:Node) RETURN n.category, count(n), sum(n.id), avg(n.id), min(n.id), max(n.id)
+/// = 6 RETURN items × 10 groups = 60 column-name computations per query.
+/// Exercises the column-name pre-computation optimization (Finding 3).
+fn bench_group_aggregate_wide(c: &mut Criterion) {
+    let mut graph = DirGraph::new();
+    let params: HashMap<String, kglite::datatypes::values::Value> = HashMap::new();
+    for i in 0..300usize {
+        let category = i % 10;
+        let q = format!(
+            "CREATE (n:Node {{id: {i}, category: {category}}})",
+            i = i,
+            category = category,
+        );
+        let parsed = parse_cypher(&q).expect("create should parse");
+        execute_mutable(&mut graph, &parsed, params.clone(), None).expect("create should succeed");
+    }
+
+    let query = parse_cypher(
+        "MATCH (n:Node) RETURN n.category, count(n), sum(n.id), avg(n.id), min(n.id), max(n.id)",
+    )
+    .expect("query should parse");
+
+    c.bench_function("bench_group_aggregate_wide", |b| {
+        b.iter(|| {
+            let executor = CypherExecutor::with_params(black_box(&graph), &params, None);
+            let result = executor.execute(black_box(&query));
+            black_box(result)
+        });
+    });
+}
+
 // ─── registration ─────────────────────────────────────────────────────────────
 
 criterion_group!(
@@ -325,5 +424,8 @@ criterion_group!(
     bench_property_iter,
     bench_substring,
     bench_property_scan,
+    bench_vlp_expansion,
+    bench_group_by_single_key,
+    bench_group_aggregate_wide,
 );
 criterion_main!(benches);

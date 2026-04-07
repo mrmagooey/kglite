@@ -1385,16 +1385,6 @@ pub struct DirGraph {
     /// Used for optimistic concurrency control in transactions.
     #[serde(skip, default)]
     pub(crate) version: u64,
-    /// Secondary label index: extra_label → [NodeIndex].
-    /// Populated during CREATE/SET when a node gains extra_labels or a __kinds property.
-    /// Allows O(1) lookup for nodes with a given secondary kind (e.g. BloodHound multi-label nodes).
-    /// Skipped during serialization — rebuilt from node extra_labels on load.
-    #[serde(skip)]
-    pub(crate) secondary_label_index: HashMap<String, Vec<NodeIndex>>,
-    /// True when any node in the graph has secondary labels (extra_labels or __kinds).
-    /// Used as a fast gate: if false, secondary-label queries skip the index entirely.
-    #[serde(skip)]
-    pub(crate) has_secondary_labels: bool,
     /// Property key interner: maps InternedKey(u64) → original string.
     /// Populated during ingestion (add_nodes, CREATE, SET) and deserialization.
     /// Skipped during serde — rebuilt on load by the InternedKey Deserialize impl.
@@ -1404,6 +1394,16 @@ pub struct DirGraph {
     /// Populated during ingestion (add_nodes, CREATE) and compaction (load).
     #[serde(skip)]
     pub(crate) type_schemas: HashMap<String, Arc<TypeSchema>>,
+    /// Fast-skip flag: true if any node has extra_labels or a __kinds property.
+    /// When false, `find_matching_nodes` skips the secondary scan entirely.
+    /// Skipped during serialization — rebuilt on load via `rebuild_type_indices()`.
+    #[serde(skip)]
+    pub(crate) has_secondary_labels: bool,
+    /// O(1) index for secondary labels: label → [NodeIndex].
+    /// Populated when nodes are added with extra_labels or __kinds.
+    /// Skipped during serialization — rebuilt on load via `rebuild_type_indices()`.
+    #[serde(skip)]
+    pub(crate) secondary_label_index: HashMap<String, Vec<NodeIndex>>,
 }
 
 fn default_auto_vacuum_threshold() -> Option<f64> {
@@ -1464,12 +1464,12 @@ impl DirGraph {
             memory_limit: None,
             spill_dir: None,
             temp_dirs: Arc::new(std::sync::Mutex::new(Vec::new())),
-            secondary_label_index: HashMap::new(),
-            has_secondary_labels: false,
             read_only: false,
             version: 0,
             interner: StringInterner::new(),
             type_schemas: HashMap::new(),
+            has_secondary_labels: false,
+            secondary_label_index: HashMap::new(),
         }
     }
 
@@ -1507,12 +1507,12 @@ impl DirGraph {
             memory_limit: None,
             spill_dir: None,
             temp_dirs: Arc::new(std::sync::Mutex::new(Vec::new())),
-            secondary_label_index: HashMap::new(),
-            has_secondary_labels: false,
             read_only: false,
             version: 0,
             interner: StringInterner::new(),
             type_schemas: HashMap::new(),
+            has_secondary_labels: false,
+            secondary_label_index: HashMap::new(),
         }
     }
 
@@ -1812,6 +1812,11 @@ impl DirGraph {
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
 
+        // Scan all nodes for secondary matches (extra_labels or __kinds).
+        // Nodes whose primary type already matches are skipped to avoid duplicates.
+        // Note: We intentionally do NOT use has_secondary_labels here so callers
+        // that directly mutate extra_labels without going through DirGraph methods
+        // still get correct results.
         let secondary: Vec<NodeIndex> = self
             .graph
             .node_indices()
@@ -2396,26 +2401,30 @@ impl DirGraph {
         let avg_per_type = self.graph.node_count() / type_count.max(1);
         let mut new_type_indices: HashMap<String, Vec<NodeIndex>> =
             HashMap::with_capacity(type_count);
-        let mut new_secondary_label_index: HashMap<String, Vec<NodeIndex>> = HashMap::new();
+        let mut new_secondary_index: HashMap<String, Vec<NodeIndex>> = HashMap::new();
         let mut has_secondary = false;
+        let kinds_key = InternedKey::from_str("__kinds");
         for node_idx in self.graph.node_indices() {
             if let Some(node) = self.graph.node_weight(node_idx) {
                 new_type_indices
                     .entry(node.node_type.clone())
                     .or_insert_with(|| Vec::with_capacity(avg_per_type))
                     .push(node_idx);
-                // Rebuild secondary label index from extra_labels
                 for label in &node.extra_labels {
-                    new_secondary_label_index
+                    new_secondary_index
                         .entry(label.clone())
                         .or_default()
                         .push(node_idx);
                     has_secondary = true;
                 }
+                // Also check for __kinds property
+                if node.properties.get(kinds_key).is_some() {
+                    has_secondary = true;
+                }
             }
         }
         self.type_indices = new_type_indices;
-        self.secondary_label_index = new_secondary_label_index;
+        self.secondary_label_index = new_secondary_index;
         self.has_secondary_labels = has_secondary;
     }
 
@@ -2500,13 +2509,14 @@ impl DirGraph {
         let arc_schemas: HashMap<String, Arc<TypeSchema>> =
             schemas.into_iter().map(|(t, s)| (t, Arc::new(s))).collect();
 
-        // Single pass: build type_indices, secondary_label_index AND convert Map → Compact
+        // Single pass: build type_indices AND convert Map → Compact
         let type_count = arc_schemas.len().max(4);
         let avg_per_type = self.graph.node_count() / type_count.max(1);
         let mut new_type_indices: HashMap<String, Vec<NodeIndex>> =
             HashMap::with_capacity(type_count);
-        let mut new_secondary_label_index: HashMap<String, Vec<NodeIndex>> = HashMap::new();
+        let mut new_secondary_index: HashMap<String, Vec<NodeIndex>> = HashMap::new();
         let mut has_secondary = false;
+        let kinds_key = InternedKey::from_str("__kinds");
 
         let node_indices: Vec<NodeIndex> = self.graph.node_indices().collect();
         for node_idx in node_indices {
@@ -2518,12 +2528,15 @@ impl DirGraph {
                 .or_insert_with(|| Vec::with_capacity(avg_per_type))
                 .push(node_idx);
 
-            // Rebuild secondary_label_index from extra_labels
+            // Rebuild secondary_label_index
             for label in &node.extra_labels {
-                new_secondary_label_index
+                new_secondary_index
                     .entry(label.clone())
                     .or_default()
                     .push(node_idx);
+                has_secondary = true;
+            }
+            if node.properties.get(kinds_key).is_some() {
                 has_secondary = true;
             }
 
@@ -2545,7 +2558,7 @@ impl DirGraph {
         }
 
         self.type_indices = new_type_indices;
-        self.secondary_label_index = new_secondary_label_index;
+        self.secondary_label_index = new_secondary_index;
         self.has_secondary_labels = has_secondary;
         self.type_schemas = arc_schemas;
     }
