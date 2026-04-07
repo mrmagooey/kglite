@@ -228,6 +228,16 @@ pub extern "C" fn kg_save(handle: *const KgHandle, path: *const c_char) -> c_int
         }
     };
     prepare_save(&mut arc);
+    // Auto-enable columnar storage before saving (required for v3 property persistence).
+    // write_graph_v3 stores node properties in per-type column sections; if columnar
+    // is not enabled, column_stores is empty and all properties are silently dropped.
+    // This mirrors the Python save() method in src/graph/mod.rs.
+    {
+        let g = Arc::make_mut(&mut arc);
+        if !g.is_columnar() {
+            g.enable_columnar();
+        }
+    }
     match write_graph_v3(&arc, &path_str) {
         Ok(_) => 0,
         Err(e) => {

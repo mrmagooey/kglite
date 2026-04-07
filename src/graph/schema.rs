@@ -1385,6 +1385,16 @@ pub struct DirGraph {
     /// Used for optimistic concurrency control in transactions.
     #[serde(skip, default)]
     pub(crate) version: u64,
+    /// Secondary label index: extra_label → [NodeIndex].
+    /// Populated during CREATE/SET when a node gains extra_labels or a __kinds property.
+    /// Allows O(1) lookup for nodes with a given secondary kind (e.g. BloodHound multi-label nodes).
+    /// Skipped during serialization — rebuilt from node extra_labels on load.
+    #[serde(skip)]
+    pub(crate) secondary_label_index: HashMap<String, Vec<NodeIndex>>,
+    /// True when any node in the graph has secondary labels (extra_labels or __kinds).
+    /// Used as a fast gate: if false, secondary-label queries skip the index entirely.
+    #[serde(skip)]
+    pub(crate) has_secondary_labels: bool,
     /// Property key interner: maps InternedKey(u64) → original string.
     /// Populated during ingestion (add_nodes, CREATE, SET) and deserialization.
     /// Skipped during serde — rebuilt on load by the InternedKey Deserialize impl.
@@ -1454,6 +1464,8 @@ impl DirGraph {
             memory_limit: None,
             spill_dir: None,
             temp_dirs: Arc::new(std::sync::Mutex::new(Vec::new())),
+            secondary_label_index: HashMap::new(),
+            has_secondary_labels: false,
             read_only: false,
             version: 0,
             interner: StringInterner::new(),
@@ -1495,6 +1507,8 @@ impl DirGraph {
             memory_limit: None,
             spill_dir: None,
             temp_dirs: Arc::new(std::sync::Mutex::new(Vec::new())),
+            secondary_label_index: HashMap::new(),
+            has_secondary_labels: false,
             read_only: false,
             version: 0,
             interner: StringInterner::new(),
