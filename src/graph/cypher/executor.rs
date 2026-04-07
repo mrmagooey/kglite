@@ -19,10 +19,10 @@ use crate::graph::vector_search as vs;
 use chrono::Datelike;
 use geo::BoundingRect;
 use petgraph::graph::NodeIndex;
-use serde_json;
 use petgraph::visit::{EdgeRef, NodeIndexable};
 use petgraph::Direction;
 use rayon::prelude::*;
+use serde_json;
 use std::borrow::Cow;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
@@ -3722,7 +3722,11 @@ impl<'a> CypherExecutor<'a> {
                     let mut edges = Vec::new();
                     // Emit source node as a full property object.
                     if let Some(src_node) = self.graph.graph.node_weight(path.source) {
-                        nodes.push(node_to_path_json(path.source, src_node, &self.graph.interner));
+                        nodes.push(node_to_path_json(
+                            path.source,
+                            src_node,
+                            &self.graph.interner,
+                        ));
                     } else {
                         nodes.push(serde_json::json!({"__node_idx": path.source.index()}));
                     }
@@ -9452,11 +9456,18 @@ fn node_to_map_value(node: &NodeData) -> Value {
 /// every extra property stored in PropertyStorage).  This matches the format that
 /// `jsonToNode` in the Go kglite-dawgs layer expects so that path nodes carry full
 /// property data rather than just a bare integer index.
-fn node_to_path_json(node_idx: petgraph::graph::NodeIndex, node: &NodeData, interner: &crate::graph::schema::StringInterner) -> serde_json::Value {
+fn node_to_path_json(
+    node_idx: petgraph::graph::NodeIndex,
+    node: &NodeData,
+    interner: &crate::graph::schema::StringInterner,
+) -> serde_json::Value {
     let mut map = serde_json::Map::new();
 
     // Internal graph index — used by the consumer to identify the node.
-    map.insert("__node_idx".to_string(), serde_json::json!(node_idx.index()));
+    map.insert(
+        "__node_idx".to_string(),
+        serde_json::json!(node_idx.index()),
+    );
 
     // Build label list: primary node_type + extra_labels + __kinds property.
     let mut all_labels: Vec<String> = std::iter::once(&node.node_type)
@@ -9478,14 +9489,23 @@ fn node_to_path_json(node_idx: petgraph::graph::NodeIndex, node: &NodeData, inte
     }
     all_labels.sort_unstable();
     all_labels.dedup();
-    map.insert("__labels".to_string(), serde_json::Value::Array(
-        all_labels.into_iter().map(serde_json::Value::String).collect()
-    ));
+    map.insert(
+        "__labels".to_string(),
+        serde_json::Value::Array(
+            all_labels
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect(),
+        ),
+    );
 
     // Core identity fields.
     map.insert("id".to_string(), value_to_serde_json(&node.id));
     map.insert("title".to_string(), value_to_serde_json(&node.title));
-    map.insert("type".to_string(), serde_json::Value::String(node.node_type.clone()));
+    map.insert(
+        "type".to_string(),
+        serde_json::Value::String(node.node_type.clone()),
+    );
 
     // All stored properties (iterates over whatever PropertyStorage variant is active).
     for (key, val) in node.properties.iter_owned(interner) {
@@ -13137,7 +13157,12 @@ mod labels_kinds_tests {
     use crate::graph::schema::{DirGraph, NodeData};
 
     /// Build a DirGraph with a single node of the given type, title, and properties.
-    fn make_single_node(node_type: &str, id: &str, title: &str, props: HashMap<String, Value>) -> DirGraph {
+    fn make_single_node(
+        node_type: &str,
+        id: &str,
+        title: &str,
+        props: HashMap<String, Value>,
+    ) -> DirGraph {
         let mut graph = DirGraph::new();
         let node = NodeData::new(
             Value::String(id.to_string()),
