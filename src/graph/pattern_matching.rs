@@ -1365,7 +1365,7 @@ impl<'a> PatternExecutor<'a> {
                 if primary.is_empty() {
                     return Ok(vec![]);
                 }
-                primary.iter().copied().collect()
+                primary.to_vec()
             } else {
                 // Use the secondary_label_index for O(1) extra_labels lookup.
                 let secondary_indexed: &[NodeIndex] = self

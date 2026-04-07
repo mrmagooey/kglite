@@ -402,14 +402,18 @@ impl CypherParser {
         while self.has_tokens() {
             // Stop at closing brace only when not inside a nested property map.
             // brace_depth == 0 means this RBrace closes the EXISTS { ... } itself.
-            if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0
+            if paren_depth == 0
+                && bracket_depth == 0
+                && brace_depth == 0
                 && self.check(&CypherToken::RBrace)
             {
                 break;
             }
 
             // Stop at comma at top level (pattern separator), but not inside property maps.
-            if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0
+            if paren_depth == 0
+                && bracket_depth == 0
+                && brace_depth == 0
                 && self.check(&CypherToken::Comma)
             {
                 break;
@@ -417,7 +421,9 @@ impl CypherParser {
 
             // Stop at WHERE keyword (EXISTS { MATCH ... WHERE ... } subquery),
             // but not when inside a property map.
-            if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0
+            if paren_depth == 0
+                && bracket_depth == 0
+                && brace_depth == 0
                 && self.check(&CypherToken::Where)
             {
                 break;
@@ -498,14 +504,18 @@ impl CypherParser {
 
         while self.has_tokens() {
             // Stop at clause boundaries (only at top level, and not inside property maps)
-            if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0
+            if paren_depth == 0
+                && bracket_depth == 0
+                && brace_depth == 0
                 && self.at_clause_boundary()
             {
                 break;
             }
 
             // Stop at comma at top level (pattern separator), but not inside property maps
-            if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0
+            if paren_depth == 0
+                && bracket_depth == 0
+                && brace_depth == 0
                 && self.check(&CypherToken::Comma)
             {
                 break;
@@ -3189,10 +3199,8 @@ mod tests {
     #[test]
     fn test_relationship_inline_properties() {
         // [r2{isacl:true}] — variable with inline property filter, no colon/type
-        let query = parse_cypher(
-            "MATCH (g)-[r2{isacl:true}]->(gg2:Group) RETURN g.name, r2.isacl",
-        )
-        .unwrap();
+        let query = parse_cypher("MATCH (g)-[r2{isacl:true}]->(gg2:Group) RETURN g.name, r2.isacl")
+            .unwrap();
         assert!(matches!(&query.clauses[0], Clause::Match(_)));
     }
 
@@ -3223,10 +3231,7 @@ mod tests {
     #[test]
     fn test_negative_pattern_predicate() {
         // WHERE NOT (m)-[:MemberOf]->() — negative pattern predicate
-        let query = parse_cypher(
-            "MATCH (m) WHERE NOT (m)-[:MemberOf]->() RETURN m.name",
-        )
-        .unwrap();
+        let query = parse_cypher("MATCH (m) WHERE NOT (m)-[:MemberOf]->() RETURN m.name").unwrap();
         assert!(matches!(&query.clauses[1], Clause::Where(_)));
     }
 

@@ -7696,7 +7696,8 @@ mod tests {
         let mut graph = DirGraph::new();
         let params = HashMap::new();
         // Create two nodes of different types — only Alice gets a secondary label
-        let q = parse_cypher("CREATE (a:Person {name: 'Alice'}) CREATE (b:Bot {name: 'Bob'})").unwrap();
+        let q =
+            parse_cypher("CREATE (a:Person {name: 'Alice'}) CREATE (b:Bot {name: 'Bob'})").unwrap();
         execute_mutable(&mut graph, &q, params.clone(), None).unwrap();
         // Give Alice a secondary label via SET
         let q2 = parse_cypher("MATCH (n:Person) SET n:Employee").unwrap();
@@ -7708,7 +7709,10 @@ mod tests {
         let result = executor.execute(&q3).unwrap();
         assert_eq!(result.rows.len(), 1, "should find exactly 1 Employee");
         let name_col = result.columns.iter().position(|c| c == "n.name").unwrap();
-        assert_eq!(result.rows[0].get(name_col), Some(&Value::String("Alice".to_string())));
+        assert_eq!(
+            result.rows[0].get(name_col),
+            Some(&Value::String("Alice".to_string()))
+        );
 
         // Also verify the secondary_label_index was populated
         assert!(
@@ -7730,12 +7734,18 @@ mod tests {
         // Add a plain node — flag still false
         let q = parse_cypher("CREATE (a:Person {id: 1, name: 'Alice'})").unwrap();
         execute_mutable(&mut graph, &q, params.clone(), None).unwrap();
-        assert!(!graph.has_secondary_labels, "flag should still be false after plain create");
+        assert!(
+            !graph.has_secondary_labels,
+            "flag should still be false after plain create"
+        );
 
         // Add a secondary label via SET — flag becomes true
         let q2 = parse_cypher("MATCH (n:Person) SET n:Employee").unwrap();
         execute_mutable(&mut graph, &q2, params.clone(), None).unwrap();
-        assert!(graph.has_secondary_labels, "flag should be true after SET n:Label");
+        assert!(
+            graph.has_secondary_labels,
+            "flag should be true after SET n:Label"
+        );
     }
 
     #[test]

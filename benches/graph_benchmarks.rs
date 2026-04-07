@@ -306,8 +306,7 @@ fn bench_vlp_expansion(c: &mut Criterion) {
                 b = target
             );
             let parsed = parse_cypher(&q).expect("edge create should parse");
-            execute_mutable(&mut graph, &parsed, params.clone(), None)
-                .expect("edge create failed");
+            execute_mutable(&mut graph, &parsed, params.clone(), None).expect("edge create failed");
         }
     }
 
@@ -347,7 +346,6 @@ fn bench_save_load_roundtrip(c: &mut Criterion) {
         });
     });
 }
-
 
 /// Benchmark: RETURN n.city, count(n) aggregation over 300 nodes with 5 city groups.
 /// This exercises the single-key fast path in execute_return_with_aggregation.

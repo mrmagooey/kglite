@@ -3049,7 +3049,11 @@ impl<'a> CypherExecutor<'a> {
 
     /// Check if a string predicate (Contains/StartsWith/EndsWith) has a NULL operand.
     /// Used by NOT to implement three-valued logic: NOT (NULL CONTAINS x) = NULL (falsy).
-    fn predicate_has_null_operand(&self, pred: &Predicate, row: &ResultRow) -> Result<bool, String> {
+    fn predicate_has_null_operand(
+        &self,
+        pred: &Predicate,
+        row: &ResultRow,
+    ) -> Result<bool, String> {
         match pred {
             Predicate::Contains { expr, pattern }
             | Predicate::StartsWith { expr, pattern }
