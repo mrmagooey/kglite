@@ -1374,24 +1374,24 @@ impl<'a> PatternExecutor<'a> {
                     .get(node_type)
                     .map(|v| v.as_slice())
                     .unwrap_or(&[]);
-                // Only do an O(N) scan for __kinds nodes when the indexed path yielded nothing.
-                let secondary_kinds: Vec<NodeIndex> = if secondary_indexed.is_empty() {
-                    self.graph
-                        .graph
-                        .node_indices()
-                        .filter(|&idx| {
-                            if let Some(node) = self.graph.graph.node_weight(idx) {
-                                node.node_type != *node_type
-                                    && node.extra_labels.is_empty()
-                                    && node_matches_label(node, node_type)
-                            } else {
-                                false
-                            }
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+                // Always scan for __kinds nodes not covered by the index.
+                // This is needed because nodes with the label in __kinds
+                // are NOT added to secondary_label_index — they are only
+                // discoverable via node_matches_label() on the full graph.
+                let secondary_kinds: Vec<NodeIndex> = self
+                    .graph
+                    .graph
+                    .node_indices()
+                    .filter(|&idx| {
+                        if let Some(node) = self.graph.graph.node_weight(idx) {
+                            node.node_type != *node_type
+                                && !node.extra_labels.contains(node_type)
+                                && node_matches_label(node, node_type)
+                        } else {
+                            false
+                        }
+                    })
+                    .collect();
                 if primary.is_empty() && secondary_indexed.is_empty() && secondary_kinds.is_empty()
                 {
                     return Ok(vec![]);
@@ -1789,7 +1789,7 @@ impl<'a> PatternExecutor<'a> {
                 if !edge_pattern.skip_target_type_check {
                     if let Some(ref node_type) = node_pattern.node_type {
                         if let Some(node) = self.graph.graph.node_weight(target) {
-                            if &node.node_type != node_type {
+                            if !node_matches_label(node, node_type) {
                                 continue;
                             }
                         } else {

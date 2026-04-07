@@ -772,7 +772,39 @@ impl<'a> CypherExecutor<'a> {
                     // Fallback: pick first path binding (single-path case)
                     row.path_bindings.iter().next().map(|(_, pb)| pb.clone())
                 };
-                if let Some(pb) = path_binding {
+                if let Some(mut pb) = path_binding {
+                    // If the pattern has edges beyond the VLP (e.g., VLP+fixed-hop),
+                    // append those edges to the path so the full path is recorded.
+                    if let Some(pattern) = clause.patterns.get(pa.pattern_index) {
+                        let mut past_vlp = false;
+                        for elem in &pattern.elements {
+                            if let PatternElement::Edge(ep) = elem {
+                                if ep.var_length.is_some() {
+                                    past_vlp = true;
+                                    continue;
+                                }
+                                if past_vlp {
+                                    // Fixed-length edge after VLP — append to path
+                                    if let Some(ref var) = ep.variable {
+                                        if let Some(eb) = row.edge_bindings.get(var) {
+                                            let conn_type = self
+                                                .graph
+                                                .graph
+                                                .edge_weight(eb.edge_index)
+                                                .map(|ed| {
+                                                    ed.connection_type_str(&self.graph.interner)
+                                                        .to_string()
+                                                })
+                                                .unwrap_or_default();
+                                            pb.path.push((eb.target, eb.edge_index, conn_type));
+                                            pb.target = eb.target;
+                                            pb.hops += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     row.path_bindings.insert(pa.variable.clone(), pb);
                 } else {
                     // No var-length path found — synthesize from edge binding
@@ -879,11 +911,26 @@ impl<'a> CypherExecutor<'a> {
         let target_nodes = executor.find_matching_nodes_pub(target_pattern)?;
 
         let mut all_rows = Vec::new();
+        // For undirected BFS, (A,B) and (B,A) produce the same path.
+        // Track explored pairs to avoid duplicates.
+        let mut explored_pairs: HashSet<(NodeIndex, NodeIndex)> = HashSet::new();
 
         for &source_idx in &source_nodes {
             for &target_idx in &target_nodes {
                 if source_idx == target_idx {
                     continue;
+                }
+
+                // Deduplicate undirected pairs
+                if edge_direction == EdgeDirection::Both {
+                    let pair = if source_idx < target_idx {
+                        (source_idx, target_idx)
+                    } else {
+                        (target_idx, source_idx)
+                    };
+                    if !explored_pairs.insert(pair) {
+                        continue;
+                    }
                 }
 
                 // Dispatch based on edge direction in the pattern
@@ -3000,6 +3047,32 @@ impl<'a> CypherExecutor<'a> {
         })
     }
 
+    /// Check if a string predicate (Contains/StartsWith/EndsWith) has a NULL operand.
+    /// Used by NOT to implement three-valued logic: NOT (NULL CONTAINS x) = NULL (falsy).
+    fn predicate_has_null_operand(&self, pred: &Predicate, row: &ResultRow) -> Result<bool, String> {
+        match pred {
+            Predicate::Contains { expr, pattern }
+            | Predicate::StartsWith { expr, pattern }
+            | Predicate::EndsWith { expr, pattern } => {
+                let val = self.evaluate_expression(expr, row)?;
+                if matches!(val, Value::Null) {
+                    return Ok(true);
+                }
+                let pat = self.evaluate_expression(pattern, row)?;
+                Ok(matches!(pat, Value::Null))
+            }
+            Predicate::Comparison { left, right, .. } => {
+                let l = self.evaluate_expression(left, row)?;
+                if matches!(l, Value::Null) {
+                    return Ok(true);
+                }
+                let r = self.evaluate_expression(right, row)?;
+                Ok(matches!(r, Value::Null))
+            }
+            _ => Ok(false),
+        }
+    }
+
     fn evaluate_predicate(&self, pred: &Predicate, row: &ResultRow) -> Result<bool, String> {
         match pred {
             Predicate::Comparison {
@@ -3030,7 +3103,17 @@ impl<'a> CypherExecutor<'a> {
                 let r = self.evaluate_predicate(right, row)?;
                 Ok(l ^ r)
             }
-            Predicate::Not(inner) => Ok(!self.evaluate_predicate(inner, row)?),
+            Predicate::Not(inner) => {
+                // Three-valued NULL logic: NOT NULL = NULL (falsy).
+                // String predicates (Contains, StartsWith, EndsWith) return false
+                // when either operand is NULL, but NOT false = true is wrong.
+                // Check if the inner predicate has a NULL operand and preserve
+                // the false result in that case (matching Neo4j semantics).
+                if self.predicate_has_null_operand(inner, row)? {
+                    return Ok(false);
+                }
+                Ok(!self.evaluate_predicate(inner, row)?)
+            }
             Predicate::IsNull(expr) => {
                 let val = self.evaluate_expression(expr, row)?;
                 Ok(matches!(val, Value::Null))
@@ -8477,6 +8560,13 @@ fn execute_set(
                         );
                     }
 
+                    // When __kinds is SET, mark the graph as having secondary labels
+                    // so the pattern executor's find_matching_nodes uses the O(N)
+                    // fallback scan that checks __kinds via node_matches_label().
+                    if property == "__kinds" {
+                        graph.has_secondary_labels = true;
+                    }
+
                     // Keep node_type_metadata in sync so schema() is accurate
                     {
                         let mut prop_type = HashMap::new();
@@ -9394,8 +9484,10 @@ fn build_labels_string(node: &NodeData) -> String {
         }
     }
 
-    all_labels.sort_unstable();
-    all_labels.dedup();
+    // Preserve __kinds insertion order (matches Neo4j label ordering).
+    // Only deduplicate without re-sorting.
+    let mut seen = std::collections::HashSet::with_capacity(all_labels.len());
+    all_labels.retain(|l| seen.insert(l.clone()));
     let quoted: Vec<String> = all_labels
         .iter()
         .map(|l| format!("\"{}\"", l.replace('\\', "\\\\").replace('"', "\\\"")))
@@ -9409,7 +9501,20 @@ fn resolve_node_property(node: &NodeData, property: &str, graph: &DirGraph) -> V
     let resolved = graph.resolve_alias(&node.node_type, property);
     match resolved {
         "id" => node.id.clone(),
-        "title" | "name" => node.title.clone(),
+        "name" => {
+            // Check the property storage first — if "name" was explicitly set,
+            // return the stored value (matching Neo4j semantics where n.name is
+            // NULL when the property doesn't exist). Fall back to title only if
+            // "name" is in storage.
+            if let Some(val) = node.get_property_value("name") {
+                val
+            } else {
+                // "name" not in storage — return Null to match Neo4j behavior.
+                // (node.title is a kglite-internal display field, not a Cypher property.)
+                Value::Null
+            }
+        }
+        "title" => node.title.clone(),
         "type" | "node_type" | "label" => Value::String(node.node_type.clone()),
         "labels" => {
             // Include secondary kinds from __kinds property (BloodHound compatibility)
@@ -13040,14 +13145,14 @@ mod bug03_having_tests {
             Value::UniqueId(1),
             Value::String("CityA".to_string()),
             "City".to_string(),
-            HashMap::from([("name".to_string(), Value::String("A".to_string()))]),
+            HashMap::from([("name".to_string(), Value::String("CityA".to_string()))]),
             &mut graph.interner,
         );
         let city_b = NodeData::new(
             Value::UniqueId(2),
             Value::String("CityB".to_string()),
             "City".to_string(),
-            HashMap::from([("name".to_string(), Value::String("B".to_string()))]),
+            HashMap::from([("name".to_string(), Value::String("CityB".to_string()))]),
             &mut graph.interner,
         );
         let city_a_idx = graph.graph.add_node(city_a);
@@ -13115,14 +13220,14 @@ mod bug03_having_tests {
             Value::UniqueId(1),
             Value::String("CityA".to_string()),
             "City".to_string(),
-            HashMap::from([("name".to_string(), Value::String("A".to_string()))]),
+            HashMap::from([("name".to_string(), Value::String("CityA".to_string()))]),
             &mut graph.interner,
         );
         let city_b = NodeData::new(
             Value::UniqueId(2),
             Value::String("CityB".to_string()),
             "City".to_string(),
-            HashMap::from([("name".to_string(), Value::String("B".to_string()))]),
+            HashMap::from([("name".to_string(), Value::String("CityB".to_string()))]),
             &mut graph.interner,
         );
         let city_a_idx = graph.graph.add_node(city_a);

@@ -3185,4 +3185,58 @@ mod tests {
             panic!("Expected MATCH clause");
         }
     }
+
+    #[test]
+    fn test_relationship_inline_properties() {
+        // [r2{isacl:true}] — variable with inline property filter, no colon/type
+        let query = parse_cypher(
+            "MATCH (g)-[r2{isacl:true}]->(gg2:Group) RETURN g.name, r2.isacl",
+        )
+        .unwrap();
+        assert!(matches!(&query.clauses[0], Clause::Match(_)));
+    }
+
+    #[test]
+    fn test_relationship_inline_properties_full_query() {
+        // Full query from ADMiner "ACL anomalies on groups"
+        let query = parse_cypher(
+            "MATCH (gg:Group) WHERE gg.members_count IS NOT NULL with gg as g order by gg.members_count DESC MATCH (g)-[r2{isacl:true}]->(gg2:Group) RETURN g.name, r2.isacl",
+        )
+        .unwrap();
+        // Should have: MATCH, WHERE, WITH, ORDER BY, MATCH, RETURN
+        assert!(query.clauses.len() >= 4);
+    }
+
+    #[test]
+    fn test_relationship_inline_properties_actual_adminer_query() {
+        // Exact query from the ADMiner comparison test
+        let query = parse_cypher(
+            "MATCH (gg:Group) WHERE gg.members_count IS NOT NULL with gg as g order by gg.members_count DESC \
+             MATCH (g)-[r2{isacl:true}]->(n) WHERE ((g.is_da IS NULL OR g.is_da=FALSE) AND (g.is_dcg IS NULL OR g.is_dcg=FALSE) \
+             AND (NOT g.is_adcs OR g.is_adcs IS NULL)) OR (NOT n.domain CONTAINS '.' + g.domain AND n.domain <> g.domain) \
+             RETURN g.members_count,n.name,g.name,type(r2),LABELS(g),labels(n),ID(n) order by g.members_count DESC",
+        )
+        .unwrap();
+        assert!(query.clauses.len() >= 4);
+    }
+
+    #[test]
+    fn test_negative_pattern_predicate() {
+        // WHERE NOT (m)-[:MemberOf]->() — negative pattern predicate
+        let query = parse_cypher(
+            "MATCH (m) WHERE NOT (m)-[:MemberOf]->() RETURN m.name",
+        )
+        .unwrap();
+        assert!(matches!(&query.clauses[1], Clause::Where(_)));
+    }
+
+    #[test]
+    fn test_negative_pattern_predicate_full_query() {
+        // Full query from ADMiner "Pre-Windows 2000 Compatible Access group"
+        let query = parse_cypher(
+            "MATCH (n:Group) WHERE n.name STARTS WITH 'PRE-WINDOWS 2000 COMPATIBLE ACCESS@' MATCH (m)-[r:MemberOf]->(n) WHERE NOT (m)-[:MemberOf]->() RETURN m.name, m.domain",
+        )
+        .unwrap();
+        assert!(query.clauses.len() >= 4);
+    }
 }
