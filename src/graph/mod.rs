@@ -7686,6 +7686,97 @@ mod tests {
         assert_eq!(matches[0], alice_idx);
     }
 
+    // ── Secondary label index tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_secondary_label_index_lookup() {
+        // Add nodes with extra_labels via Cypher CREATE and SET n:Label.
+        // Verify that MATCH by secondary label uses the index.
+        use crate::graph::cypher::{execute_mutable, parse_cypher, CypherExecutor};
+        let mut graph = DirGraph::new();
+        let params = HashMap::new();
+        // Create two nodes of different types — only Alice gets a secondary label
+        let q = parse_cypher("CREATE (a:Person {name: 'Alice'}) CREATE (b:Bot {name: 'Bob'})").unwrap();
+        execute_mutable(&mut graph, &q, params.clone(), None).unwrap();
+        // Give Alice a secondary label via SET
+        let q2 = parse_cypher("MATCH (n:Person) SET n:Employee").unwrap();
+        execute_mutable(&mut graph, &q2, params.clone(), None).unwrap();
+
+        // Verify MATCH by secondary label finds exactly Alice
+        let q3 = parse_cypher("MATCH (n:Employee) RETURN n.name").unwrap();
+        let executor = CypherExecutor::with_params(&graph, &params, None);
+        let result = executor.execute(&q3).unwrap();
+        assert_eq!(result.rows.len(), 1, "should find exactly 1 Employee");
+        let name_col = result.columns.iter().position(|c| c == "n.name").unwrap();
+        assert_eq!(result.rows[0].get(name_col), Some(&Value::String("Alice".to_string())));
+
+        // Also verify the secondary_label_index was populated
+        assert!(
+            graph.secondary_label_index.contains_key("Employee"),
+            "secondary_label_index must have Employee"
+        );
+        assert_eq!(graph.secondary_label_index["Employee"].len(), 1);
+    }
+
+    #[test]
+    fn test_has_secondary_labels_flag() {
+        use crate::graph::cypher::{execute_mutable, parse_cypher};
+        let mut graph = DirGraph::new();
+        let params = HashMap::new();
+
+        // Fresh graph: flag should be false
+        assert!(!graph.has_secondary_labels, "flag should start false");
+
+        // Add a plain node — flag still false
+        let q = parse_cypher("CREATE (a:Person {id: 1, name: 'Alice'})").unwrap();
+        execute_mutable(&mut graph, &q, params.clone(), None).unwrap();
+        assert!(!graph.has_secondary_labels, "flag should still be false after plain create");
+
+        // Add a secondary label via SET — flag becomes true
+        let q2 = parse_cypher("MATCH (n:Person) SET n:Employee").unwrap();
+        execute_mutable(&mut graph, &q2, params.clone(), None).unwrap();
+        assert!(graph.has_secondary_labels, "flag should be true after SET n:Label");
+    }
+
+    #[test]
+    fn test_kinds_expanded_at_ingestion() {
+        // Add a node with __kinds JSON property — CREATE should expand into extra_labels
+        use crate::graph::cypher::{execute_mutable, parse_cypher, CypherExecutor};
+        let mut graph = DirGraph::new();
+        let params = HashMap::new();
+
+        let q = parse_cypher(
+            r#"CREATE (n:Base {objectid: "OBJ-1", __kinds: '["Base","Group","Computer"]'})"#,
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &q, params.clone(), None).unwrap();
+
+        // MATCH by each secondary kind should find the node
+        for kind in &["Group", "Computer"] {
+            let qr = parse_cypher(&format!("MATCH (n:{}) RETURN n.objectid", kind)).unwrap();
+            let executor = CypherExecutor::with_params(&graph, &params, None);
+            let result = executor.execute(&qr).unwrap();
+            assert_eq!(
+                result.rows.len(),
+                1,
+                "expected 1 node matching kind '{}'",
+                kind
+            );
+        }
+
+        // The node's extra_labels should contain Group and Computer
+        let node_idx = graph.type_indices["Base"][0];
+        let node = graph.graph.node_weight(node_idx).unwrap();
+        assert!(
+            node.extra_labels.contains(&"Group".to_string()),
+            "extra_labels should contain Group"
+        );
+        assert!(
+            node.extra_labels.contains(&"Computer".to_string()),
+            "extra_labels should contain Computer"
+        );
+    }
+
     // ── DirGraph resolve_alias ──────────────────────────────────────────────
 
     #[test]

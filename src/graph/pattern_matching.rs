@@ -19,6 +19,23 @@ use std::time::Instant;
 /// contention when multiple queries run concurrently (shared thread pool).
 const EXPANSION_RAYON_THRESHOLD: usize = 8192;
 
+/// Static key table for anonymous VLP path bindings.
+/// Avoids `format!("__anon_vlpath_{}", i)` heap allocation inside the
+/// innermost BFS expansion loop. Patterns are typically 1–5 elements, so
+/// 8 entries is more than sufficient. The executor never looks these up by
+/// name — it uses `path_bindings.iter().next()` for anonymous paths — so
+/// the actual string value is irrelevant beyond being a unique placeholder.
+const ANON_VLP_KEYS: [&str; 8] = [
+    "__anon_vlpath_0",
+    "__anon_vlpath_1",
+    "__anon_vlpath_2",
+    "__anon_vlpath_3",
+    "__anon_vlpath_4",
+    "__anon_vlpath_5",
+    "__anon_vlpath_6",
+    "__anon_vlpath_7",
+];
+
 /// Check whether a node matches a label, considering:
 /// 1. The primary `node_type` field.
 /// 2. The `extra_labels` vec (populated by SET n:Label in Cypher).
@@ -1118,9 +1135,12 @@ impl<'a> PatternExecutor<'a> {
                                         MatchBinding::VariableLengthPath { .. }
                                     )
                                 {
-                                    new_match
-                                        .bindings
-                                        .push((format!("__anon_vlpath_{}", i), edge_binding));
+                                    let key = ANON_VLP_KEYS
+                                        .get(i)
+                                        .copied()
+                                        .unwrap_or("__anon_vlpath_n")
+                                        .to_string();
+                                    new_match.bindings.push((key, edge_binding));
                                 }
                                 if let Some(ref var) = node_pattern.variable {
                                     new_match
@@ -1232,9 +1252,12 @@ impl<'a> PatternExecutor<'a> {
                         } else if edge_pattern.needs_path_info
                             && matches!(edge_binding, MatchBinding::VariableLengthPath { .. })
                         {
-                            new_match
-                                .bindings
-                                .push((format!("__anon_vlpath_{}", i), edge_binding));
+                            let key = ANON_VLP_KEYS
+                                .get(i)
+                                .copied()
+                                .unwrap_or("__anon_vlpath_n")
+                                .to_string();
+                            new_match.bindings.push((key, edge_binding));
                         }
                         if let Some(ref var) = node_pattern.variable {
                             new_match
@@ -1328,32 +1351,58 @@ impl<'a> PatternExecutor<'a> {
                     return Ok(indexed);
                 }
             }
-            // Use type index for primary type, then scan all nodes for secondary
-            // label matches (extra_labels or __kinds property).
+            // Use type index for primary type, then use secondary_label_index for O(1)
+            // secondary label lookup (extra_labels). Fall back to O(N) scan only for
+            // __kinds nodes not covered by the index.
             let primary: &[NodeIndex] = self
                 .graph
                 .type_indices
                 .get(node_type)
                 .map(|v| v.as_slice())
                 .unwrap_or(&[]);
-            // Collect secondary matches — nodes whose extra_labels or __kinds contains
-            // the label but whose primary node_type differs (avoid duplicating primaries).
-            let secondary: Vec<NodeIndex> = self
-                .graph
-                .graph
-                .node_indices()
-                .filter(|&idx| {
-                    if let Some(node) = self.graph.graph.node_weight(idx) {
-                        node.node_type != *node_type && node_matches_label(node, node_type)
-                    } else {
-                        false
-                    }
-                })
-                .collect();
-            if primary.is_empty() && secondary.is_empty() {
-                return Ok(vec![]);
-            }
-            let all_nodes: Vec<NodeIndex> = primary.iter().copied().chain(secondary).collect();
+            // Fast path: if no secondary labels exist in this graph, skip secondary scan.
+            let all_nodes: Vec<NodeIndex> = if !self.graph.has_secondary_labels {
+                if primary.is_empty() {
+                    return Ok(vec![]);
+                }
+                primary.iter().copied().collect()
+            } else {
+                // Use the secondary_label_index for O(1) extra_labels lookup.
+                let secondary_indexed: &[NodeIndex] = self
+                    .graph
+                    .secondary_label_index
+                    .get(node_type)
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]);
+                // Only do an O(N) scan for __kinds nodes when the indexed path yielded nothing.
+                let secondary_kinds: Vec<NodeIndex> = if secondary_indexed.is_empty() {
+                    self.graph
+                        .graph
+                        .node_indices()
+                        .filter(|&idx| {
+                            if let Some(node) = self.graph.graph.node_weight(idx) {
+                                node.node_type != *node_type
+                                    && node.extra_labels.is_empty()
+                                    && node_matches_label(node, node_type)
+                            } else {
+                                false
+                            }
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                if primary.is_empty() && secondary_indexed.is_empty() && secondary_kinds.is_empty()
+                {
+                    return Ok(vec![]);
+                }
+                primary
+                    .iter()
+                    .copied()
+                    .chain(secondary_indexed.iter().copied())
+                    .chain(secondary_kinds)
+                    .collect()
+            };
             if let Some(ref props) = pattern.properties {
                 Ok(all_nodes
                     .into_iter()
