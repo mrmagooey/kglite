@@ -19,6 +19,7 @@ use crate::graph::vector_search as vs;
 use chrono::Datelike;
 use geo::BoundingRect;
 use petgraph::graph::NodeIndex;
+use serde_json;
 use petgraph::visit::{EdgeRef, NodeIndexable};
 use petgraph::Direction;
 use rayon::prelude::*;
@@ -3963,25 +3964,11 @@ impl<'a> CypherExecutor<'a> {
             }
 
             Expression::IndexAccess { expr, index } => {
-                // Fast path: labels(n)[0] — bypass JSON round-trip
-                if let Expression::FunctionCall { name, args, .. } = expr.as_ref() {
-                    if name.eq_ignore_ascii_case("labels") {
-                        if let Some(Expression::Variable(var)) = args.first() {
-                            if let Expression::Literal(Value::Int64(lit_idx)) = index.as_ref() {
-                                if *lit_idx == 0 {
-                                    if let Some(&node_idx) = row.node_bindings.get(var.as_str()) {
-                                        if let Some(node) = self.graph.graph.node_weight(node_idx) {
-                                            return Ok(Value::String(
-                                                node.get_node_type_ref().to_string(),
-                                            ));
-                                        }
-                                    }
-                                }
-                                return Ok(Value::Null);
-                            }
-                        }
-                    }
-                }
+                // Note: the former fast-path for labels(n)[0] that returned only
+                // node_type has been removed. We now fall through to the general
+                // indexed-list path so that __kinds secondary labels are included
+                // and labels(n)[0] returns the correct first element of the sorted
+                // merged label set.
 
                 let list_val = self.evaluate_expression(expr, row)?;
                 let idx_val = self.evaluate_expression(index, row)?;
@@ -4820,19 +4807,12 @@ impl<'a> CypherExecutor<'a> {
                 Ok(Value::Null)
             }
             "labels" => {
-                // labels(n) returns all labels as a JSON array string
+                // labels(n) returns all labels as a JSON array string,
+                // including secondary kinds from __kinds property.
                 if let Some(Expression::Variable(var)) = args.first() {
                     if let Some(&idx) = row.node_bindings.get(var) {
                         if let Some(node) = self.graph.graph.node_weight(idx) {
-                            let mut all_labels: Vec<String> = std::iter::once(&node.node_type)
-                                .chain(node.extra_labels.iter())
-                                .map(|l| {
-                                    format!("\"{}\"", l.replace('\\', "\\\\").replace('"', "\\\""))
-                                })
-                                .collect();
-                            all_labels.sort_unstable();
-                            all_labels.dedup();
-                            return Ok(Value::String(format!("[{}]", all_labels.join(", "))));
+                            return Ok(Value::String(build_labels_string(node)));
                         }
                     }
                 }
@@ -8206,7 +8186,21 @@ fn create_node(
         .first()
         .cloned()
         .unwrap_or_else(|| "Node".to_string());
-    let extra_labels: Vec<String> = node_pat.labels.iter().skip(1).cloned().collect();
+    let mut extra_labels: Vec<String> = node_pat.labels.iter().skip(1).cloned().collect();
+
+    // Part C: Expand __kinds JSON-array into extra_labels at ingestion time so
+    // node_matches_label never needs serde_json::from_str at query time.
+    if let Some(Value::String(kinds_json)) = properties.get("__kinds") {
+        if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str(kinds_json.as_str()) {
+            for item in &arr {
+                if let serde_json::Value::String(s) = item {
+                    if s != &label && !extra_labels.contains(s) {
+                        extra_labels.push(s.clone());
+                    }
+                }
+            }
+        }
+    }
 
     // Pre-intern all property keys (borrows only graph.interner)
     let interned_keys: Vec<InternedKey> = properties
@@ -8244,6 +8238,35 @@ fn create_node(
         .entry(label.clone())
         .or_default()
         .push(node_idx);
+
+    // Update secondary_label_index for extra_labels (and set has_secondary_labels flag)
+    {
+        let extra: Vec<String> = graph
+            .graph
+            .node_weight(node_idx)
+            .map(|n| n.extra_labels.clone())
+            .unwrap_or_default();
+        if !extra.is_empty() {
+            graph.has_secondary_labels = true;
+            for lbl in extra {
+                graph
+                    .secondary_label_index
+                    .entry(lbl)
+                    .or_default()
+                    .push(node_idx);
+            }
+        }
+        // __kinds property stays in storage; set flag so fallback scan is still valid
+        let kinds_key = InternedKey::from_str("__kinds");
+        if graph
+            .graph
+            .node_weight(node_idx)
+            .map(|n| n.properties.get(kinds_key).is_some())
+            .unwrap_or(false)
+        {
+            graph.has_secondary_labels = true;
+        }
+    }
 
     // Invalidate id_indices for this type (lazy rebuild on next lookup)
     graph.id_indices.remove(&label);
@@ -8421,11 +8444,21 @@ fn execute_set(
                     let node_idx = row.node_bindings.get(variable).ok_or_else(|| {
                         format!("Variable '{}' not bound to a node in SET", variable)
                     })?;
+                    let mut added = false;
                     if let Some(node) = graph.get_node_mut(*node_idx) {
                         if node.node_type != *label && !node.extra_labels.contains(label) {
                             node.extra_labels.push(label.clone());
                             stats.properties_set += 1;
+                            added = true;
                         }
+                    }
+                    if added {
+                        graph.has_secondary_labels = true;
+                        graph
+                            .secondary_label_index
+                            .entry(label.clone())
+                            .or_default()
+                            .push(*node_idx);
                     }
                 }
             }
@@ -9284,6 +9317,44 @@ fn evaluate_comparison(
     }
 }
 
+/// Build the complete label list for a node, merging:
+///   1. The primary `node_type` field.
+///   2. `extra_labels` (set via Cypher `SET n:Label`).
+///   3. Secondary kinds stored as a JSON array in the `__kinds` property
+///      (used by BloodHound-style imports, e.g. `"__kinds": '["User","Base"]'`).
+///
+/// The result is sorted and deduplicated, then formatted as a JSON-encoded
+/// string like `["Base", "User"]`.
+fn build_labels_string(node: &NodeData) -> String {
+    let mut all_labels: Vec<String> = std::iter::once(&node.node_type)
+        .chain(node.extra_labels.iter())
+        .cloned()
+        .collect();
+
+    // Merge __kinds JSON property (BloodHound secondary kinds)
+    if let Some(kinds_cow) = node.get_property("__kinds") {
+        if let Value::String(kinds_json) = kinds_cow.as_ref() {
+            if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str(kinds_json.as_str()) {
+                for item in &arr {
+                    if let serde_json::Value::String(s) = item {
+                        if !all_labels.contains(s) {
+                            all_labels.push(s.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    all_labels.sort_unstable();
+    all_labels.dedup();
+    let quoted: Vec<String> = all_labels
+        .iter()
+        .map(|l| format!("\"{}\"", l.replace('\\', "\\\\").replace('"', "\\\"")))
+        .collect();
+    format!("[{}]", quoted.join(", "))
+}
+
 /// Resolve a node property, returning an owned Value directly.
 /// Uses `get_property_value()` to avoid Cow wrapping/unwrapping overhead.
 fn resolve_node_property(node: &NodeData, property: &str, graph: &DirGraph) -> Value {
@@ -9293,13 +9364,8 @@ fn resolve_node_property(node: &NodeData, property: &str, graph: &DirGraph) -> V
         "title" | "name" => node.title.clone(),
         "type" | "node_type" | "label" => Value::String(node.node_type.clone()),
         "labels" => {
-            let mut all_labels: Vec<String> = std::iter::once(&node.node_type)
-                .chain(node.extra_labels.iter())
-                .map(|l| format!("\"{}\"", l.replace('\\', "\\\\").replace('"', "\\\"")))
-                .collect();
-            all_labels.sort_unstable();
-            all_labels.dedup();
-            Value::String(format!("[{}]", all_labels.join(", ")))
+            // Include secondary kinds from __kinds property (BloodHound compatibility)
+            Value::String(build_labels_string(node))
         }
         _ => {
             if let Some(val) = node.get_property_value(resolved) {
@@ -11082,6 +11148,48 @@ mod tests {
     }
 
     // ========================================================================
+    // VLP anonymous binding correctness (optimization regression test)
+    // ========================================================================
+
+    #[test]
+    fn test_anon_vlp_binding_correct() {
+        // Verify that anonymous VLP path bindings (no edge variable, no path
+        // assignment) work correctly after the ANON_VLP_KEYS optimisation.
+        // Chain: A -[:KNOWS]-> B -[:KNOWS]-> C -[:KNOWS]-> D
+        // Query: MATCH (a)-[:KNOWS*3]->(d) RETURN a.name, d.name
+        // Expected: exactly one result row — the 3-hop path from A to D.
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:Person {name: 'A'})-[:KNOWS]->(b:Person {name: 'B'})\
+             -[:KNOWS]->(c:Person {name: 'C'})-[:KNOWS]->(d:Person {name: 'D'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let read_q = super::super::parser::parse_cypher(
+            "MATCH (a:Person)-[:KNOWS*3]->(d:Person) RETURN a.name, d.name",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&read_q).unwrap();
+
+        assert_eq!(result.rows.len(), 1, "expected exactly one 3-hop path A->D");
+        let a_col = result.columns.iter().position(|c| c == "a.name").unwrap();
+        let d_col = result.columns.iter().position(|c| c == "d.name").unwrap();
+        assert_eq!(
+            result.rows[0].get(a_col),
+            Some(&Value::String("A".to_string())),
+            "source should be A"
+        );
+        assert_eq!(
+            result.rows[0].get(d_col),
+            Some(&Value::String("D".to_string())),
+            "target should be D"
+        );
+    }
+
+    // ========================================================================
     // parse_list_value + split_top_level_commas tests
     // ========================================================================
 
@@ -12600,6 +12708,112 @@ mod tests {
             result.rows[0][1]
         );
     }
+
+    #[test]
+    fn test_group_by_single_key_correct() {
+        // Verify single-key aggregation produces the right grouped counts.
+        // 6 Person nodes across 3 cities: 3 x "NYC", 2 x "LA", 1 x "SF"
+        let mut graph = DirGraph::new();
+        let params = HashMap::new();
+        let setup_queries = [
+            "CREATE (n:Person {city: 'NYC'})",
+            "CREATE (n:Person {city: 'NYC'})",
+            "CREATE (n:Person {city: 'NYC'})",
+            "CREATE (n:Person {city: 'LA'})",
+            "CREATE (n:Person {city: 'LA'})",
+            "CREATE (n:Person {city: 'SF'})",
+        ];
+        for q_str in &setup_queries {
+            let q = super::super::parser::parse_cypher(q_str).unwrap();
+            execute_mutable(&mut graph, &q, params.clone(), None).unwrap();
+        }
+
+        let q =
+            super::super::parser::parse_cypher("MATCH (n:Person) RETURN n.city, count(n)").unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+
+        assert_eq!(result.rows.len(), 3, "expected 3 city groups");
+
+        // Collect (city, count) pairs and sort for order-independent assertion
+        let mut city_counts: Vec<(String, i64)> = result
+            .rows
+            .iter()
+            .map(|row| {
+                let city = match &row[0] {
+                    Value::String(s) => s.clone(),
+                    v => panic!("expected String city, got {:?}", v),
+                };
+                let cnt = match &row[1] {
+                    Value::Int64(n) => *n,
+                    v => panic!("expected Int64 count, got {:?}", v),
+                };
+                (city, cnt)
+            })
+            .collect();
+        city_counts.sort();
+
+        assert_eq!(city_counts[0], ("LA".to_string(), 2));
+        assert_eq!(city_counts[1], ("NYC".to_string(), 3));
+        assert_eq!(city_counts[2], ("SF".to_string(), 1));
+    }
+
+    #[test]
+    fn test_group_by_multi_key_correct() {
+        // Verify multi-key grouping produces correct counts.
+        // Nodes with role/active key combinations.
+        let mut graph = DirGraph::new();
+        let params = HashMap::new();
+        let setup_queries = [
+            "CREATE (n:Node {role: 'Person',   active: true})",
+            "CREATE (n:Node {role: 'Person',   active: true})",
+            "CREATE (n:Node {role: 'Person',   active: false})",
+            "CREATE (n:Node {role: 'Engineer', active: true})",
+            "CREATE (n:Node {role: 'Engineer', active: false})",
+            "CREATE (n:Node {role: 'Engineer', active: false})",
+        ];
+        for q_str in &setup_queries {
+            let q = super::super::parser::parse_cypher(q_str).unwrap();
+            execute_mutable(&mut graph, &q, params.clone(), None).unwrap();
+        }
+
+        let q =
+            super::super::parser::parse_cypher("MATCH (n:Node) RETURN n.role, n.active, count(n)")
+                .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+
+        assert_eq!(result.rows.len(), 4, "expected 4 (role, active) groups");
+
+        // Collect (role, active, count) triples and sort for order-independent assertion
+        let mut groups: Vec<(String, bool, i64)> = result
+            .rows
+            .iter()
+            .map(|row| {
+                let role = match &row[0] {
+                    Value::String(s) => s.clone(),
+                    v => panic!("expected String role, got {:?}", v),
+                };
+                let active = match &row[1] {
+                    Value::Boolean(b) => *b,
+                    v => panic!("expected Boolean active, got {:?}", v),
+                };
+                let cnt = match &row[2] {
+                    Value::Int64(n) => *n,
+                    v => panic!("expected Int64 count, got {:?}", v),
+                };
+                (role, active, cnt)
+            })
+            .collect();
+        groups.sort();
+
+        assert_eq!(groups[0], ("Engineer".to_string(), false, 2));
+        assert_eq!(groups[1], ("Engineer".to_string(), true, 1));
+        assert_eq!(groups[2], ("Person".to_string(), false, 1));
+        assert_eq!(groups[3], ("Person".to_string(), true, 2));
+    }
 }
 
 #[cfg(test)]
@@ -12834,5 +13048,110 @@ mod bug03_having_tests {
         // c.name resolves to the node title ("CityA" / "CityB")
         assert_eq!(result.rows[0][0], Value::String("CityA".to_string()));
         assert_eq!(result.rows[0][1], Value::Int64(5));
+    }
+}
+
+#[cfg(test)]
+mod labels_kinds_tests {
+    use super::*;
+    use crate::datatypes::values::Value;
+    use crate::graph::schema::{DirGraph, NodeData};
+
+    /// Build a DirGraph with a single node of the given type, title, and properties.
+    fn make_single_node(node_type: &str, id: &str, title: &str, props: HashMap<String, Value>) -> DirGraph {
+        let mut graph = DirGraph::new();
+        let node = NodeData::new(
+            Value::String(id.to_string()),
+            Value::String(title.to_string()),
+            node_type.to_string(),
+            props,
+            &mut graph.interner,
+        );
+        let idx = graph.graph.add_node(node);
+        graph
+            .type_indices
+            .entry(node_type.to_string())
+            .or_default()
+            .push(idx);
+        graph
+    }
+
+    fn run(graph: &DirGraph, cypher: &str) -> Vec<Vec<Value>> {
+        let q = super::super::parser::parse_cypher(cypher).unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(graph, &no_params, None);
+        executor.execute(&q).unwrap().rows
+    }
+
+    /// A node with `__kinds: '["Base","User"]'` should return `["Base", "User"]`
+    /// from `labels(n)`.
+    #[test]
+    fn test_labels_merges_kinds_property() {
+        let props = HashMap::from([(
+            "__kinds".to_string(),
+            Value::String(r#"["Base","User"]"#.to_string()),
+        )]);
+        let graph = make_single_node("Base", "n1", "Alice", props);
+        let rows = run(&graph, "MATCH (n:Base) RETURN labels(n)");
+        assert_eq!(rows.len(), 1);
+        // Sorted, deduplicated: Base already present via node_type, User from __kinds
+        assert_eq!(
+            rows[0][0],
+            Value::String(r#"["Base", "User"]"#.to_string()),
+            "labels(n) should merge __kinds: got {:?}",
+            rows[0][0]
+        );
+    }
+
+    /// `labels(n)[0]` should return the first label of the sorted merged set.
+    /// For a "Base" node with `__kinds: '["Base","User"]'`, sorted = ["Base","User"],
+    /// so index 0 is "Base".
+    #[test]
+    fn test_labels_index_zero_from_merged_kinds() {
+        let props = HashMap::from([(
+            "__kinds".to_string(),
+            Value::String(r#"["Base","User"]"#.to_string()),
+        )]);
+        let graph = make_single_node("Base", "n1", "Alice", props);
+        let rows = run(&graph, "MATCH (n:Base) RETURN labels(n)[0]");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0][0],
+            Value::String("Base".to_string()),
+            "labels(n)[0] should be 'Base' (first in sorted merged set): got {:?}",
+            rows[0][0]
+        );
+    }
+
+    /// A node without `__kinds` should still return just its primary type.
+    #[test]
+    fn test_labels_without_kinds_returns_primary_only() {
+        let graph = make_single_node("Computer", "c1", "HOST01", HashMap::new());
+        let rows = run(&graph, "MATCH (n:Computer) RETURN labels(n)");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0][0],
+            Value::String(r#"["Computer"]"#.to_string()),
+            "labels(n) without __kinds should return primary type only: got {:?}",
+            rows[0][0]
+        );
+    }
+
+    /// Dot-notation `n.labels` should also merge __kinds.
+    #[test]
+    fn test_dot_labels_merges_kinds_property() {
+        let props = HashMap::from([(
+            "__kinds".to_string(),
+            Value::String(r#"["Base","Group"]"#.to_string()),
+        )]);
+        let graph = make_single_node("Base", "n2", "GroupNode", props);
+        let rows = run(&graph, "MATCH (n:Base) RETURN n.labels");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0][0],
+            Value::String(r#"["Base", "Group"]"#.to_string()),
+            "n.labels should merge __kinds: got {:?}",
+            rows[0][0]
+        );
     }
 }
