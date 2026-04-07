@@ -315,7 +315,7 @@ mod tests {
             source: NodeIndex::new(0),
             target: NodeIndex::new(5),
             hops: 3,
-            path: vec![(NodeIndex::new(0), "edge1".to_string())],
+            path: vec![(NodeIndex::new(0), EdgeIndex::new(0), "edge1".to_string())],
         };
 
         assert_eq!(path.hops, 3);
@@ -439,9 +439,9 @@ mod tests {
             target: NodeIndex::new(10),
             hops: 5,
             path: vec![
-                (NodeIndex::new(0), "e1".to_string()),
-                (NodeIndex::new(2), "e2".to_string()),
-                (NodeIndex::new(4), "e3".to_string()),
+                (NodeIndex::new(0), EdgeIndex::new(0), "e1".to_string()),
+                (NodeIndex::new(2), EdgeIndex::new(1), "e2".to_string()),
+                (NodeIndex::new(4), EdgeIndex::new(2), "e3".to_string()),
             ],
         };
 

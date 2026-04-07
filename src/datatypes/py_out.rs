@@ -662,11 +662,12 @@ pub fn pattern_matches_to_pylist(
                     binding_dict.set_item("target_idx", target.index())?;
                     binding_dict.set_item("hops", *hops)?;
 
-                    // Add path as list of (node_idx, connection_type) tuples
+                    // Add path as list of (node_idx, edge_idx, connection_type) tuples
                     let path_list = PyList::empty(py);
-                    for (node_idx, conn_type) in path {
+                    for (node_idx, edge_idx, conn_type) in path {
                         let step_dict = PyDict::new(py);
                         step_dict.set_item("node_idx", node_idx.index())?;
+                        step_dict.set_item("edge_idx", edge_idx.index())?;
                         step_dict.set_item("connection_type", interner.resolve(*conn_type))?;
                         path_list.append(step_dict)?;
                     }

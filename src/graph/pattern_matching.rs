@@ -187,8 +187,8 @@ pub enum MatchBinding {
         source: NodeIndex,
         target: NodeIndex,
         hops: usize,
-        /// Path as list of (node_index, connection_type) pairs
-        path: Vec<(NodeIndex, InternedKey)>,
+        /// Path as list of (node_index, edge_index, connection_type) triples
+        path: Vec<(NodeIndex, EdgeIndex, InternedKey)>,
     },
 }
 
@@ -1130,9 +1130,14 @@ impl<'a> PatternExecutor<'a> {
                                         MatchBinding::VariableLengthPath { .. }
                                     )
                                 {
-                                    new_match
-                                        .bindings
-                                        .push((ANON_VLP_KEYS.get(i).copied().unwrap_or("__anon_vlpath_n").to_string(), edge_binding));
+                                    new_match.bindings.push((
+                                        ANON_VLP_KEYS
+                                            .get(i)
+                                            .copied()
+                                            .unwrap_or("__anon_vlpath_n")
+                                            .to_string(),
+                                        edge_binding,
+                                    ));
                                 }
                                 if let Some(ref var) = node_pattern.variable {
                                     new_match
@@ -1244,9 +1249,14 @@ impl<'a> PatternExecutor<'a> {
                         } else if edge_pattern.needs_path_info
                             && matches!(edge_binding, MatchBinding::VariableLengthPath { .. })
                         {
-                            new_match
-                                .bindings
-                                .push((ANON_VLP_KEYS.get(i).copied().unwrap_or("__anon_vlpath_n").to_string(), edge_binding));
+                            new_match.bindings.push((
+                                ANON_VLP_KEYS
+                                    .get(i)
+                                    .copied()
+                                    .unwrap_or("__anon_vlpath_n")
+                                    .to_string(),
+                                edge_binding,
+                            ));
                         }
                         if let Some(ref var) = node_pattern.variable {
                             new_match
@@ -1353,8 +1363,7 @@ impl<'a> PatternExecutor<'a> {
             let secondary: Vec<NodeIndex> = if !self.graph.has_secondary_labels {
                 // No secondary labels anywhere — skip scan entirely
                 vec![]
-            } else if let Some(indexed) = self.graph.secondary_label_index.get(node_type.as_str())
-            {
+            } else if let Some(indexed) = self.graph.secondary_label_index.get(node_type.as_str()) {
                 // O(1) index lookup — filter out primaries to avoid duplicates
                 indexed
                     .iter()
@@ -2044,7 +2053,7 @@ impl<'a> PatternExecutor<'a> {
 
         // BFS state: (current_node, depth, path_info)
         // path_info stores the path taken for creating variable-length edge binding
-        type PathInfo = Vec<(NodeIndex, InternedKey)>;
+        type PathInfo = Vec<(NodeIndex, EdgeIndex, InternedKey)>;
         let mut queue: VecDeque<(NodeIndex, usize, PathInfo)> = VecDeque::new();
         let mut visited_at_depth: HashMap<(NodeIndex, usize), bool> = HashMap::new();
 
@@ -2096,7 +2105,7 @@ impl<'a> PatternExecutor<'a> {
 
             // First pass: collect all valid targets to know how many branches we'll have
             // This avoids cloning paths unnecessarily when only one target exists
-            let mut valid_targets: Vec<(NodeIndex, InternedKey)> = Vec::new();
+            let mut valid_targets: Vec<(NodeIndex, EdgeIndex, InternedKey)> = Vec::new();
 
             for &direction in directions {
                 let edges = self.graph.graph.edges_directed(current, direction);
@@ -2141,18 +2150,18 @@ impl<'a> PatternExecutor<'a> {
                     }
                     visited_at_depth.insert(visit_key, true);
 
-                    valid_targets.push((target, edge_data.connection_type));
+                    valid_targets.push((target, edge.id(), edge_data.connection_type));
                 }
             }
 
             // Second pass: process valid targets with smart path management
             let new_depth = depth + 1;
 
-            for (target, conn_type) in valid_targets {
+            for (target, edge_idx, conn_type) in valid_targets {
                 let needs_queue = new_depth < max_hops;
 
                 let mut new_path = path.clone();
-                new_path.push((target, conn_type));
+                new_path.push((target, edge_idx, conn_type));
 
                 // If we're within the valid hop range and target matches node pattern, add to results
                 if new_depth >= min_hops {
