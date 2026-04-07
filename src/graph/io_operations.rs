@@ -2628,4 +2628,88 @@ mod tests {
 
         assert!(result.is_err());
     }
+
+    /// Regression test for the FFI kg_save bug: without enable_columnar() being called
+    /// before write_graph_v3(), all node properties except `name` (stored in NodeData.title)
+    /// are silently dropped on save.
+    ///
+    /// This test simulates the BloodHound ingest path: nodes are created via raw Cypher
+    /// with no prior register_type / node_type_metadata call, then saved and reloaded.
+    /// All three properties (objectid, age, active) must survive the round-trip.
+    #[cfg(feature = "ffi")]
+    #[test]
+    fn test_ffi_save_load_preserves_all_properties() {
+        use crate::graph::cypher::{execute_mutable, parse_cypher};
+
+        let mut g = DirGraph::new();
+
+        // Insert a node via raw Cypher, mirroring BloodHound ingest (no register_type call).
+        let query = parse_cypher(
+            "CREATE (n:Computer {name: 'DC01', objectid: 'S-1-5-21-1', age: 5, active: true}) RETURN n",
+        )
+        .unwrap();
+        let result = execute_mutable(&mut g, &query, HashMap::new(), None).unwrap();
+        assert_eq!(result.rows.len(), 1, "CREATE should return one row");
+
+        // Reproduce the fixed kg_save path: prepare_save, then enable_columnar, then write.
+        let mut arc = Arc::new(g);
+        prepare_save(&mut arc);
+        {
+            let inner = Arc::make_mut(&mut arc);
+            if !inner.is_columnar() {
+                inner.enable_columnar();
+            }
+        }
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&arc, path).unwrap();
+
+        // Load and verify all properties survive.
+        let kg = load_file(path).unwrap();
+        let loaded = &*kg.inner;
+
+        assert_eq!(loaded.graph.node_count(), 1, "should have exactly one node");
+
+        let idx = loaded.graph.node_indices().next().unwrap();
+        let node = loaded.graph.node_weight(idx).unwrap();
+        let props = node.properties_cloned(&loaded.interner);
+
+        // name survives via NodeData.title regardless — but the others require columnar.
+        assert_eq!(
+            node.title,
+            Value::String("DC01".to_string()),
+            "title/name must survive"
+        );
+        assert!(
+            props.contains_key("objectid"),
+            "objectid property must survive save/load; got props: {:?}",
+            props.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            props.contains_key("age"),
+            "age property must survive save/load; got props: {:?}",
+            props.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            props.contains_key("active"),
+            "active property must survive save/load; got props: {:?}",
+            props.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            props.get("objectid"),
+            Some(&Value::String("S-1-5-21-1".to_string())),
+            "objectid value must match"
+        );
+        assert_eq!(
+            props.get("age"),
+            Some(&Value::Int64(5)),
+            "age value must match"
+        );
+        assert_eq!(
+            props.get("active"),
+            Some(&Value::Boolean(true)),
+            "active value must match"
+        );
+    }
 }
