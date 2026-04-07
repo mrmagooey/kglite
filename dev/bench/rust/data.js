@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775449725271,
+  "lastUpdate": 1775534429036,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -257,6 +257,106 @@ window.BENCHMARK_DATA = {
             "name": "bench_property_scan",
             "value": 81464,
             "range": "± 1745",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "4acd4bc6a4aa15a79ed8ebb8f4b209990ff72900",
+          "message": "merge: integrate performance optimizations and fixes from fix/path-node-properties\n\n- Complete secondary label index: O(1) lookup via secondary_label_index HashMap,\n  has_secondary_labels fast-skip flag eliminates O(N) scan on single-label graphs\n- Eliminate format! alloc in VLP BFS loop with ANON_VLP_KEYS static table (~6% on path queries)\n- Store EdgeIndex in PathBinding: captures edge.id() at BFS time, eliminates per-hop adjacency scan\n- Fix map-properties save/load: load_v3 now restores PropertyStorage::Map nodes from disk\n- Fix labels(n) to merge __kinds property into returned label list\n- Fix path nodes to emit full properties in path results\n- Fix FFI save/load to call enable_columnar() before writing v3 format\n- Add 14 new tests covering secondary label index, VLP edge cases, PathBinding changes, and save/load backward compat\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>",
+          "timestamp": "2026-04-07T13:54:25+10:00",
+          "tree_id": "06fa5f4a06383a8050460e92283754f0f5c769ec",
+          "url": "https://github.com/mrmagooey/kglite/commit/4acd4bc6a4aa15a79ed8ebb8f4b209990ff72900"
+        },
+        "date": 1775534428747,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph_100_nodes_cypher",
+            "value": 944504,
+            "range": "± 5534",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_parse_match_where_return",
+            "value": 6242,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "shortest_path_cost_chain_50",
+            "value": 399,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_match_node_scan_50",
+            "value": 15436,
+            "range": "± 1052",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_create_5_nodes",
+            "value": 8504,
+            "range": "± 30",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "save_load_roundtrip_20_nodes",
+            "value": 519131,
+            "range": "± 35470",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_function_dispatch",
+            "value": 221914,
+            "range": "± 3223",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_count_distinct",
+            "value": 41662,
+            "range": "± 396",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_edge_type_counts",
+            "value": 128505,
+            "range": "± 463",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_rand_function",
+            "value": 18020,
+            "range": "± 36",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_iter",
+            "value": 92494,
+            "range": "± 741",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_substring",
+            "value": 220931,
+            "range": "± 3006",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_scan",
+            "value": 84060,
+            "range": "± 335",
             "unit": "ns/iter"
           }
         ]
