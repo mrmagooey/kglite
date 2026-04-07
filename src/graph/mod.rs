@@ -7785,6 +7785,11 @@ mod tests {
             node.extra_labels.contains(&"Computer".to_string()),
             "extra_labels should contain Computer"
         );
+        // __kinds property should have been removed after absorption
+        assert!(
+            node.get_property("__kinds").is_none(),
+            "__kinds property should be removed after absorption into extra_labels"
+        );
     }
 
     // ── DirGraph resolve_alias ──────────────────────────────────────────────

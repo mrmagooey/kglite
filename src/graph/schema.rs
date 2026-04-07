@@ -1394,13 +1394,13 @@ pub struct DirGraph {
     /// Populated during ingestion (add_nodes, CREATE) and compaction (load).
     #[serde(skip)]
     pub(crate) type_schemas: HashMap<String, Arc<TypeSchema>>,
-    /// Fast-skip flag: true if any node has extra_labels or a __kinds property.
+    /// Fast-skip flag: true if any node has extra_labels.
     /// When false, `find_matching_nodes` skips the secondary scan entirely.
     /// Skipped during serialization — rebuilt on load via `rebuild_type_indices()`.
     #[serde(skip)]
     pub(crate) has_secondary_labels: bool,
     /// O(1) index for secondary labels: label → [NodeIndex].
-    /// Populated when nodes are added with extra_labels or __kinds.
+    /// Populated when nodes are added with extra_labels.
     /// Skipped during serialization — rebuilt on load via `rebuild_type_indices()`.
     #[serde(skip)]
     pub(crate) secondary_label_index: HashMap<String, Vec<NodeIndex>>,
@@ -1801,39 +1801,23 @@ impl DirGraph {
         self.type_indices.contains_key(node_type) || self.node_type_metadata.contains_key(node_type)
     }
 
-    /// Return all node indices matching a label, considering primary `node_type`,
-    /// `extra_labels`, and the `__kinds` JSON-array property (BloodHound secondary labels).
+    /// Return all node indices matching a label (primary `node_type` or `extra_labels`).
     pub fn nodes_matching_label(&self, label: &str) -> Vec<NodeIndex> {
-        use crate::graph::pattern_matching::node_matches_label;
-
         let primary: &[NodeIndex] = self
             .type_indices
             .get(label)
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
-
-        // Scan all nodes for secondary matches (extra_labels or __kinds).
-        // Nodes whose primary type already matches are skipped to avoid duplicates.
-        // Note: We intentionally do NOT use has_secondary_labels here so callers
-        // that directly mutate extra_labels without going through DirGraph methods
-        // still get correct results.
-        let secondary: Vec<NodeIndex> = self
-            .graph
-            .node_indices()
-            .filter(|&idx| {
-                if let Some(node) = self.graph.node_weight(idx) {
-                    node.node_type != *label && node_matches_label(node, label)
-                } else {
-                    false
-                }
-            })
-            .collect();
-
-        if secondary.is_empty() {
-            primary.to_vec()
-        } else {
-            primary.iter().copied().chain(secondary).collect()
-        }
+        let secondary: &[NodeIndex] = self
+            .secondary_label_index
+            .get(label)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+        primary
+            .iter()
+            .copied()
+            .chain(secondary.iter().copied())
+            .collect()
     }
 
     /// Get all node types that exist in the graph.
@@ -2404,23 +2388,39 @@ impl DirGraph {
         let mut new_secondary_index: HashMap<String, Vec<NodeIndex>> = HashMap::new();
         let mut has_secondary = false;
         let kinds_key = InternedKey::from_str("__kinds");
-        for node_idx in self.graph.node_indices() {
-            if let Some(node) = self.graph.node_weight(node_idx) {
-                new_type_indices
-                    .entry(node.node_type.clone())
-                    .or_insert_with(|| Vec::with_capacity(avg_per_type))
+
+        let node_indices: Vec<NodeIndex> = self.graph.node_indices().collect();
+        for node_idx in node_indices {
+            let node = self.graph.node_weight_mut(node_idx).unwrap();
+
+            // Migrate __kinds property into extra_labels (one-time on load)
+            if let Some(kinds_val) = node.properties.get(kinds_key) {
+                if let Value::String(kinds_json) = kinds_val.as_ref().clone() {
+                    if let Ok(serde_json::Value::Array(arr)) =
+                        serde_json::from_str(kinds_json.as_str())
+                    {
+                        for item in &arr {
+                            if let serde_json::Value::String(s) = item {
+                                if *s != node.node_type && !node.extra_labels.contains(s) {
+                                    node.extra_labels.push(s.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                node.properties.remove(kinds_key);
+            }
+
+            new_type_indices
+                .entry(node.node_type.clone())
+                .or_insert_with(|| Vec::with_capacity(avg_per_type))
+                .push(node_idx);
+            for label in &node.extra_labels {
+                new_secondary_index
+                    .entry(label.clone())
+                    .or_default()
                     .push(node_idx);
-                for label in &node.extra_labels {
-                    new_secondary_index
-                        .entry(label.clone())
-                        .or_default()
-                        .push(node_idx);
-                    has_secondary = true;
-                }
-                // Also check for __kinds property
-                if node.properties.get(kinds_key).is_some() {
-                    has_secondary = true;
-                }
+                has_secondary = true;
             }
         }
         self.type_indices = new_type_indices;
@@ -2528,15 +2528,30 @@ impl DirGraph {
                 .or_insert_with(|| Vec::with_capacity(avg_per_type))
                 .push(node_idx);
 
+            // Migrate __kinds property into extra_labels (one-time on load)
+            if let Some(kinds_val) = node.properties.get(kinds_key) {
+                if let Value::String(kinds_json) = kinds_val.as_ref().clone() {
+                    if let Ok(serde_json::Value::Array(arr)) =
+                        serde_json::from_str(kinds_json.as_str())
+                    {
+                        for item in &arr {
+                            if let serde_json::Value::String(s) = item {
+                                if *s != node.node_type && !node.extra_labels.contains(s) {
+                                    node.extra_labels.push(s.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                node.properties.remove(kinds_key);
+            }
+
             // Rebuild secondary_label_index
             for label in &node.extra_labels {
                 new_secondary_index
                     .entry(label.clone())
                     .or_default()
                     .push(node_idx);
-                has_secondary = true;
-            }
-            if node.properties.get(kinds_key).is_some() {
                 has_secondary = true;
             }
 
@@ -3142,6 +3157,20 @@ impl NodeData {
     #[inline]
     pub fn remove_property(&mut self, key: &str) -> Option<Value> {
         self.properties.remove(InternedKey::from_str(key))
+    }
+
+    /// Check whether this node has a given label (primary or secondary).
+    #[inline]
+    pub fn has_label(&self, label: &str) -> bool {
+        self.node_type == label || self.extra_labels.iter().any(|l| l == label)
+    }
+
+    /// Return all labels: primary `node_type` followed by `extra_labels`.
+    #[inline]
+    pub fn all_labels(&self) -> Vec<&str> {
+        std::iter::once(self.node_type.as_str())
+            .chain(self.extra_labels.iter().map(|s| s.as_str()))
+            .collect()
     }
 }
 

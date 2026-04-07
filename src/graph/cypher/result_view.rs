@@ -206,13 +206,11 @@ impl ResultView {
         let rows: Vec<Vec<PreProcessedValue>> = nodes_vec
             .iter()
             .map(|node| {
-                let mut label_strs: Vec<serde_json::Value> =
-                    std::iter::once(node.node_type.as_str())
-                        .chain(node.extra_labels.iter().map(|s| s.as_str()))
-                        .map(|l| serde_json::Value::String(l.to_string()))
-                        .collect();
-                label_strs.sort_by(|a, b| a.as_str().unwrap_or("").cmp(b.as_str().unwrap_or("")));
-                label_strs.dedup();
+                let label_strs: Vec<serde_json::Value> = node
+                    .all_labels()
+                    .into_iter()
+                    .map(|l| serde_json::Value::String(l.to_string()))
+                    .collect();
                 let labels_value =
                     PreProcessedValue::ParsedJson(serde_json::Value::Array(label_strs));
 

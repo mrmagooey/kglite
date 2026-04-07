@@ -36,28 +36,11 @@ const ANON_VLP_KEYS: [&str; 8] = [
     "__anon_vlpath_7",
 ];
 
-/// Check whether a node matches a label, considering:
-/// 1. The primary `node_type` field.
-/// 2. The `extra_labels` vec (populated by SET n:Label in Cypher).
-/// 3. A `__kinds` JSON-array property (used by BloodHound-style imports
-///    where secondary kinds are stored as `"__kinds": '["Computer","Domain"]'`).
+/// Check whether a node matches a label.
+/// Checks `node_type` (primary) and `extra_labels` (secondary).
+/// `__kinds` properties are absorbed into `extra_labels` at ingestion/load time.
 pub fn node_matches_label(node: &NodeData, label: &str) -> bool {
-    if node.node_type == label {
-        return true;
-    }
-    if node.extra_labels.iter().any(|l| l == label) {
-        return true;
-    }
-    if let Some(kinds_cow) = node.get_property("__kinds") {
-        if let Value::String(kinds_json) = kinds_cow.as_ref() {
-            if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str(kinds_json.as_str()) {
-                return arr
-                    .iter()
-                    .any(|item| matches!(item, serde_json::Value::String(s) if s == label));
-            }
-        }
-    }
-    false
+    node.has_label(label)
 }
 
 // ============================================================================
@@ -1351,9 +1334,8 @@ impl<'a> PatternExecutor<'a> {
                     return Ok(indexed);
                 }
             }
-            // Use type index for primary type, then use secondary_label_index for O(1)
-            // secondary label lookup (extra_labels). Fall back to O(N) scan only for
-            // __kinds nodes not covered by the index.
+            // Use type index for primary type, then secondary_label_index for O(1)
+            // secondary label lookup (extra_labels).
             let primary: &[NodeIndex] = self
                 .graph
                 .type_indices
@@ -1374,33 +1356,13 @@ impl<'a> PatternExecutor<'a> {
                     .get(node_type)
                     .map(|v| v.as_slice())
                     .unwrap_or(&[]);
-                // Always scan for __kinds nodes not covered by the index.
-                // This is needed because nodes with the label in __kinds
-                // are NOT added to secondary_label_index — they are only
-                // discoverable via node_matches_label() on the full graph.
-                let secondary_kinds: Vec<NodeIndex> = self
-                    .graph
-                    .graph
-                    .node_indices()
-                    .filter(|&idx| {
-                        if let Some(node) = self.graph.graph.node_weight(idx) {
-                            node.node_type != *node_type
-                                && !node.extra_labels.contains(node_type)
-                                && node_matches_label(node, node_type)
-                        } else {
-                            false
-                        }
-                    })
-                    .collect();
-                if primary.is_empty() && secondary_indexed.is_empty() && secondary_kinds.is_empty()
-                {
+                if primary.is_empty() && secondary_indexed.is_empty() {
                     return Ok(vec![]);
                 }
                 primary
                     .iter()
                     .copied()
                     .chain(secondary_indexed.iter().copied())
-                    .chain(secondary_kinds)
                     .collect()
             };
             if let Some(ref props) = pattern.properties {

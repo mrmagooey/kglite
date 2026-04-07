@@ -772,7 +772,7 @@ fn value_to_json_with_graph(
                     let mut props = serde_json::Map::new();
                     // Built-in fields
                     props.insert("__node_idx".to_string(), serde_json::json!(idx));
-                    props.insert("__labels".to_string(), serde_json::json!([node.node_type]));
+                    props.insert("__labels".to_string(), serde_json::json!(node.all_labels()));
                     props.insert("id".to_string(), value_to_json(&node.id));
                     props.insert("title".to_string(), value_to_json(&node.title));
                     // All other properties
