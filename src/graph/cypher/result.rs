@@ -147,7 +147,7 @@ pub struct PathBinding {
     pub target: NodeIndex,
     pub hops: usize,
     #[allow(dead_code)]
-    pub path: Vec<(NodeIndex, String)>,
+    pub path: Vec<(NodeIndex, EdgeIndex, String)>,
 }
 
 impl Default for ResultRow {

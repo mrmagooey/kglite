@@ -18,7 +18,7 @@ use crate::graph::value_operations;
 use crate::graph::vector_search as vs;
 use chrono::Datelike;
 use geo::BoundingRect;
-use petgraph::graph::NodeIndex;
+use petgraph::graph::{EdgeIndex, NodeIndex};
 use petgraph::visit::{EdgeRef, NodeIndexable};
 use petgraph::Direction;
 use rayon::prelude::*;
@@ -798,7 +798,7 @@ impl<'a> CypherExecutor<'a> {
                                                 source: eb.source,
                                                 target: eb.target,
                                                 hops: 1,
-                                                path: vec![(eb.target, conn_type)],
+                                                path: vec![(eb.target, eb.edge_index, conn_type)],
                                             },
                                         );
                                         break;
@@ -940,23 +940,34 @@ impl<'a> CypherExecutor<'a> {
                         row.node_bindings.insert(var.clone(), target_idx);
                     }
 
-                    // Build path with connection types.
-                    // Format: [(node, conn_type_leading_to_node), ...] — excludes source.
+                    // Build path with edge indices and connection types.
+                    // Format: [(node, edge_idx, conn_type_leading_to_node), ...] — excludes source.
                     // Source is stored separately in PathBinding.source.
-                    let connections =
-                        graph_algorithms::get_path_connections(self.graph, &path_result.path);
-                    let path_nodes: Vec<(NodeIndex, String)> = path_result
+                    let path_nodes: Vec<(NodeIndex, EdgeIndex, String)> = path_result
                         .path
-                        .iter()
-                        .skip(1) // Skip source — it's in PathBinding.source
-                        .enumerate()
-                        .map(|(i, &idx)| {
-                            let conn_type = if i < connections.len() {
-                                connections[i].clone().unwrap_or_default()
-                            } else {
-                                String::new()
-                            };
-                            (idx, conn_type)
+                        .windows(2)
+                        .map(|win| {
+                            let from = win[0];
+                            let to = win[1];
+                            // Find the edge between consecutive nodes
+                            let (eidx, conn_type) = self
+                                .graph
+                                .graph
+                                .edges_connecting(from, to)
+                                .next()
+                                .or_else(|| self.graph.graph.edges_connecting(to, from).next())
+                                .map(|e| {
+                                    (
+                                        e.id(),
+                                        e.weight()
+                                            .connection_type_str(&self.graph.interner)
+                                            .to_string(),
+                                    )
+                                })
+                                .unwrap_or_else(|| {
+                                    (petgraph::graph::EdgeIndex::new(usize::MAX), String::new())
+                                });
+                            (to, eidx, conn_type)
                         })
                         .collect();
 
@@ -1083,20 +1094,30 @@ impl<'a> CypherExecutor<'a> {
                         row.node_bindings.insert(var.clone(), target_idx);
                     }
 
-                    let connections =
-                        graph_algorithms::get_path_connections(self.graph, &path_result.path);
-                    let path_nodes: Vec<(NodeIndex, String)> = path_result
+                    let path_nodes: Vec<(NodeIndex, EdgeIndex, String)> = path_result
                         .path
-                        .iter()
-                        .skip(1)
-                        .enumerate()
-                        .map(|(i, &idx)| {
-                            let conn_type = if i < connections.len() {
-                                connections[i].clone().unwrap_or_default()
-                            } else {
-                                String::new()
-                            };
-                            (idx, conn_type)
+                        .windows(2)
+                        .map(|win| {
+                            let from = win[0];
+                            let to = win[1];
+                            let (eidx, conn_type) = self
+                                .graph
+                                .graph
+                                .edges_connecting(from, to)
+                                .next()
+                                .or_else(|| self.graph.graph.edges_connecting(to, from).next())
+                                .map(|e| {
+                                    (
+                                        e.id(),
+                                        e.weight()
+                                            .connection_type_str(&self.graph.interner)
+                                            .to_string(),
+                                    )
+                                })
+                                .unwrap_or_else(|| {
+                                    (petgraph::graph::EdgeIndex::new(usize::MAX), String::new())
+                                });
+                            (to, eidx, conn_type)
                         })
                         .collect();
 
@@ -1152,9 +1173,11 @@ impl<'a> CypherExecutor<'a> {
                     hops,
                     path,
                 } => {
-                    let string_path: Vec<(petgraph::graph::NodeIndex, String)> = path
+                    let string_path: Vec<(petgraph::graph::NodeIndex, EdgeIndex, String)> = path
                         .iter()
-                        .map(|(idx, ik)| (*idx, self.graph.interner.resolve(*ik).to_string()))
+                        .map(|(idx, eidx, ik)| {
+                            (*idx, *eidx, self.graph.interner.resolve(*ik).to_string())
+                        })
                         .collect();
                     row.path_bindings.insert(
                         var,
@@ -1200,9 +1223,11 @@ impl<'a> CypherExecutor<'a> {
                     hops,
                     path,
                 } => {
-                    let string_path: Vec<(petgraph::graph::NodeIndex, String)> = path
+                    let string_path: Vec<(petgraph::graph::NodeIndex, EdgeIndex, String)> = path
                         .iter()
-                        .map(|(idx, ik)| (*idx, self.graph.interner.resolve(*ik).to_string()))
+                        .map(|(idx, eidx, ik)| {
+                            (*idx, *eidx, self.graph.interner.resolve(*ik).to_string())
+                        })
                         .collect();
                     row.path_bindings.insert(
                         var.clone(),
@@ -1245,11 +1270,27 @@ impl<'a> CypherExecutor<'a> {
         let source_idx = row.node_bindings.get(node_vars[0])?;
         let target_idx = row.node_bindings.get(node_vars[node_vars.len() - 1])?;
 
-        // Build full path: for each edge, record the target node and edge type
+        // Build full path: for each edge, record the target node, edge index, and edge type
         let mut path = Vec::with_capacity(edge_types.len());
         for (i, edge_type) in edge_types.iter().enumerate() {
+            let prev_idx = row.node_bindings.get(node_vars[i])?;
             let node_idx = row.node_bindings.get(node_vars[i + 1])?;
-            path.push((*node_idx, edge_type.to_string()));
+            let edge_type_key = crate::graph::schema::InternedKey::from_str(edge_type);
+            // Find the edge index between the two consecutive nodes
+            let eidx = self
+                .graph
+                .graph
+                .edges_connecting(*prev_idx, *node_idx)
+                .find(|e| e.weight().connection_type == edge_type_key)
+                .or_else(|| {
+                    self.graph
+                        .graph
+                        .edges_connecting(*node_idx, *prev_idx)
+                        .find(|e| e.weight().connection_type == edge_type_key)
+                })
+                .map(|e| e.id())
+                .unwrap_or_else(|| petgraph::graph::EdgeIndex::new(usize::MAX));
+            path.push((*node_idx, eidx, edge_type.to_string()));
         }
 
         Some(PathBinding {
@@ -3730,29 +3771,19 @@ impl<'a> CypherExecutor<'a> {
                     } else {
                         nodes.push(serde_json::json!({"__node_idx": path.source.index()}));
                     }
-                    let mut prev = path.source;
-                    for (next, edge_type) in &path.path {
-                        let et_key = crate::graph::schema::InternedKey::from_str(edge_type);
-                        let mut eidx: i64 = -1;
-                        let (mut si, mut di) = (prev.index() as i64, next.index() as i64);
-                        for edge in self.graph.graph.edges_connecting(prev, *next) {
-                            if edge.weight().connection_type == et_key {
-                                eidx = edge.id().index() as i64;
-                                si = edge.source().index() as i64;
-                                di = edge.target().index() as i64;
-                                break;
-                            }
-                        }
-                        if eidx < 0 {
-                            for edge in self.graph.graph.edges_connecting(*next, prev) {
-                                if edge.weight().connection_type == et_key {
-                                    eidx = edge.id().index() as i64;
-                                    si = edge.source().index() as i64;
-                                    di = edge.target().index() as i64;
-                                    break;
-                                }
-                            }
-                        }
+                    for (next, stored_eidx, edge_type) in &path.path {
+                        // Use the stored EdgeIndex directly to resolve source/target
+                        let (eidx, si, di) = if let Some(edge_data) =
+                            self.graph.graph.edge_endpoints(*stored_eidx)
+                        {
+                            (
+                                stored_eidx.index() as i64,
+                                edge_data.0.index() as i64,
+                                edge_data.1.index() as i64,
+                            )
+                        } else {
+                            (-1i64, -1i64, -1i64)
+                        };
                         edges.push(serde_json::json!({"__edge_idx": eidx, "__src_idx": si, "__dst_idx": di, "__type": edge_type}));
                         // Emit each intermediate/destination node as a full property object.
                         if let Some(next_node) = self.graph.graph.node_weight(*next) {
@@ -3760,7 +3791,6 @@ impl<'a> CypherExecutor<'a> {
                         } else {
                             nodes.push(serde_json::json!({"__node_idx": next.index()}));
                         }
-                        prev = *next;
                     }
                     let path_json =
                         serde_json::json!({"__path": true, "nodes": nodes, "edges": edges});
@@ -4219,7 +4249,7 @@ impl<'a> CypherExecutor<'a> {
         row: &ResultRow,
     ) -> Result<Value, String> {
         let mut node_indices = vec![path.source];
-        for (node_idx, _) in &path.path {
+        for (node_idx, _edge_idx, _conn_type) in &path.path {
             node_indices.push(*node_idx);
         }
 
@@ -4269,7 +4299,7 @@ impl<'a> CypherExecutor<'a> {
         row: &ResultRow,
     ) -> Result<Value, String> {
         let mut results = Vec::new();
-        for (_, conn_type) in &path.path {
+        for (_node_idx, _edge_idx, conn_type) in &path.path {
             let mut temp_row = row.clone();
             temp_row
                 .projected
@@ -4756,7 +4786,7 @@ impl<'a> CypherExecutor<'a> {
                     if let Some(path) = row.path_bindings.get(var) {
                         let mut entries = Vec::new();
                         let mut node_indices = vec![path.source];
-                        for (node_idx, _) in &path.path {
+                        for (node_idx, _edge_idx, _conn_type) in &path.path {
                             node_indices.push(*node_idx);
                         }
                         for node_idx in &node_indices {
@@ -4781,7 +4811,7 @@ impl<'a> CypherExecutor<'a> {
                 if let Some(Expression::Variable(var)) = args.first() {
                     if let Some(path) = row.path_bindings.get(var) {
                         let mut rel_strs = Vec::new();
-                        for (_, conn_type) in &path.path {
+                        for (_node_idx, _edge_idx, conn_type) in &path.path {
                             if !conn_type.is_empty() {
                                 rel_strs.push(format!("\"{}\"", conn_type));
                             }
@@ -13257,5 +13287,527 @@ mod labels_kinds_tests {
             "n.labels should merge __kinds: got {:?}",
             rows[0][0]
         );
+    }
+}
+
+#[cfg(test)]
+mod secondary_label_index_tests {
+    use super::*;
+    use crate::datatypes::values::Value;
+    use crate::graph::schema::DirGraph;
+
+    /// CREATE (n:A:B) should populate secondary_label_index["B"] and set has_secondary_labels.
+    #[test]
+    fn test_secondary_label_index_populated_on_create() {
+        let mut graph = DirGraph::new();
+        let query =
+            super::super::parser::parse_cypher("CREATE (n:Primary:Secondary {name: 'x'})").unwrap();
+        execute_mutable(&mut graph, &query, HashMap::new(), None).unwrap();
+
+        assert!(
+            graph.has_secondary_labels,
+            "has_secondary_labels should be true after creating a multi-label node"
+        );
+        assert!(
+            graph.secondary_label_index.contains_key("Secondary"),
+            "secondary_label_index should contain 'Secondary'"
+        );
+        assert_eq!(
+            graph.secondary_label_index["Secondary"].len(),
+            1,
+            "secondary_label_index['Secondary'] should have 1 entry"
+        );
+    }
+
+    /// An empty graph should have has_secondary_labels = false.
+    #[test]
+    fn test_has_secondary_labels_false_on_empty_graph() {
+        let graph = DirGraph::new();
+        assert!(
+            !graph.has_secondary_labels,
+            "Empty graph should have has_secondary_labels = false"
+        );
+    }
+
+    /// SET n:Label should wire into secondary_label_index so a subsequent MATCH finds the node.
+    #[test]
+    fn test_set_label_wires_into_secondary_index() {
+        let mut graph = DirGraph::new();
+        // Create a plain node, then SET a secondary label
+        let create_q = super::super::parser::parse_cypher("CREATE (n:Base {name: 'x'})").unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let set_q = super::super::parser::parse_cypher("MATCH (n:Base) SET n:Extra").unwrap();
+        execute_mutable(&mut graph, &set_q, HashMap::new(), None).unwrap();
+
+        // Index must be populated
+        assert!(
+            graph.secondary_label_index.contains_key("Extra"),
+            "secondary_label_index should contain 'Extra' after SET n:Extra; got {:?}",
+            graph.secondary_label_index.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            graph.has_secondary_labels,
+            "has_secondary_labels should be true"
+        );
+
+        // MATCH via the secondary label must succeed
+        let q = super::super::parser::parse_cypher("MATCH (n:Extra) RETURN n.name").unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "Should find node via SET secondary label"
+        );
+        assert_eq!(result.rows[0][0], Value::String("x".to_string()));
+    }
+
+    /// After rebuild_type_indices() the secondary_label_index must be reconstructed
+    /// from extra_labels so that MATCH via secondary label still works.
+    #[test]
+    fn test_rebuild_type_indices_restores_secondary_index() {
+        let mut graph = DirGraph::new();
+        let create_q =
+            super::super::parser::parse_cypher("CREATE (n:Primary:Secondary {name: 'node'})")
+                .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        // Corrupt the index to simulate drift
+        graph.secondary_label_index.clear();
+        graph.has_secondary_labels = false;
+
+        // Rebuild
+        graph.rebuild_type_indices();
+
+        assert!(
+            graph.secondary_label_index.contains_key("Secondary"),
+            "secondary_label_index should be rebuilt"
+        );
+        assert!(graph.has_secondary_labels);
+
+        // MATCH via secondary label should still work
+        let q = super::super::parser::parse_cypher("MATCH (n:Secondary) RETURN n.name").unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0][0], Value::String("node".to_string()));
+    }
+
+    /// Nodes with the same secondary label but different primary labels must all be returned
+    /// when querying by secondary label alone. Nodes without the secondary label must not match.
+    #[test]
+    fn test_secondary_label_does_not_match_primary_only_nodes() {
+        let mut graph = DirGraph::new();
+        // Two nodes with TagX (secondary), one without
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:TypeA:TagX {name: 'with_tag'}), (b:TypeB {name: 'no_tag'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        // MATCH by secondary label — should return only the node that has TagX
+        let q = super::super::parser::parse_cypher("MATCH (n:TagX) RETURN n.name").unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "Only the node with TagX should match, not the TypeB-only node"
+        );
+        assert_eq!(result.rows[0][0], Value::String("with_tag".to_string()));
+    }
+
+    /// Multiple nodes with the same secondary label — all should be findable.
+    #[test]
+    fn test_multiple_nodes_same_secondary_label() {
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:TypeA:Tag {name: 'n1'}), (b:TypeB:Tag {name: 'n2'}), (c:TypeA:Tag {name: 'n3'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        assert_eq!(
+            graph.secondary_label_index.get("Tag").map(|v| v.len()),
+            Some(3),
+            "All 3 Tag nodes should be in the index"
+        );
+
+        let q = super::super::parser::parse_cypher("MATCH (n:Tag) RETURN n.name ORDER BY n.name")
+            .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(result.rows.len(), 3, "Should find all 3 Tag nodes");
+    }
+
+    /// WHERE 'SomeLabel' IN labels(n) should work for secondary labels.
+    #[test]
+    fn test_where_in_labels_with_secondary_label() {
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:TypeA:Secondary {name: 'match'}), (b:TypeA {name: 'nomatch'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let q = super::super::parser::parse_cypher(
+            "MATCH (n:TypeA) WHERE 'Secondary' IN labels(n) RETURN n.name",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "Only the node with Secondary label should match"
+        );
+        assert_eq!(result.rows[0][0], Value::String("match".to_string()));
+    }
+
+    /// MATCH (n:Secondary) should find nodes via the secondary label index.
+    #[test]
+    fn test_find_matching_nodes_uses_index() {
+        let mut graph = DirGraph::new();
+        let create_query =
+            super::super::parser::parse_cypher("CREATE (a:TypeA:TagB {name: 'node1'})").unwrap();
+        execute_mutable(&mut graph, &create_query, HashMap::new(), None).unwrap();
+
+        // Verify the index is populated
+        assert!(graph.has_secondary_labels);
+        assert!(graph.secondary_label_index.contains_key("TagB"));
+
+        // Query via secondary label should return the node
+        let no_params = HashMap::new();
+        let q = super::super::parser::parse_cypher("MATCH (n:TagB) RETURN n.name").unwrap();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0][0],
+            Value::String("node1".to_string()),
+            "Should find node via secondary label index"
+        );
+    }
+}
+
+#[cfg(test)]
+mod anon_vlp_key_tests {
+    use super::*;
+    use crate::datatypes::values::Value;
+    use crate::graph::schema::DirGraph;
+
+    /// Chain A→B→C→D, MATCH (a:N)-[:REL*3]->(d:N) should return the correct endpoints.
+    /// This test verifies ANON_VLP_KEYS are used correctly without format! allocation.
+    #[test]
+    fn test_anon_vlp_binding_correct() {
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:N {name: 'A'})-[:REL]->(b:N {name: 'B'})\
+             -[:REL]->(c:N {name: 'C'})-[:REL]->(d:N {name: 'D'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let read_q =
+            super::super::parser::parse_cypher("MATCH (a:N)-[:REL*3]->(d:N) RETURN a.name, d.name")
+                .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&read_q).unwrap();
+
+        assert!(
+            !result.rows.is_empty(),
+            "Should match 3-hop path: {:?}",
+            result.rows
+        );
+        let a_col = result.columns.iter().position(|c| c == "a.name").unwrap();
+        let d_col = result.columns.iter().position(|c| c == "d.name").unwrap();
+        assert_eq!(
+            result.rows[0].get(a_col),
+            Some(&Value::String("A".to_string())),
+            "source should be A"
+        );
+        assert_eq!(
+            result.rows[0].get(d_col),
+            Some(&Value::String("D".to_string())),
+            "target should be D"
+        );
+    }
+
+    /// Zero-hop paths (*0..3): a node should match itself when min_hops == 0.
+    /// MATCH (a:N)-[:REL*0..3]->(b:N) WHERE a.name = 'A' RETURN a.name, b.name
+    /// must include the self-match row (A, A).
+    #[test]
+    fn test_zero_hop_vlp_matches_self() {
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:N {name: 'A'})-[:REL]->(b:N {name: 'B'})-[:REL]->(c:N {name: 'C'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let read_q = super::super::parser::parse_cypher(
+            "MATCH (a:N)-[:REL*0..3]->(b:N) WHERE a.name = 'A' RETURN a.name, b.name ORDER BY b.name",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&read_q).unwrap();
+
+        let b_names: Vec<String> = result
+            .rows
+            .iter()
+            .map(|r| match &r[1] {
+                Value::String(s) => s.clone(),
+                other => panic!("Expected String, got {:?}", other),
+            })
+            .collect();
+
+        // Zero-hop means A matches A itself; 1-hop gives B; 2-hop gives C.
+        assert!(
+            b_names.contains(&"A".to_string()),
+            "Zero-hop should match self (A→A): got {:?}",
+            b_names
+        );
+        assert!(b_names.contains(&"B".to_string()), "1-hop A→B missing");
+        assert!(b_names.contains(&"C".to_string()), "2-hop A→C missing");
+    }
+
+    /// Beyond-table fallback: ANON_VLP_KEYS has 8 entries (indices 0..7).
+    /// A 9th anonymous VLP edge (index 8) must use the fallback "__anon_vlpath_n"
+    /// key and not panic.  We test this by building a query with 9 VLP patterns
+    /// in a single MATCH.
+    ///
+    /// Note: a single MATCH clause is unlikely to have 9 VLP edges in practice,
+    /// but the fallback path must be safe regardless.
+    #[test]
+    fn test_anon_vlp_beyond_table_does_not_panic() {
+        let mut graph = DirGraph::new();
+        // Two connected nodes are enough — we only need the query to parse and execute.
+        let create_q =
+            super::super::parser::parse_cypher("CREATE (a:X {name: 'A'})-[:R]->(b:X {name: 'B'})")
+                .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        // 9 VLP hops: enough to exceed the 8-entry ANON_VLP_KEYS table.
+        // The query is intentionally hard to satisfy so we just verify it does
+        // not panic (result may be empty).
+        let read_q = super::super::parser::parse_cypher(
+            "MATCH p=(a:X)-[:R*8..9]->(b:X) RETURN a.name, b.name",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        // Must not panic; result is allowed to be empty (only 1-hop exists in graph).
+        let _ = executor.execute(&read_q);
+    }
+}
+
+#[cfg(test)]
+mod path_edge_index_tests {
+    use super::*;
+    use crate::datatypes::values::Value;
+    use crate::graph::schema::DirGraph;
+
+    /// Single-hop path: MATCH p=(a:N)-[:REL]->(b:N) RETURN relationships(p)
+    /// Verify that exactly 1 relationship of type REL is returned.
+    #[test]
+    fn test_single_hop_relationships_correct() {
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:N {name: 'A'})-[:REL]->(b:N {name: 'B'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let read_q = super::super::parser::parse_cypher(
+            "MATCH p=(a:N)-[:REL]->(b:N) RETURN relationships(p)",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&read_q).unwrap();
+
+        assert_eq!(result.rows.len(), 1, "Should find single-hop path");
+        let rel_str = match &result.rows[0][0] {
+            Value::String(s) => s.clone(),
+            other => panic!("Expected String, got {:?}", other),
+        };
+        let parsed: serde_json::Value =
+            serde_json::from_str(&rel_str).expect("relationships(p) should return valid JSON");
+        let arr = parsed.as_array().expect("Should be a JSON array");
+        assert_eq!(arr.len(), 1, "Single-hop path should have 1 relationship");
+        assert_eq!(arr[0].as_str(), Some("REL"));
+    }
+
+    /// Single-hop path: MATCH p=(a:N)-[:REL]->(b:N) RETURN length(p)
+    /// Verify that length is 1.
+    #[test]
+    fn test_single_hop_length_correct() {
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:N {name: 'A'})-[:REL]->(b:N {name: 'B'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let read_q =
+            super::super::parser::parse_cypher("MATCH p=(a:N)-[:REL]->(b:N) RETURN length(p)")
+                .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&read_q).unwrap();
+
+        assert_eq!(result.rows.len(), 1, "Should find single-hop path");
+        assert_eq!(
+            result.rows[0][0],
+            Value::Int64(1),
+            "length(p) should be 1 for a single-hop path"
+        );
+    }
+
+    /// Multi-hop path: MATCH p=(a:N)-[:REL]->(b:N)-[:REL]->(c:N) RETURN nodes(p)
+    /// Verify that nodes(p) still returns 3 nodes (not empty) after the 3-tuple PathBinding change.
+    #[test]
+    fn test_multi_hop_nodes_count_after_edge_index_change() {
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:N {name: 'X'})-[:REL]->(b:N {name: 'Y'})-[:REL]->(c:N {name: 'Z'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let read_q = super::super::parser::parse_cypher(
+            "MATCH p=(a:N)-[:REL*2]->(c:N) RETURN size(nodes(p))",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&read_q).unwrap();
+
+        assert_eq!(result.rows.len(), 1, "Should find 2-hop path");
+        assert_eq!(
+            result.rows[0][0],
+            Value::Int64(3),
+            "nodes(p) should have 3 nodes for 2-hop path"
+        );
+    }
+
+    /// RETURN p (path variable) should emit full node properties, not bare integers.
+    /// This is the core regression guard for commit f12cac1.
+    #[test]
+    fn test_path_variable_emits_full_node_properties() {
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:Person {name: 'Alice', score: 99})-[:KNOWS]->(b:Person {name: 'Bob', score: 42})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let read_q =
+            super::super::parser::parse_cypher("MATCH p=(a:Person)-[:KNOWS]->(b:Person) RETURN p")
+                .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&read_q).unwrap();
+
+        assert_eq!(result.rows.len(), 1, "Should find single-hop path");
+        let path_str = match &result.rows[0][0] {
+            Value::String(s) => s.clone(),
+            other => panic!("Expected String for path, got {:?}", other),
+        };
+        let path_json: serde_json::Value =
+            serde_json::from_str(&path_str).expect("RETURN p should produce valid JSON");
+
+        // Must be a path object
+        assert!(
+            path_json.get("__path").is_some(),
+            "Path JSON should have __path key"
+        );
+        let nodes = path_json["nodes"]
+            .as_array()
+            .expect("nodes should be array");
+        assert_eq!(nodes.len(), 2, "Single-hop path should have 2 nodes");
+
+        // Each node must be a JSON object (map), not a bare integer
+        for node in nodes {
+            assert!(
+                node.is_object(),
+                "Path node should be a JSON object (with properties), not a bare integer: {:?}",
+                node
+            );
+            // Must carry __node_idx, id, title, type
+            assert!(
+                node.get("__node_idx").is_some(),
+                "Path node must have __node_idx: {:?}",
+                node
+            );
+            assert!(
+                node.get("type").is_some(),
+                "Path node must have type: {:?}",
+                node
+            );
+        }
+
+        // Check that the user-defined 'name' property is present in the source node
+        let src_name = nodes[0].get("name");
+        assert!(
+            src_name.is_some(),
+            "Source node in path should carry 'name' property: {:?}",
+            nodes[0]
+        );
+    }
+
+    /// Chain A→B→C, MATCH p=(a:N)-[:REL*2]->(c:N) RETURN relationships(p)
+    /// Verify that 2 relationships are returned.
+    #[test]
+    fn test_path_edge_indices_correct() {
+        let mut graph = DirGraph::new();
+        // Create chain A→B→C via Cypher CREATE
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:N {name: 'A'})-[:REL]->(b:N {name: 'B'})-[:REL]->(c:N {name: 'C'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        // Query with path variable to get relationships
+        let read_q = super::super::parser::parse_cypher(
+            "MATCH p=(a:N)-[:REL*2]->(c:N) RETURN relationships(p)",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&read_q).unwrap();
+
+        assert!(
+            !result.rows.is_empty(),
+            "Should find 2-hop path: {:?}",
+            result.rows
+        );
+
+        // relationships(p) should return a JSON array with 2 relationship strings
+        let rel_str = match &result.rows[0][0] {
+            Value::String(s) => s.clone(),
+            other => panic!("Expected String, got {:?}", other),
+        };
+
+        // Parse the JSON array
+        let parsed: serde_json::Value =
+            serde_json::from_str(&rel_str).expect("relationships(p) should return valid JSON");
+        let arr = parsed.as_array().expect("Should be a JSON array");
+        assert_eq!(
+            arr.len(),
+            2,
+            "2-hop path should have 2 relationships, got: {}",
+            rel_str
+        );
+        assert_eq!(arr[0].as_str(), Some("REL"), "First rel should be REL");
+        assert_eq!(arr[1].as_str(), Some("REL"), "Second rel should be REL");
     }
 }

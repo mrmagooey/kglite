@@ -12,6 +12,7 @@
 //   [section]  embeddings.zst (optional)
 //   [section]  timeseries.zst (optional)
 
+use crate::datatypes::values::Value;
 use crate::graph::column_store::ColumnStore;
 use crate::graph::reporting::OperationReports;
 use crate::graph::schema::{
@@ -133,6 +134,9 @@ struct FileMetadata {
     /// v3: compressed size of timeseries section (0 if none).
     #[serde(default)]
     timeseries_compressed_size: u64,
+    /// v3: compressed size of Map-storage node properties section (0 if none).
+    #[serde(default)]
+    map_properties_compressed_size: u64,
 }
 
 fn default_auto_vacuum_threshold() -> Option<f64> {
@@ -171,6 +175,7 @@ impl FileMetadata {
             column_sections: Vec::new(),
             embeddings_compressed_size: 0,
             timeseries_compressed_size: 0,
+            map_properties_compressed_size: 0,
         }
     }
 
@@ -284,6 +289,30 @@ pub fn write_graph_v3(graph: &DirGraph, path: &str) -> io::Result<()> {
         None
     };
 
+    // 4b. Collect and compress Map-storage node properties (nodes not yet columnarized)
+    let map_props_compressed = {
+        let mut map_entries: Vec<(u32, Vec<(String, Value)>)> = Vec::new();
+        for node_idx in graph.graph.node_indices() {
+            if let Some(node) = graph.graph.node_weight(node_idx) {
+                if let PropertyStorage::Map(ref map) = node.properties {
+                    let props: Vec<(String, Value)> = map
+                        .iter()
+                        .map(|(ik, v)| (graph.interner.resolve(*ik).to_string(), v.clone()))
+                        .collect();
+                    if !props.is_empty() {
+                        map_entries.push((node_idx.index() as u32, props));
+                    }
+                }
+            }
+        }
+        if !map_entries.is_empty() {
+            let raw = bincode_ser(&map_entries)?;
+            Some(zstd_compress(&raw)?)
+        } else {
+            None
+        }
+    };
+
     // 5. Build metadata (common fields from graph, then fill in section sizes)
     let mut metadata = FileMetadata::from_graph(graph);
     metadata.topology_compressed_size = topology_compressed.len() as u64;
@@ -293,6 +322,10 @@ pub fn write_graph_v3(graph: &DirGraph, path: &str) -> io::Result<()> {
         .map(|b| b.len() as u64)
         .unwrap_or(0);
     metadata.timeseries_compressed_size = timeseries_compressed
+        .as_ref()
+        .map(|b| b.len() as u64)
+        .unwrap_or(0);
+    metadata.map_properties_compressed_size = map_props_compressed
         .as_ref()
         .map(|b| b.len() as u64)
         .unwrap_or(0);
@@ -325,6 +358,11 @@ pub fn write_graph_v3(graph: &DirGraph, path: &str) -> io::Result<()> {
     // Timeseries section
     if let Some(ts_data) = &timeseries_compressed {
         writer.write_all(ts_data)?;
+    }
+
+    // Map-properties section (nodes not yet columnarized)
+    if let Some(map_data) = &map_props_compressed {
+        writer.write_all(map_data)?;
     }
 
     writer.flush()?;
@@ -432,6 +470,7 @@ fn load_v3(buf: &[u8]) -> io::Result<KnowledgeGraph> {
     let column_sections = metadata.column_sections.clone();
     let embeddings_compressed_size = metadata.embeddings_compressed_size;
     let timeseries_compressed_size = metadata.timeseries_compressed_size;
+    let map_properties_compressed_size = metadata.map_properties_compressed_size;
 
     // Reassemble DirGraph
     let mut dir_graph = DirGraph::from_graph(graph);
@@ -540,6 +579,28 @@ fn load_v3(buf: &[u8]) -> io::Result<KnowledgeGraph> {
             let ts_raw = zstd_decompress(ts_compressed)?;
             let ts_store: HashMap<usize, NodeTimeseries> = bincode_deser(&ts_raw)?;
             dir_graph.timeseries_store = ts_store;
+            section_offset = ts_end;
+        }
+    }
+
+    // Load Map-storage node properties if present
+    if map_properties_compressed_size > 0 {
+        let map_end = section_offset + map_properties_compressed_size as usize;
+        if buf.len() >= map_end {
+            let map_compressed = &buf[section_offset..map_end];
+            let map_raw = zstd_decompress(map_compressed)?;
+            let entries: Vec<(u32, Vec<(String, Value)>)> = bincode_deser(&map_raw)?;
+            for (node_idx_u32, props) in entries {
+                let node_idx = petgraph::graph::NodeIndex::new(node_idx_u32 as usize);
+                if let Some(node) = dir_graph.graph.node_weight_mut(node_idx) {
+                    let mut map = HashMap::new();
+                    for (key, val) in props {
+                        let ik = dir_graph.interner.get_or_intern(&key);
+                        map.insert(ik, val);
+                    }
+                    node.properties = PropertyStorage::Map(map);
+                }
+            }
         }
     }
 
@@ -555,8 +616,6 @@ fn load_v3(buf: &[u8]) -> io::Result<KnowledgeGraph> {
 }
 
 // ─── Embedding Export / Import ────────────────────────────────────────────
-
-use crate::datatypes::values::Value;
 
 /// Magic bytes for the embedding export format.
 const KGLE_MAGIC: [u8; 4] = *b"KGLE";
@@ -2711,5 +2770,272 @@ mod tests {
             Some(&Value::Boolean(true)),
             "active value must match"
         );
+    }
+
+    // ========================================================================
+    // Map-properties save/load round-trip tests (Task 3)
+    // ========================================================================
+
+    /// Build a graph with Map-storage nodes (no enable_columnar call) and verify
+    /// that properties survive a write_graph_v3 → load_file round-trip.
+    #[test]
+    fn test_map_properties_survive_save_load() {
+        use crate::graph::schema::PropertyStorage;
+
+        let mut g = DirGraph::new();
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), Value::String("MapNode".to_string()));
+        props.insert("score".to_string(), Value::Int64(42));
+        let node = NodeData::new(
+            Value::Int64(10),
+            Value::String("MapNode".to_string()),
+            "Thing".to_string(),
+            props,
+            &mut g.interner,
+        );
+        let node_idx = g.graph.add_node(node);
+        g.type_indices
+            .entry("Thing".to_string())
+            .or_default()
+            .push(node_idx);
+
+        // Verify node is in Map storage before save
+        assert!(
+            matches!(
+                g.graph.node_weight(node_idx).unwrap().properties,
+                PropertyStorage::Map(_)
+            ),
+            "Node should be in Map storage before save"
+        );
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&g, path).unwrap();
+
+        // Load back
+        let kg = load_file(path).unwrap();
+        let loaded = &*kg.inner;
+
+        // Check that the node exists and has properties
+        assert_eq!(loaded.graph.node_count(), 1);
+        let loaded_node = loaded.graph.node_weight(node_idx).unwrap();
+        assert_eq!(loaded_node.node_type, "Thing");
+
+        // Verify Map properties were restored via iter
+        let props: HashMap<&str, &Value> = loaded_node.properties.iter(&loaded.interner).collect();
+        assert_eq!(
+            props.get("name").copied(),
+            Some(&Value::String("MapNode".to_string())),
+            "name should survive round-trip; props={:?}",
+            props
+        );
+        assert_eq!(
+            props.get("score").copied(),
+            Some(&Value::Int64(42)),
+            "score should survive round-trip"
+        );
+    }
+
+    /// Mixed graph: some nodes are columnar (via enable_columnar) and some remain Map-storage.
+    /// Both should survive the round-trip.
+    #[test]
+    fn test_map_properties_mixed_with_typed_nodes() {
+        use crate::graph::schema::PropertyStorage;
+
+        // Build a graph with two typed nodes (will become columnar) and one
+        // untyped Map node added manually after columnarization.
+        let mut g = make_test_graph(); // Has 2 Person nodes with compact props
+        g.enable_columnar(); // Convert Person nodes to columnar
+
+        // Add a Map-storage node directly (simulates a node added via Python API
+        // without going through enable_columnar)
+        let map_props = HashMap::from([("label".to_string(), Value::String("raw".to_string()))]);
+        let raw_node = NodeData::new(
+            Value::Int64(99),
+            Value::String("Raw".to_string()),
+            "RawType".to_string(),
+            map_props,
+            &mut g.interner,
+        );
+        let raw_idx = g.graph.add_node(raw_node);
+        g.type_indices
+            .entry("RawType".to_string())
+            .or_default()
+            .push(raw_idx);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&g, path).unwrap();
+
+        let kg = load_file(path).unwrap();
+        let loaded = &*kg.inner;
+
+        // Should have 3 nodes total
+        assert_eq!(loaded.graph.node_count(), 3);
+
+        // Find the RawType node and check its property
+        let mut found_raw = false;
+        for idx in loaded.graph.node_indices() {
+            if let Some(node) = loaded.graph.node_weight(idx) {
+                if node.node_type == "RawType" {
+                    let props: HashMap<&str, &Value> =
+                        node.properties.iter(&loaded.interner).collect();
+                    assert_eq!(
+                        props.get("label").copied(),
+                        Some(&Value::String("raw".to_string())),
+                        "RawType label property should survive round-trip"
+                    );
+                    found_raw = true;
+                }
+            }
+        }
+        assert!(found_raw, "RawType node should be present after round-trip");
+
+        // Also verify the columnar Person nodes are present
+        let person_count = loaded
+            .graph
+            .node_indices()
+            .filter(|&idx| {
+                loaded
+                    .graph
+                    .node_weight(idx)
+                    .map(|n| n.node_type == "Person")
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(
+            person_count, 2,
+            "Both Person nodes should survive round-trip"
+        );
+    }
+
+    /// Map-only graph where node properties include boolean and Null values.
+    /// Ensures these variant types survive the write_graph_v3 → load_file round-trip.
+    #[test]
+    fn test_map_properties_bool_and_null_survive_save_load() {
+        use crate::graph::schema::PropertyStorage;
+
+        let mut g = DirGraph::new();
+        let mut props = HashMap::new();
+        props.insert("active".to_string(), Value::Boolean(true));
+        props.insert("score".to_string(), Value::Null);
+        props.insert("label".to_string(), Value::String("test".to_string()));
+        let node = NodeData::new(
+            Value::Int64(1),
+            Value::String("BoolNode".to_string()),
+            "BoolType".to_string(),
+            props,
+            &mut g.interner,
+        );
+        let node_idx = g.graph.add_node(node);
+        g.type_indices
+            .entry("BoolType".to_string())
+            .or_default()
+            .push(node_idx);
+
+        // Must be Map storage before save
+        assert!(matches!(
+            g.graph.node_weight(node_idx).unwrap().properties,
+            PropertyStorage::Map(_)
+        ));
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&g, path).unwrap();
+
+        let kg = load_file(path).unwrap();
+        let loaded = &*kg.inner;
+
+        assert_eq!(loaded.graph.node_count(), 1);
+        let loaded_node = loaded.graph.node_weight(node_idx).unwrap();
+        let stored: HashMap<&str, &Value> = loaded_node.properties.iter(&loaded.interner).collect();
+
+        assert_eq!(
+            stored.get("active").copied(),
+            Some(&Value::Boolean(true)),
+            "boolean true should survive round-trip"
+        );
+        assert_eq!(
+            stored.get("score").copied(),
+            Some(&Value::Null),
+            "Null should survive round-trip"
+        );
+        assert_eq!(
+            stored.get("label").copied(),
+            Some(&Value::String("test".to_string())),
+            "String should survive round-trip"
+        );
+    }
+
+    /// Map-only graph with many properties (>20) must survive the round-trip.
+    #[test]
+    fn test_map_properties_many_props_survive_save_load() {
+        let mut g = DirGraph::new();
+        let mut props = HashMap::new();
+        for i in 0..25usize {
+            props.insert(format!("prop_{}", i), Value::Int64(i as i64));
+        }
+        let node = NodeData::new(
+            Value::Int64(42),
+            Value::String("BigNode".to_string()),
+            "BigType".to_string(),
+            props,
+            &mut g.interner,
+        );
+        let node_idx = g.graph.add_node(node);
+        g.type_indices
+            .entry("BigType".to_string())
+            .or_default()
+            .push(node_idx);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&g, path).unwrap();
+
+        let kg = load_file(path).unwrap();
+        let loaded = &*kg.inner;
+
+        let loaded_node = loaded.graph.node_weight(node_idx).unwrap();
+        let stored: HashMap<&str, &Value> = loaded_node.properties.iter(&loaded.interner).collect();
+
+        for i in 0..25usize {
+            let key = format!("prop_{}", i);
+            assert_eq!(
+                stored.get(key.as_str()).copied(),
+                Some(&Value::Int64(i as i64)),
+                "prop_{} should survive round-trip; got {:?}",
+                i,
+                stored.get(key.as_str())
+            );
+        }
+    }
+
+    /// Loading a v3 file where map_properties_compressed_size == 0 (old file that
+    /// predates the Map-properties section) must succeed without error.
+    /// We simulate this by writing a graph with ONLY columnar nodes (no Map nodes),
+    /// so map_properties_compressed_size stays 0 in the metadata.
+    #[test]
+    fn test_v3_file_with_zero_map_properties_size_loads_cleanly() {
+        // make_test_graph produces columnar Person nodes; no Map-storage nodes.
+        let mut g = make_test_graph();
+        g.enable_columnar();
+        let mut arc = Arc::new(g);
+        prepare_save(&mut arc);
+        let g = unwrap_arc(arc);
+
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        write_graph_v3(&g, path).unwrap();
+
+        // Verify the metadata has map_properties_compressed_size == 0
+        let bytes = std::fs::read(path).unwrap();
+        // The metadata JSON is embedded in the file; just check the file loads cleanly.
+        let kg = load_file(path)
+            .expect("Loading v3 file with map_properties_compressed_size=0 should succeed");
+        // Should have the original 2 Person nodes
+        assert_eq!(kg.inner.graph.node_count(), 2);
+        // Sanity: the raw bytes should NOT contain the Map-properties marker in a way
+        // that would break backward compat — loading succeeded is sufficient.
+        let _ = bytes; // avoid unused warning
     }
 }
