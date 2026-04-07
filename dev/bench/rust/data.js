@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775534429036,
+  "lastUpdate": 1775551199133,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -357,6 +357,124 @@ window.BENCHMARK_DATA = {
             "name": "bench_property_scan",
             "value": 84060,
             "range": "± 335",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "e79413101747fea06464eb12d310b1a4bf119aef",
+          "message": "fix: improve __kinds secondary label matching, NULL logic, and path construction\n\n- pattern_matching: use node_matches_label() for edge target node type\n  checks so nodes with the label in __kinds are matched when traversing\n  relationships (fixes Azure AZServicePrincipal, Domain trust queries)\n\n- pattern_matching: always scan for __kinds nodes in find_matching_nodes\n  even when secondary_label_index has entries for the label, so nodes\n  that gained a label via SET __kinds are discoverable alongside nodes\n  with the label as extra_labels (fixes MATCH (n:Group) after analysis)\n\n- executor: implement three-valued NULL propagation for NOT + string\n  predicates (Contains/StartsWith/EndsWith) — NOT (NULL CONTAINS x)\n  now returns false (excluded) instead of true, matching Neo4j semantics\n\n- executor: deduplicate undirected shortestPath pairs to avoid returning\n  both (A,B) and (B,A) paths for the same node pair\n\n- executor: append fixed-length edges after VLP in path assignments so\n  p=(u)-[*0..4]->()-[r:AdminTo]->(c) includes the AdminTo edge in the\n  path, not just the variable-length portion\n\n- executor: set has_secondary_labels flag when __kinds is SET via Cypher\n  so the pattern executor uses the __kinds fallback scan\n\n- executor: resolve n.name from property storage before falling back to\n  node title, matching Neo4j semantics for property access\n\n- executor: preserve __kinds insertion order in labels() output instead\n  of sorting alphabetically, matching Neo4j label ordering\n\n- parser: add test coverage for inline relationship properties and\n  negative pattern predicates\n\nCo-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-04-07T18:31:20+10:00",
+          "tree_id": "f73b123fba054849af5050da6bf49f6abc22e38e",
+          "url": "https://github.com/mrmagooey/kglite/commit/e79413101747fea06464eb12d310b1a4bf119aef"
+        },
+        "date": 1775551198199,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph_100_nodes_cypher",
+            "value": 947345,
+            "range": "± 6132",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_parse_match_where_return",
+            "value": 6108,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "shortest_path_cost_chain_50",
+            "value": 382,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_match_node_scan_50",
+            "value": 15355,
+            "range": "± 253",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_create_5_nodes",
+            "value": 8611,
+            "range": "± 91",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "save_load_roundtrip_20_nodes",
+            "value": 521156,
+            "range": "± 26945",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_function_dispatch",
+            "value": 247555,
+            "range": "± 1572",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_count_distinct",
+            "value": 41376,
+            "range": "± 721",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_edge_type_counts",
+            "value": 127217,
+            "range": "± 737",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_rand_function",
+            "value": 17006,
+            "range": "± 34",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_iter",
+            "value": 97285,
+            "range": "± 523",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_substring",
+            "value": 247194,
+            "range": "± 2020",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_scan",
+            "value": 106696,
+            "range": "± 779",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_vlp_expansion",
+            "value": 452639,
+            "range": "± 2508",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_group_by_single_key",
+            "value": 106132,
+            "range": "± 669",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_group_aggregate_wide",
+            "value": 144855,
+            "range": "± 659",
             "unit": "ns/iter"
           }
         ]
