@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775553303825,
+  "lastUpdate": 1775605781040,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -593,6 +593,124 @@ window.BENCHMARK_DATA = {
             "name": "bench_group_aggregate_wide",
             "value": 143386,
             "range": "± 3121",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "af4431af9212c1f19ea226ab16a2ce54564919c4",
+          "message": "docs: update documentation to reflect multi-label support and __kinds absorption\n\n- Remove all \"single-label only\" claims (index.md, core-concepts, cypher guide, import-export)\n- Replace \"Why single-label nodes\" design rationale with \"Label model\" section\n- Update CYPHER.md label model description, function table, and architecture comparison\n- Update CHANGELOG [Unreleased] with __kinds absorption and index fix entries\n- Fix cypher guide \"Not supported\" list (SET n:Label and multi-label are now supported)\n\nCo-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-04-08T06:57:51+10:00",
+          "tree_id": "e8083e030b124a74a68a641da8e3e50b7c2aad9d",
+          "url": "https://github.com/mrmagooey/kglite/commit/af4431af9212c1f19ea226ab16a2ce54564919c4"
+        },
+        "date": 1775605780695,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph_100_nodes_cypher",
+            "value": 969795,
+            "range": "± 4563",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_parse_match_where_return",
+            "value": 6202,
+            "range": "± 20",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "shortest_path_cost_chain_50",
+            "value": 406,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_match_node_scan_50",
+            "value": 15963,
+            "range": "± 27",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_create_5_nodes",
+            "value": 8875,
+            "range": "± 63",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "save_load_roundtrip_20_nodes",
+            "value": 502813,
+            "range": "± 17105",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_function_dispatch",
+            "value": 247989,
+            "range": "± 1402",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_count_distinct",
+            "value": 43764,
+            "range": "± 155",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_edge_type_counts",
+            "value": 135866,
+            "range": "± 894",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_rand_function",
+            "value": 16797,
+            "range": "± 160",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_iter",
+            "value": 100331,
+            "range": "± 418",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_substring",
+            "value": 238255,
+            "range": "± 1015",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_scan",
+            "value": 111799,
+            "range": "± 1016",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_vlp_expansion",
+            "value": 451564,
+            "range": "± 4039",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_group_by_single_key",
+            "value": 108924,
+            "range": "± 449",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_group_aggregate_wide",
+            "value": 145434,
+            "range": "± 664",
             "unit": "ns/iter"
           }
         ]
