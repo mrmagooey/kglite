@@ -2396,15 +2396,27 @@ impl DirGraph {
         let avg_per_type = self.graph.node_count() / type_count.max(1);
         let mut new_type_indices: HashMap<String, Vec<NodeIndex>> =
             HashMap::with_capacity(type_count);
+        let mut new_secondary_label_index: HashMap<String, Vec<NodeIndex>> = HashMap::new();
+        let mut has_secondary = false;
         for node_idx in self.graph.node_indices() {
             if let Some(node) = self.graph.node_weight(node_idx) {
                 new_type_indices
                     .entry(node.node_type.clone())
                     .or_insert_with(|| Vec::with_capacity(avg_per_type))
                     .push(node_idx);
+                // Rebuild secondary label index from extra_labels
+                for label in &node.extra_labels {
+                    new_secondary_label_index
+                        .entry(label.clone())
+                        .or_default()
+                        .push(node_idx);
+                    has_secondary = true;
+                }
             }
         }
         self.type_indices = new_type_indices;
+        self.secondary_label_index = new_secondary_label_index;
+        self.has_secondary_labels = has_secondary;
     }
 
     /// Convert all node properties from PropertyStorage::Map to PropertyStorage::Compact.
@@ -2488,11 +2500,13 @@ impl DirGraph {
         let arc_schemas: HashMap<String, Arc<TypeSchema>> =
             schemas.into_iter().map(|(t, s)| (t, Arc::new(s))).collect();
 
-        // Single pass: build type_indices AND convert Map → Compact
+        // Single pass: build type_indices, secondary_label_index AND convert Map → Compact
         let type_count = arc_schemas.len().max(4);
         let avg_per_type = self.graph.node_count() / type_count.max(1);
         let mut new_type_indices: HashMap<String, Vec<NodeIndex>> =
             HashMap::with_capacity(type_count);
+        let mut new_secondary_label_index: HashMap<String, Vec<NodeIndex>> = HashMap::new();
+        let mut has_secondary = false;
 
         let node_indices: Vec<NodeIndex> = self.graph.node_indices().collect();
         for node_idx in node_indices {
@@ -2503,6 +2517,15 @@ impl DirGraph {
                 .entry(node.node_type.clone())
                 .or_insert_with(|| Vec::with_capacity(avg_per_type))
                 .push(node_idx);
+
+            // Rebuild secondary_label_index from extra_labels
+            for label in &node.extra_labels {
+                new_secondary_label_index
+                    .entry(label.clone())
+                    .or_default()
+                    .push(node_idx);
+                has_secondary = true;
+            }
 
             // Convert Map → Compact
             if let PropertyStorage::Map(_) = &node.properties {
@@ -2522,6 +2545,8 @@ impl DirGraph {
         }
 
         self.type_indices = new_type_indices;
+        self.secondary_label_index = new_secondary_label_index;
+        self.has_secondary_labels = has_secondary;
         self.type_schemas = arc_schemas;
     }
 

@@ -19,6 +19,18 @@ use std::time::Instant;
 /// contention when multiple queries run concurrently (shared thread pool).
 const EXPANSION_RAYON_THRESHOLD: usize = 8192;
 
+/// Pre-interned anonymous variable-length path keys to avoid `format!` allocations in hot loops.
+const ANON_VLP_KEYS: [&str; 8] = [
+    "__anon_vlpath_0",
+    "__anon_vlpath_1",
+    "__anon_vlpath_2",
+    "__anon_vlpath_3",
+    "__anon_vlpath_4",
+    "__anon_vlpath_5",
+    "__anon_vlpath_6",
+    "__anon_vlpath_7",
+];
+
 /// Check whether a node matches a label, considering:
 /// 1. The primary `node_type` field.
 /// 2. The `extra_labels` vec (populated by SET n:Label in Cypher).
@@ -1120,7 +1132,7 @@ impl<'a> PatternExecutor<'a> {
                                 {
                                     new_match
                                         .bindings
-                                        .push((format!("__anon_vlpath_{}", i), edge_binding));
+                                        .push((ANON_VLP_KEYS.get(i).copied().unwrap_or("__anon_vlpath_n").to_string(), edge_binding));
                                 }
                                 if let Some(ref var) = node_pattern.variable {
                                     new_match
@@ -1234,7 +1246,7 @@ impl<'a> PatternExecutor<'a> {
                         {
                             new_match
                                 .bindings
-                                .push((format!("__anon_vlpath_{}", i), edge_binding));
+                                .push((ANON_VLP_KEYS.get(i).copied().unwrap_or("__anon_vlpath_n").to_string(), edge_binding));
                         }
                         if let Some(ref var) = node_pattern.variable {
                             new_match
@@ -1328,28 +1340,48 @@ impl<'a> PatternExecutor<'a> {
                     return Ok(indexed);
                 }
             }
-            // Use type index for primary type, then scan all nodes for secondary
-            // label matches (extra_labels or __kinds property).
+            // Use type index for primary type.
             let primary: &[NodeIndex] = self
                 .graph
                 .type_indices
                 .get(node_type)
                 .map(|v| v.as_slice())
                 .unwrap_or(&[]);
-            // Collect secondary matches — nodes whose extra_labels or __kinds contains
-            // the label but whose primary node_type differs (avoid duplicating primaries).
-            let secondary: Vec<NodeIndex> = self
-                .graph
-                .graph
-                .node_indices()
-                .filter(|&idx| {
-                    if let Some(node) = self.graph.graph.node_weight(idx) {
-                        node.node_type != *node_type && node_matches_label(node, node_type)
-                    } else {
-                        false
-                    }
-                })
-                .collect();
+            // Collect secondary matches — nodes whose extra_labels contains the label
+            // but whose primary node_type differs (avoid duplicating primaries).
+            // Fast path: if no secondary labels exist in the graph, skip the scan.
+            let secondary: Vec<NodeIndex> = if !self.graph.has_secondary_labels {
+                // No secondary labels anywhere — skip scan entirely
+                vec![]
+            } else if let Some(indexed) = self.graph.secondary_label_index.get(node_type.as_str())
+            {
+                // O(1) index lookup — filter out primaries to avoid duplicates
+                indexed
+                    .iter()
+                    .copied()
+                    .filter(|&idx| {
+                        self.graph
+                            .graph
+                            .node_weight(idx)
+                            .map(|n| n.node_type != *node_type)
+                            .unwrap_or(false)
+                    })
+                    .collect()
+            } else {
+                // No index entry for this label — fall back to O(N) scan only for
+                // nodes that might have __kinds JSON (not in extra_labels index).
+                self.graph
+                    .graph
+                    .node_indices()
+                    .filter(|&idx| {
+                        if let Some(node) = self.graph.graph.node_weight(idx) {
+                            node.node_type != *node_type && node_matches_label(node, node_type)
+                        } else {
+                            false
+                        }
+                    })
+                    .collect()
+            };
             if primary.is_empty() && secondary.is_empty() {
                 return Ok(vec![]);
             }

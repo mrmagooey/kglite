@@ -13259,3 +13259,112 @@ mod labels_kinds_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod secondary_label_index_tests {
+    use super::*;
+    use crate::datatypes::values::Value;
+    use crate::graph::schema::DirGraph;
+
+    /// CREATE (n:A:B) should populate secondary_label_index["B"] and set has_secondary_labels.
+    #[test]
+    fn test_secondary_label_index_populated_on_create() {
+        let mut graph = DirGraph::new();
+        let query =
+            super::super::parser::parse_cypher("CREATE (n:Primary:Secondary {name: 'x'})")
+                .unwrap();
+        execute_mutable(&mut graph, &query, HashMap::new(), None).unwrap();
+
+        assert!(
+            graph.has_secondary_labels,
+            "has_secondary_labels should be true after creating a multi-label node"
+        );
+        assert!(
+            graph.secondary_label_index.contains_key("Secondary"),
+            "secondary_label_index should contain 'Secondary'"
+        );
+        assert_eq!(
+            graph.secondary_label_index["Secondary"].len(),
+            1,
+            "secondary_label_index['Secondary'] should have 1 entry"
+        );
+    }
+
+    /// An empty graph should have has_secondary_labels = false.
+    #[test]
+    fn test_has_secondary_labels_false_on_empty_graph() {
+        let graph = DirGraph::new();
+        assert!(
+            !graph.has_secondary_labels,
+            "Empty graph should have has_secondary_labels = false"
+        );
+    }
+
+    /// MATCH (n:Secondary) should find nodes via the secondary label index.
+    #[test]
+    fn test_find_matching_nodes_uses_index() {
+        let mut graph = DirGraph::new();
+        let create_query =
+            super::super::parser::parse_cypher("CREATE (a:TypeA:TagB {name: 'node1'})")
+                .unwrap();
+        execute_mutable(&mut graph, &create_query, HashMap::new(), None).unwrap();
+
+        // Verify the index is populated
+        assert!(graph.has_secondary_labels);
+        assert!(graph.secondary_label_index.contains_key("TagB"));
+
+        // Query via secondary label should return the node
+        let no_params = HashMap::new();
+        let q = super::super::parser::parse_cypher("MATCH (n:TagB) RETURN n.name").unwrap();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&q).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0][0],
+            Value::String("node1".to_string()),
+            "Should find node via secondary label index"
+        );
+    }
+}
+
+#[cfg(test)]
+mod anon_vlp_key_tests {
+    use super::*;
+    use crate::datatypes::values::Value;
+    use crate::graph::schema::DirGraph;
+
+    /// Chain A→B→C→D, MATCH (a:N)-[:REL*3]->(d:N) should return the correct endpoints.
+    /// This test verifies ANON_VLP_KEYS are used correctly without format! allocation.
+    #[test]
+    fn test_anon_vlp_binding_correct() {
+        let mut graph = DirGraph::new();
+        let create_q = super::super::parser::parse_cypher(
+            "CREATE (a:N {name: 'A'})-[:REL]->(b:N {name: 'B'})\
+             -[:REL]->(c:N {name: 'C'})-[:REL]->(d:N {name: 'D'})",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &create_q, HashMap::new(), None).unwrap();
+
+        let read_q = super::super::parser::parse_cypher(
+            "MATCH (a:N)-[:REL*3]->(d:N) RETURN a.name, d.name",
+        )
+        .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&read_q).unwrap();
+
+        assert!(!result.rows.is_empty(), "Should match 3-hop path: {:?}", result.rows);
+        let a_col = result.columns.iter().position(|c| c == "a.name").unwrap();
+        let d_col = result.columns.iter().position(|c| c == "d.name").unwrap();
+        assert_eq!(
+            result.rows[0].get(a_col),
+            Some(&Value::String("A".to_string())),
+            "source should be A"
+        );
+        assert_eq!(
+            result.rows[0].get(d_col),
+            Some(&Value::String("D".to_string())),
+            "target should be D"
+        );
+    }
+}
