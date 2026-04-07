@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775449577436,
+  "lastUpdate": 1775534284301,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -594,6 +594,105 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.000016837153629853622",
             "extra": "mean: 656.8707996650717 usec\nrounds: 1198"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "4acd4bc6a4aa15a79ed8ebb8f4b209990ff72900",
+          "message": "merge: integrate performance optimizations and fixes from fix/path-node-properties\n\n- Complete secondary label index: O(1) lookup via secondary_label_index HashMap,\n  has_secondary_labels fast-skip flag eliminates O(N) scan on single-label graphs\n- Eliminate format! alloc in VLP BFS loop with ANON_VLP_KEYS static table (~6% on path queries)\n- Store EdgeIndex in PathBinding: captures edge.id() at BFS time, eliminates per-hop adjacency scan\n- Fix map-properties save/load: load_v3 now restores PropertyStorage::Map nodes from disk\n- Fix labels(n) to merge __kinds property into returned label list\n- Fix path nodes to emit full properties in path results\n- Fix FFI save/load to call enable_columnar() before writing v3 format\n- Add 14 new tests covering secondary label index, VLP edge cases, PathBinding changes, and save/load backward compat\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>",
+          "timestamp": "2026-04-07T13:54:25+10:00",
+          "tree_id": "06fa5f4a06383a8050460e92283754f0f5c769ec",
+          "url": "https://github.com/mrmagooey/kglite/commit/4acd4bc6a4aa15a79ed8ebb8f4b209990ff72900"
+        },
+        "date": 1775534283884,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_nodes",
+            "value": 1079.3144033599333,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00001622441742986406",
+            "extra": "mean: 926.5140879126365 usec\nrounds: 546"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_connections",
+            "value": 792.533788664865,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00003136196401185314",
+            "extra": "mean: 1.2617758565027757 msec\nrounds: 669"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_match",
+            "value": 13777.910825574087,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000004070858423618511",
+            "extra": "mean: 72.57994427891303 usec\nrounds: 7394"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_where",
+            "value": 1608.965237920916,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000018717820028943736",
+            "extra": "mean: 621.5174675197999 usec\nrounds: 1016"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_traversal",
+            "value": 693142.0137965697,
+            "unit": "iter/sec",
+            "range": "stddev: 4.483492343941982e-7",
+            "extra": "mean: 1.4427057949101467 usec\nrounds: 77310"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_shortest_path",
+            "value": 132775.61450582708,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000011573353597094743",
+            "extra": "mean: 7.53150345959132 usec\nrounds: 33675"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_enable",
+            "value": 2762.254301925441,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000011580476130178565",
+            "extra": "mean: 362.02314873867545 usec\nrounds: 4955"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_where",
+            "value": 1573.2158581073022,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00008212902372410802",
+            "extra": "mean: 635.6406813767284 usec\nrounds: 1337"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_match",
+            "value": 14510.230792923327,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00000971142089225787",
+            "extra": "mean: 68.91689141758533 usec\nrounds: 11908"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_save_kgl",
+            "value": 1357.5982750323922,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00002946827591121613",
+            "extra": "mean: 736.5949253111272 usec\nrounds: 964"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_save_v3",
+            "value": 1361.1689735481248,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000015717936945657997",
+            "extra": "mean: 734.6626461763416 usec\nrounds: 1334"
           }
         ]
       }
