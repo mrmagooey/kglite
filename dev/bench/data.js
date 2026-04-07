@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775553118539,
+  "lastUpdate": 1775605586673,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -891,6 +891,105 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00001881787202711031",
             "extra": "mean: 744.5249916543506 usec\nrounds: 1318"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "af4431af9212c1f19ea226ab16a2ce54564919c4",
+          "message": "docs: update documentation to reflect multi-label support and __kinds absorption\n\n- Remove all \"single-label only\" claims (index.md, core-concepts, cypher guide, import-export)\n- Replace \"Why single-label nodes\" design rationale with \"Label model\" section\n- Update CYPHER.md label model description, function table, and architecture comparison\n- Update CHANGELOG [Unreleased] with __kinds absorption and index fix entries\n- Fix cypher guide \"Not supported\" list (SET n:Label and multi-label are now supported)\n\nCo-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-04-08T06:57:51+10:00",
+          "tree_id": "e8083e030b124a74a68a641da8e3e50b7c2aad9d",
+          "url": "https://github.com/mrmagooey/kglite/commit/af4431af9212c1f19ea226ab16a2ce54564919c4"
+        },
+        "date": 1775605586235,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_nodes",
+            "value": 1069.346048582712,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000024673229292790462",
+            "extra": "mean: 935.1509750518818 usec\nrounds: 481"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_connections",
+            "value": 787.6282358097633,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00003276346664152197",
+            "extra": "mean: 1.2696345236682591 msec\nrounds: 676"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_match",
+            "value": 13339.585999280891,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000049441629295142436",
+            "extra": "mean: 74.96484523986786 usec\nrounds: 6985"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_where",
+            "value": 1548.0005730570408,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000024611649421767897",
+            "extra": "mean: 645.9945928993864 usec\nrounds: 845"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_traversal",
+            "value": 643907.6452739245,
+            "unit": "iter/sec",
+            "range": "stddev: 4.4454494389443214e-7",
+            "extra": "mean: 1.5530177461623251 usec\nrounds: 58886"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_shortest_path",
+            "value": 129804.57929601145,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000012550444490262301",
+            "extra": "mean: 7.703888456196609 usec\nrounds: 20288"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_enable",
+            "value": 2817.204954852533,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00003710453911380669",
+            "extra": "mean: 354.961749686524 usec\nrounds: 4786"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_where",
+            "value": 1592.3612873704485,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000023525308860807348",
+            "extra": "mean: 627.9981860469326 usec\nrounds: 1290"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_match",
+            "value": 14362.904877080038,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000004296560524545432",
+            "extra": "mean: 69.62379884557858 usec\nrounds: 11782"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_save_kgl",
+            "value": 1315.0483503457492,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0001691032676406339",
+            "extra": "mean: 760.428314089807 usec\nrounds: 1022"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_save_v3",
+            "value": 1345.861844019215,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000014468140061755718",
+            "extra": "mean: 743.0183153225072 usec\nrounds: 1240"
           }
         ]
       }
