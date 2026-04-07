@@ -9,9 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`labels(n)` now includes secondary kinds from `__kinds` property** — BloodHound stores secondary node kinds (e.g. `User`, `Group`, `Computer`) as a JSON array in a `__kinds` node property alongside the primary label. `labels()` was only returning the primary label, making it incompatible with Neo4j which returns the full label set. All three `labels()` evaluation sites (`FunctionCall`, `resolve_node_property` dot-notation, and `IndexAccess`) now merge `__kinds` into the result, sort, and deduplicate.
+- **`REMOVE n:Label` now updates `secondary_label_index`** — previously, removing a secondary label left stale entries in the index, causing false matches on subsequent queries.
+- **`SET n.__kinds` now expands into `extra_labels`** — previously, setting `__kinds` as a property only stored it without indexing, requiring O(N) scans to find matching nodes. Now `__kinds` values are absorbed into `extra_labels` and properly indexed.
+- **FFI `__labels` now includes all labels** — previously only emitted the primary label; now includes secondary labels.
 - **FFI save drops node properties** — `kg_save` now calls `enable_columnar()` before `write_graph_v3` to prevent silent property loss on save. `write_graph_v3` stores node properties in per-type column sections; if `enable_columnar()` was never called, `column_stores` is empty and all node properties are silently dropped — only `NodeData.title` (the `name` field) survived via the topology section. This mirrors the existing behaviour in the Python `save()` method and fixes silent property loss when using the FFI (Go/BloodHound) save path.
 - **HAVING clause on aggregation queries** — `HAVING count(n) > N` and similar post-aggregation filters now work correctly on all graph sizes. Previously, aggregate function calls inside the HAVING predicate (e.g. `count(n)`, `sum(x)`) raised "Aggregate function cannot be used outside of RETURN/WITH" because the per-row evaluator didn't look up the already-computed projected value. The fix resolves aggregate expressions in HAVING by looking up the matching column from the projected row, consistent with how databases evaluate HAVING clauses.
+
+### Changed
+
+- **`__kinds` property is now absorbed into `extra_labels`** — nodes created with a `__kinds` JSON property (BloodHound-style imports) now have those values expanded into `extra_labels` at ingestion time and the property removed. Existing serialized graphs are migrated automatically on load. `n.__kinds` is no longer readable as a property; use `labels(n)` instead.
+- **Label output ordering** — `labels(n)`, Python node dicts, and result views now use canonical ordering (primary label first, then secondary labels in insertion order) instead of sorted order.
 
 ### Added
 
@@ -21,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`labels(n)`** — now returns a JSON array of all labels (primary + extras), e.g. `["Person", "Director"]`. Previously returned a single-element JSON string.
 - **`n.labels` property access** — resolves to the same JSON array as `labels(n)`.
 - **`"labels"` key in node dicts** — all nodes returned to Python now include a `labels` list alongside the existing `"type"` key.
+- **`NodeData::has_label()` and `all_labels()`** — canonical Rust methods for label checks and listing, replacing scattered inline logic.
 
 ## [0.6.18] - 2026-03-30
 

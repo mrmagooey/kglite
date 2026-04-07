@@ -41,22 +41,22 @@ distribute.
 - GIL management for thread safety
 - Direct access to Python objects (DataFrames, dicts) without serialization
 
-## Why single-label nodes
+## Label model
 
-Each node has exactly one type label (e.g., `Person`, `Company`). Neo4j
-allows multiple labels per node; KGLite does not.
+Each node has a **primary type** (immutable, set at creation) plus optional
+**secondary labels** (`SET n:Label` / `REMOVE n:Label`). This is close to
+Neo4j's multi-label model, with one constraint: the primary type cannot be
+changed via label operations (use `SET n.type = 'NewType'` to retype).
 
-**Why this simplification:**
+**Why a primary type:**
 - Enables type-indexed storage — `HashMap<String, Vec<NodeIndex>>` gives
   O(1) lookup by type, which is the most common access pattern
 - Schema is clearer — each type has a fixed set of properties
-- String interning and `TypeSchema` sharing only work cleanly with
-  single-label nodes
+- String interning and `TypeSchema` sharing work cleanly with a
+  single primary type
 
-**Workarounds for multi-label needs:**
-- Use a property to store secondary labels (e.g., `role: "Manager"`)
-- Use relationship types to model is-a hierarchies
-- Use `set_parent_type()` for child types that inherit from a parent
+Secondary labels are indexed separately (`secondary_label_index`) for O(1)
+lookup. `labels(n)` returns all labels as a list, e.g. `["Person", "Director"]`.
 
 ## Why a Cypher subset
 

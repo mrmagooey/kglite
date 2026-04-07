@@ -12,7 +12,7 @@ Use **Cypher** for querying, mutations, and semantic search. Use the **fluent AP
 | Embedded, in-process | No server, no network; `import` and go |
 | In-memory | Persistence via `save()`/`load()` snapshots |
 | Cypher subset | Querying + mutations + `text_score()` for semantic search |
-| Single-label nodes | Each node has exactly one type |
+| Multi-label nodes | Primary type plus optional secondary labels via `SET n:Label` |
 | Fluent bulk loading | Import DataFrames with `add_nodes()` / `add_connections()` |
 
 **Requirements:** Python 3.10+ (CPython) | macOS (ARM/Intel), Linux (x86_64/aarch64), Windows (x86_64) | `pandas >= 1.5`

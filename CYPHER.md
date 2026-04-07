@@ -2,7 +2,7 @@
 
 Full Cypher subset supported by KGLite. For a quick overview, see the [Cypher guide](https://kglite.readthedocs.io/en/latest/guides/cypher.html).
 
-> **Label model:** Each node has a primary type plus optional secondary labels. `labels(n)` returns a single-element list `["Label"]`. `SET n:OtherLabel` adds a secondary label; `REMOVE n:OtherLabel` removes it. The primary type (used for indexing) is immutable — change it via `SET n.type = 'NewType'`.
+> **Label model:** Each node has a primary type plus optional secondary labels. `labels(n)` returns all labels as a list, e.g. `["Person", "Director"]`. `CREATE (n:Person:Director)` sets the primary type and adds secondary labels. `SET n:Label` adds a secondary label; `REMOVE n:Label` removes it. The primary type (used for indexing) is immutable — change it via `SET n.type = 'NewType'`.
 
 ---
 
@@ -162,7 +162,7 @@ graph.cypher("""
 | `size(expr)` | Length of string or list |
 | `type(r)` | Relationship type |
 | `id(n)` | Node ID |
-| `labels(n)` | Node labels as a list, e.g. `["Person"]`; includes secondary labels if any |
+| `labels(n)` | All node labels as a list, e.g. `["Person", "Director"]` |
 | `keys(n)` / `keys(r)` | Property names of a node or relationship (as JSON list) |
 | `date(str)` / `datetime(str)` | Parse date string to DateTime (`date('2020-01-15')`) |
 | `date_diff(d1, d2)` | Days between two dates (`d1 - d2`); also supports `date - date` arithmetic |
@@ -872,9 +872,9 @@ Clause-by-clause comparison with the openCypher specification.
 | `UNWIND` | Full | List expansion, works with `collect()` round-trips |
 | `UNION` / `UNION ALL` | Full | |
 | `CREATE` | Full | Nodes, relationships, inline properties |
-| `SET` | Full | `n.prop = expr`, `n += {map}`, `SET n:Label` (adds secondary label) |
+| `SET` | Full | `n.prop = expr`, `n += {map}`, `SET n:Label` |
 | `DELETE` / `DETACH DELETE` | Full | |
-| `REMOVE` | Full | `REMOVE n.prop` — property removal; `REMOVE n:Label` — removes secondary label |
+| `REMOVE` | Full | `REMOVE n.prop` — property removal; `REMOVE n:Label` — removes label |
 | `MERGE` | Full | `ON CREATE SET`, `ON MATCH SET` |
 | `EXPLAIN` | Full | Structured `ResultView` with cardinality estimates |
 | `PROFILE` | Full | Execute + per-clause stats (rows_in, rows_out, elapsed_us) |
@@ -920,7 +920,7 @@ Clause-by-clause comparison with the openCypher specification.
 | `size`, `length` | Full | Strings, lists, and paths |
 | `type(r)` | Full | Returns relationship type |
 | `id(n)` | Full | Returns node id |
-| `labels(n)` | Full | Returns a list, e.g. `["Person"]`; multi-label nodes include all labels |
+| `labels(n)` | Full | Returns all labels as a list, e.g. `["Person", "Director"]` |
 | `keys(n)` / `keys(r)` | Full | Returns property names as JSON list |
 | `date(str)` / `datetime(str)` | Full | Parse date string to DateTime; `d.year`, `d.month`, `d.day` accessors; `date ± N`, `date - date`, `date_diff()` |
 | `coalesce` | Full | |
@@ -936,9 +936,9 @@ Clause-by-clause comparison with the openCypher specification.
 
 | Feature | KGLite | Neo4j | Rationale |
 |---------|--------|-------|-----------|
-| Labels per node | Primary + optional secondary labels | Multiple | Primary label drives `type_indices`; secondary labels via `SET n:Label` |
-| `labels(n)` return type | `List[String]` | `List[String]` | Returns `["PrimaryLabel"]` or `["Primary", "Secondary", ...]` |
-| `SET n:Label` / `REMOVE n:Label` | Supported (secondary labels only) | Supported | Adds/removes secondary labels; primary type is immutable (use `SET n.type` to retype) |
+| Labels per node | Primary + optional secondary labels | Multiple | Primary label drives `type_indices`; secondary labels indexed via `secondary_label_index` |
+| `labels(n)` return type | `List[String]` | `List[String]` | Returns all labels, e.g. `["Person", "Director"]` |
+| `SET n:Label` / `REMOVE n:Label` | Supported | Supported | Adds/removes secondary labels; primary type is immutable (use `SET n.type` to retype) |
 | Storage | In-memory (petgraph) | Disk-based | Embedded use case, explicit `save()`/`load()` |
 | Transactions | Snapshot isolation + OCC | Full ACID | GIL serializes Python access; OCC catches conflicts |
 | Indexing | Type indices + vector index | Schema indexes | Automatic type-based lookup, no manual `CREATE INDEX` |

@@ -3,7 +3,7 @@
 KGLite supports a substantial Cypher subset. This page covers the essentials — see the [full Cypher reference](../reference/cypher-reference.md) for complete documentation of every clause and function.
 
 ```{note}
-**Single-label note:** Each node has exactly one type. `labels(n)` returns a string, not a list. `SET n:OtherLabel` is not supported.
+**Multi-label support:** Each node has a primary type plus optional secondary labels. `CREATE (n:Person:Director)` or `SET n:Label` adds labels. `labels(n)` returns a list of all labels, e.g. `["Person", "Director"]`. The primary type is immutable.
 ```
 
 ## Basic Queries
@@ -91,6 +91,6 @@ graph.cypher("""
 | **Functions** | `toUpper`, `toLower`, `toString`, `toInteger`, `toFloat`, `size`, `type`, `id`, `labels`, `coalesce`, `count`, `sum`, `avg`, `min`, `max`, `collect`, `std`, `text_score` |
 | **Spatial** | `point`, `distance`, `contains`, `intersects`, `centroid`, `area`, `perimeter`, `latitude`, `longitude` |
 | **Timeseries** | `ts_sum`, `ts_avg`, `ts_min`, `ts_max`, `ts_count`, `ts_at`, `ts_first`, `ts_last`, `ts_delta`, `ts_series` — date-string args |
-| **Not supported** | `CALL`/stored procedures, `FOREACH`, subqueries, `SET n:Label` (label mutation), multi-label |
+| **Not supported** | `CALL`/stored procedures, `FOREACH`, subqueries |
 
 See the [full Cypher reference](../reference/cypher-reference.md) for detailed examples of every feature.

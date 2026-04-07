@@ -2,7 +2,7 @@
 
 ## Nodes, Relationships, and Selections
 
-**Nodes** have three built-in fields — `type` (label), `title` (display name), `id` (unique within type) — plus arbitrary properties. Each node has exactly one type.
+**Nodes** have three built-in fields — `type` (primary label), `title` (display name), `id` (unique within type) — plus arbitrary properties. Nodes can carry additional labels beyond their primary type via `CREATE (n:Person:Director)` or `SET n:Label`.
 
 **Relationships** connect two nodes with a type (e.g., `:KNOWS`) and optional properties. The Cypher API calls them "relationships"; the fluent API calls them "connections" — same thing.
 
