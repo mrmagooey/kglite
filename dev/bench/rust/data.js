@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775605781040,
+  "lastUpdate": 1775606204232,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -711,6 +711,124 @@ window.BENCHMARK_DATA = {
             "name": "bench_group_aggregate_wide",
             "value": 145434,
             "range": "± 664",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "e489d422bf18c7cad434d3b90b41463b7ee3a526",
+          "message": "fix: update test to populate secondary_label_index after direct mutation\n\nThe dirgraph_nodes_matching_label_extra_labels test directly pushed to\nextra_labels without updating secondary_label_index. This worked with\nthe old O(N) scan but fails with the new O(1) index lookup.\n\nCo-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-04-08T09:50:51+10:00",
+          "tree_id": "89550246653ebd51d573f69f65e3d23b3582eafb",
+          "url": "https://github.com/mrmagooey/kglite/commit/e489d422bf18c7cad434d3b90b41463b7ee3a526"
+        },
+        "date": 1775606203802,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph_100_nodes_cypher",
+            "value": 948345,
+            "range": "± 4910",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_parse_match_where_return",
+            "value": 6358,
+            "range": "± 584",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "shortest_path_cost_chain_50",
+            "value": 392,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_match_node_scan_50",
+            "value": 15965,
+            "range": "± 58",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_create_5_nodes",
+            "value": 8642,
+            "range": "± 203",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "save_load_roundtrip_20_nodes",
+            "value": 500018,
+            "range": "± 22762",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_function_dispatch",
+            "value": 253452,
+            "range": "± 1929",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_count_distinct",
+            "value": 41429,
+            "range": "± 103",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_edge_type_counts",
+            "value": 124423,
+            "range": "± 1454",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_rand_function",
+            "value": 16775,
+            "range": "± 36",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_iter",
+            "value": 96881,
+            "range": "± 405",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_substring",
+            "value": 247613,
+            "range": "± 602",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_scan",
+            "value": 105026,
+            "range": "± 1077",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_vlp_expansion",
+            "value": 452429,
+            "range": "± 1586",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_group_by_single_key",
+            "value": 107649,
+            "range": "± 624",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_group_aggregate_wide",
+            "value": 143168,
+            "range": "± 2714",
             "unit": "ns/iter"
           }
         ]
