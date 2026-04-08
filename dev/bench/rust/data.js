@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775606204232,
+  "lastUpdate": 1775622745138,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -829,6 +829,124 @@ window.BENCHMARK_DATA = {
             "name": "bench_group_aggregate_wide",
             "value": 143168,
             "range": "± 2714",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "84833d21dda532d5816705057a85302b7e6b1ac9",
+          "message": "fix: store type/node_type/label as regular properties instead of rejecting\n\nSET n.type, SET n.node_type, and SET n.label previously raised \"Cannot\nSET node type via property assignment\", blocking callers that pass\nunfiltered JSON properties through to Cypher (e.g. Okta/GitHub ingest).\n\nNow these values are stored as regular properties in PropertyStorage.\nThe virtual read (n.type in RETURN/WHERE) still returns the primary\nlabel, so stored values are shadowed on direct access but preserved in\nkeys(n) and property iteration. REMOVE n.type likewise removes the\nstored property. Deduplication added to keys(n) and AllProperties map\nprojection to prevent \"type\" appearing twice.\n\nCo-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-04-08T14:26:54+10:00",
+          "tree_id": "c9ea2057cbd16260b8d413b6216fb4bc0b91d78b",
+          "url": "https://github.com/mrmagooey/kglite/commit/84833d21dda532d5816705057a85302b7e6b1ac9"
+        },
+        "date": 1775622744800,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph_100_nodes_cypher",
+            "value": 967217,
+            "range": "± 4013",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_parse_match_where_return",
+            "value": 6155,
+            "range": "± 22",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "shortest_path_cost_chain_50",
+            "value": 401,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_match_node_scan_50",
+            "value": 15628,
+            "range": "± 98",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_create_5_nodes",
+            "value": 8482,
+            "range": "± 38",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "save_load_roundtrip_20_nodes",
+            "value": 506106,
+            "range": "± 9284",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_function_dispatch",
+            "value": 250165,
+            "range": "± 1545",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_count_distinct",
+            "value": 41032,
+            "range": "± 506",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_edge_type_counts",
+            "value": 127931,
+            "range": "± 702",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_rand_function",
+            "value": 17138,
+            "range": "± 157",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_iter",
+            "value": 95335,
+            "range": "± 616",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_substring",
+            "value": 249355,
+            "range": "± 1175",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_scan",
+            "value": 104437,
+            "range": "± 279",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_vlp_expansion",
+            "value": 439191,
+            "range": "± 2922",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_group_by_single_key",
+            "value": 104714,
+            "range": "± 4409",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_group_aggregate_wide",
+            "value": 143154,
+            "range": "± 896",
             "unit": "ns/iter"
           }
         ]
