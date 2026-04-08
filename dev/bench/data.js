@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775606021269,
+  "lastUpdate": 1775622567139,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -1089,6 +1089,105 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.0000152720778997355",
             "extra": "mean: 737.0419424405355 usec\nrounds: 1303"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "84833d21dda532d5816705057a85302b7e6b1ac9",
+          "message": "fix: store type/node_type/label as regular properties instead of rejecting\n\nSET n.type, SET n.node_type, and SET n.label previously raised \"Cannot\nSET node type via property assignment\", blocking callers that pass\nunfiltered JSON properties through to Cypher (e.g. Okta/GitHub ingest).\n\nNow these values are stored as regular properties in PropertyStorage.\nThe virtual read (n.type in RETURN/WHERE) still returns the primary\nlabel, so stored values are shadowed on direct access but preserved in\nkeys(n) and property iteration. REMOVE n.type likewise removes the\nstored property. Deduplication added to keys(n) and AllProperties map\nprojection to prevent \"type\" appearing twice.\n\nCo-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-04-08T14:26:54+10:00",
+          "tree_id": "c9ea2057cbd16260b8d413b6216fb4bc0b91d78b",
+          "url": "https://github.com/mrmagooey/kglite/commit/84833d21dda532d5816705057a85302b7e6b1ac9"
+        },
+        "date": 1775622566357,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_nodes",
+            "value": 1064.3727353576426,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00001898583114210329",
+            "extra": "mean: 939.5204957631572 usec\nrounds: 472"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_connections",
+            "value": 786.3745144560982,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00002892945766960148",
+            "extra": "mean: 1.2716587091987048 msec\nrounds: 674"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_match",
+            "value": 13894.40699520368,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00001585979035470252",
+            "extra": "mean: 71.97140549756445 usec\nrounds: 7058"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_where",
+            "value": 1640.6421246367606,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000022820966974579864",
+            "extra": "mean: 609.5174474575928 usec\nrounds: 885"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_traversal",
+            "value": 685310.3069192674,
+            "unit": "iter/sec",
+            "range": "stddev: 4.078770845632134e-7",
+            "extra": "mean: 1.4591929960828744 usec\nrounds: 66592"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_shortest_path",
+            "value": 132952.46616034902,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000012534033288428704",
+            "extra": "mean: 7.521485150895488 usec\nrounds: 23840"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_enable",
+            "value": 2817.6374201334156,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000014476523551455697",
+            "extra": "mean: 354.90726835699456 usec\nrounds: 4930"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_where",
+            "value": 1620.6269309712634,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000020355702226424498",
+            "extra": "mean: 617.0451575802746 usec\nrounds: 1339"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_match",
+            "value": 14730.569808391361,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000008355123905039107",
+            "extra": "mean: 67.88603652184206 usec\nrounds: 11856"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_save_kgl",
+            "value": 1350.0912495075959,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0003176003370310684",
+            "extra": "mean: 740.6906758078161 usec\nrounds: 1021"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_save_v3",
+            "value": 1375.0602102901769,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000012813030421086673",
+            "extra": "mean: 727.2408819021615 usec\nrounds: 1304"
           }
         ]
       }
