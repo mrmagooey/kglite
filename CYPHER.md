@@ -2,7 +2,7 @@
 
 Full Cypher subset supported by KGLite. For a quick overview, see the [Cypher guide](https://kglite.readthedocs.io/en/latest/guides/cypher.html).
 
-> **Label model:** Each node has a primary type plus optional secondary labels. `labels(n)` returns all labels as a list, e.g. `["Person", "Director"]`. `CREATE (n:Person:Director)` sets the primary type and adds secondary labels. `SET n:Label` adds a secondary label; `REMOVE n:Label` removes it. The primary type (used for indexing) is immutable — change it via `SET n.type = 'NewType'`.
+> **Label model:** Each node has a primary type plus optional secondary labels. `labels(n)` returns all labels as a list, e.g. `["Person", "Director"]`. `CREATE (n:Person:Director)` sets the primary type and adds secondary labels. `SET n:Label` adds a secondary label; `REMOVE n:Label` removes it. The primary type (used for indexing) is immutable. `SET n.type = ...` stores the value as a regular property but the virtual read (`n.type` in RETURN/WHERE) always returns the primary label.
 
 ---
 
@@ -938,7 +938,7 @@ Clause-by-clause comparison with the openCypher specification.
 |---------|--------|-------|-----------|
 | Labels per node | Primary + optional secondary labels | Multiple | Primary label drives `type_indices`; secondary labels indexed via `secondary_label_index` |
 | `labels(n)` return type | `List[String]` | `List[String]` | Returns all labels, e.g. `["Person", "Director"]` |
-| `SET n:Label` / `REMOVE n:Label` | Supported | Supported | Adds/removes secondary labels; primary type is immutable (use `SET n.type` to retype) |
+| `SET n:Label` / `REMOVE n:Label` | Supported | Supported | Adds/removes secondary labels; primary type is immutable (`SET n.type` stores value but virtual read returns primary label) |
 | Storage | In-memory (petgraph) | Disk-based | Embedded use case, explicit `save()`/`load()` |
 | Transactions | Snapshot isolation + OCC | Full ACID | GIL serializes Python access; OCC catches conflicts |
 | Indexing | Type indices + vector index | Schema indexes | Automatic type-based lookup, no manual `CREATE INDEX` |

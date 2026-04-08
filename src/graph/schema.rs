@@ -3078,8 +3078,10 @@ impl NodeData {
         self.properties.get_value(InternedKey::from_str(key))
     }
 
-    /// Returns an iterator over property keys (excludes id/title/type).
-    /// Requires interner to resolve InternedKey → &str.
+    /// Returns an iterator over all stored property keys.
+    /// Note: id and title are struct fields, not in PropertyStorage.
+    /// Virtual properties (type, node_type, label) may be stored here
+    /// but are shadowed on read by resolve_node_property().
     #[inline]
     pub fn property_keys<'a>(
         &'a self,
@@ -3088,7 +3090,7 @@ impl NodeData {
         self.properties.keys(interner)
     }
 
-    /// Returns an iterator over (key, value) pairs (excludes id/title/type).
+    /// Returns an iterator over (key, value) pairs from PropertyStorage.
     /// Requires interner to resolve InternedKey → &str.
     #[inline]
     pub fn property_iter<'a>(

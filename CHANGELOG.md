@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`SET n.type` / `SET n.node_type` / `SET n.label` now stores values** — previously raised "Cannot SET node type via property assignment". Now stores the value as a regular property in PropertyStorage. The virtual read (`n.type` in RETURN/WHERE) still returns the primary label, so the stored value is shadowed on direct access but preserved in `keys(n)` and property iteration. This unblocks callers that pass unfiltered JSON properties through to Cypher (e.g. Okta/GitHub ingest). `REMOVE n.type` likewise removes the stored property.
 - **`REMOVE n:Label` now updates `secondary_label_index`** — previously, removing a secondary label left stale entries in the index, causing false matches on subsequent queries.
 - **`SET n.__kinds` now expands into `extra_labels`** — previously, setting `__kinds` as a property only stored it without indexing, requiring O(N) scans to find matching nodes. Now `__kinds` values are absorbed into `extra_labels` and properly indexed.
 - **FFI `__labels` now includes all labels** — previously only emitted the primary label; now includes secondary labels.

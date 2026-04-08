@@ -4054,8 +4054,11 @@ impl<'a> CypherExecutor<'a> {
                                             ));
                                         }
                                     }
-                                    // Then all user-defined properties
+                                    // Then all user-defined properties (skip builtins already emitted)
                                     for key in node.property_keys(&self.graph.interner) {
+                                        if key == "id" || key == "title" || key == "type" {
+                                            continue;
+                                        }
                                         let val = resolve_node_property(node, key, self.graph);
                                         props.push(format!(
                                             "{}: {}",
@@ -4954,6 +4957,7 @@ impl<'a> CypherExecutor<'a> {
                             let mut keys: Vec<&str> = vec!["id", "title", "type"];
                             keys.extend(node.property_keys(&self.graph.interner));
                             keys.sort();
+                            keys.dedup();
                             return Ok(Value::String(format!(
                                 "[{}]",
                                 keys.iter()
@@ -8475,12 +8479,9 @@ fn execute_set(
                     property,
                     expression,
                 } => {
-                    // Validate: cannot change id or type
+                    // Validate: cannot change id
                     if property == "id" {
                         return Err("Cannot SET node id — it is immutable".to_string());
-                    }
-                    if property == "type" || property == "node_type" || property == "label" {
-                        return Err("Cannot SET node type via property assignment".to_string());
                     }
 
                     // Resolve the node
@@ -8793,9 +8794,6 @@ fn execute_remove(
                     if property == "id" {
                         return Err("Cannot REMOVE node id — it is immutable".to_string());
                     }
-                    if property == "type" || property == "node_type" || property == "label" {
-                        return Err("Cannot REMOVE node type".to_string());
-                    }
 
                     let node_idx = row.node_bindings.get(variable).ok_or_else(|| {
                         format!("Variable '{}' not bound to a node in REMOVE", variable)
@@ -8835,7 +8833,7 @@ fn execute_remove(
                         .is_some_and(|n| n.node_type == *label)
                     {
                         return Err(format!(
-                            "Cannot REMOVE primary label '{}' — use SET n.type = '...' to change type",
+                            "Cannot REMOVE primary label '{}' — it is immutable",
                             label
                         ));
                     }
@@ -10657,6 +10655,114 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("immutable"));
+    }
+
+    #[test]
+    fn test_set_type_stored_as_property() {
+        // SET n.type / n.node_type / n.label stores the value in PropertyStorage
+        // but the virtual read still returns the primary label.
+        for prop in &["type", "node_type", "label"] {
+            let mut graph = build_test_graph();
+            let cypher = format!(
+                "MATCH (n:Person {{name: 'Alice'}}) SET n.{} = 'employee'",
+                prop
+            );
+            let query = super::super::parser::parse_cypher(&cypher).unwrap();
+            let result = execute_mutable(&mut graph, &query, HashMap::new(), None);
+            assert!(result.is_ok(), "SET n.{} should not error", prop);
+
+            let node = graph
+                .graph
+                .node_weight(petgraph::graph::NodeIndex::new(0))
+                .unwrap();
+            // Primary label is unchanged
+            assert_eq!(node.node_type, "Person");
+            // Value IS stored in PropertyStorage
+            assert_eq!(
+                node.get_property_value(prop),
+                Some(Value::String("employee".to_string())),
+                "SET n.{} should store the value",
+                prop
+            );
+
+            // Virtual read still returns primary label
+            let read_query = super::super::parser::parse_cypher(&format!(
+                "MATCH (n:Person {{name: 'Alice'}}) RETURN n.{}",
+                prop
+            ))
+            .unwrap();
+            let no_params = HashMap::new();
+            let executor = CypherExecutor::with_params(&graph, &no_params, None);
+            let read_result = executor.execute(&read_query).unwrap();
+            assert_eq!(
+                read_result.rows[0].get(0),
+                Some(&Value::String("Person".to_string())),
+                "n.{} should still return the primary label on read",
+                prop
+            );
+        }
+    }
+
+    #[test]
+    fn test_remove_type_property() {
+        // REMOVE n.type removes the stored property; virtual read still works.
+        let mut graph = build_test_graph();
+        let set_query = super::super::parser::parse_cypher(
+            "MATCH (n:Person {name: 'Alice'}) SET n.type = 'employee'",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &set_query, HashMap::new(), None).unwrap();
+
+        // Property is stored
+        let node = graph
+            .graph
+            .node_weight(petgraph::graph::NodeIndex::new(0))
+            .unwrap();
+        assert!(node.get_property_value("type").is_some());
+
+        // REMOVE it
+        let remove_query =
+            super::super::parser::parse_cypher("MATCH (n:Person {name: 'Alice'}) REMOVE n.type")
+                .unwrap();
+        execute_mutable(&mut graph, &remove_query, HashMap::new(), None).unwrap();
+
+        // Stored property is gone
+        let node = graph
+            .graph
+            .node_weight(petgraph::graph::NodeIndex::new(0))
+            .unwrap();
+        assert_eq!(node.get_property_value("type"), None);
+        // Virtual read still returns primary label
+        assert_eq!(node.node_type, "Person");
+    }
+
+    #[test]
+    fn test_keys_no_duplicate_type() {
+        // keys(n) should not list "type" twice after SET n.type = '...'
+        let mut graph = build_test_graph();
+        let set_query = super::super::parser::parse_cypher(
+            "MATCH (n:Person {name: 'Alice'}) SET n.type = 'employee'",
+        )
+        .unwrap();
+        execute_mutable(&mut graph, &set_query, HashMap::new(), None).unwrap();
+
+        let keys_query =
+            super::super::parser::parse_cypher("MATCH (n:Person {name: 'Alice'}) RETURN keys(n)")
+                .unwrap();
+        let no_params = HashMap::new();
+        let executor = CypherExecutor::with_params(&graph, &no_params, None);
+        let result = executor.execute(&keys_query).unwrap();
+        let keys_str = match &result.rows[0][0] {
+            Value::String(s) => s.clone(),
+            other => panic!("Expected string, got {:?}", other),
+        };
+        // Count occurrences of "type" (exact, not substring of other keys)
+        let type_count = keys_str.matches("\"type\"").count();
+        assert_eq!(
+            type_count, 1,
+            "keys(n) should list 'type' exactly once, got: {}",
+            keys_str
+        );
     }
 
     #[test]
