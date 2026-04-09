@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775695729465,
+  "lastUpdate": 1775696220628,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -1065,6 +1065,124 @@ window.BENCHMARK_DATA = {
             "name": "bench_group_aggregate_wide",
             "value": 142533,
             "range": "± 996",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "05dbc9d574d34ae983a41e57d53bbbf1175a9353",
+          "message": "fix: resolve panics and lint issues from __kinds refactor\n\n- Anonymous edge bindings now populate connection_type from actual edge\n  data instead of InternedKey::default(), fixing a panic in\n  pattern_matches_to_pylist when resolving unregistered interned keys.\n- Update test_kinds_expanded_at_ingestion to expect __kinds retained in\n  storage (matching the new read-time label merging approach).\n- Fix clippy explicit_auto_deref warning (*key → key).\n- Apply cargo fmt formatting.\n\nCo-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-04-09T10:51:28+10:00",
+          "tree_id": "ba93875b2e6ec5393a1377c18668a5bf9ce5ea30",
+          "url": "https://github.com/mrmagooey/kglite/commit/05dbc9d574d34ae983a41e57d53bbbf1175a9353"
+        },
+        "date": 1775696220350,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph_100_nodes_cypher",
+            "value": 982334,
+            "range": "± 18181",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_parse_match_where_return",
+            "value": 6469,
+            "range": "± 27",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "shortest_path_cost_chain_50",
+            "value": 407,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_match_node_scan_50",
+            "value": 15084,
+            "range": "± 98",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_create_5_nodes",
+            "value": 8727,
+            "range": "± 187",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "save_load_roundtrip_20_nodes",
+            "value": 545642,
+            "range": "± 18312",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_function_dispatch",
+            "value": 241868,
+            "range": "± 1096",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_count_distinct",
+            "value": 43425,
+            "range": "± 85",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_edge_type_counts",
+            "value": 132430,
+            "range": "± 266",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_rand_function",
+            "value": 17003,
+            "range": "± 33",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_iter",
+            "value": 98205,
+            "range": "± 786",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_substring",
+            "value": 233016,
+            "range": "± 531",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_scan",
+            "value": 110547,
+            "range": "± 486",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_vlp_expansion",
+            "value": 450531,
+            "range": "± 1627",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_group_by_single_key",
+            "value": 107559,
+            "range": "± 377",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_group_aggregate_wide",
+            "value": 146567,
+            "range": "± 2643",
             "unit": "ns/iter"
           }
         ]
