@@ -8626,11 +8626,46 @@ fn execute_set(
                         );
                     }
 
-                    // When __kinds is SET, mark the graph as having secondary labels
-                    // so the pattern executor's find_matching_nodes uses the O(N)
-                    // fallback scan that checks __kinds via node_matches_label().
+                    // When __kinds is SET, expand the JSON array into extra_labels
+                    // and secondary_label_index so MATCH (n:Label) finds these nodes
+                    // via the indexed path (not just the full-scan fallback).
                     if property == "__kinds" {
                         graph.has_secondary_labels = true;
+                        if let Value::String(ref kinds_json) = value_for_index {
+                            if let Ok(serde_json::Value::Array(arr)) =
+                                serde_json::from_str(kinds_json.as_str())
+                            {
+                                // Collect new labels inside a block that borrows
+                                // graph.graph mutably, then update the index after.
+                                let new_labels: Vec<String> = {
+                                    if let Some(node) =
+                                        graph.graph.node_weight_mut(*node_idx)
+                                    {
+                                        let mut added = Vec::new();
+                                        for item in &arr {
+                                            if let serde_json::Value::String(s) = item {
+                                                if *s != node.node_type
+                                                    && !node.extra_labels.contains(s)
+                                                {
+                                                    node.extra_labels.push(s.clone());
+                                                    added.push(s.clone());
+                                                }
+                                            }
+                                        }
+                                        added
+                                    } else {
+                                        Vec::new()
+                                    }
+                                };
+                                for lbl in new_labels {
+                                    graph
+                                        .secondary_label_index
+                                        .entry(lbl)
+                                        .or_default()
+                                        .push(*node_idx);
+                                }
+                            }
+                        }
                     }
 
                     // Keep node_type_metadata in sync so schema() is accurate
