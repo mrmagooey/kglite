@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775622567139,
+  "lastUpdate": 1775695539355,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -1188,6 +1188,105 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.000012813030421086673",
             "extra": "mean: 727.2408819021615 usec\nrounds: 1304"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "7dbf3b2b5892512530b7f54aa1e4b6172cc3ab73",
+          "message": "refactor: rework __kinds handling and anonymous edge path synthesis\n\n- Keep __kinds in PropertyStorage instead of absorbing into extra_labels\n  at ingestion time. This preserves the original data and simplifies the\n  mutation path (SET __kinds no longer needs special-case expansion).\n- node_matches_label() now checks __kinds property directly via JSON\n  parse, so MATCH queries still find nodes by secondary kind labels.\n- build_labels_string() and node_to_path_json() merge __kinds into the\n  label list at read time (sorted, deduplicated).\n- resolve_node_property(\"type\") now checks stored property first, falling\n  back to virtual node_type. This lets BloodHound datasets that store\n  \"type\" as a domain property (e.g. type=\"Organization\") read it back.\n- node_type/label remain rejected in SET (only \"type\" is allowed as a\n  user property); REMOVE n.type/node_type/label is re-rejected.\n- Add ANON_EDGE_KEYS and synthesize_path_from_anon_edges() for correct\n  path reconstruction when MATCH p=()-[:REL]->() uses anonymous edges.\n- Planner marks all anonymous edges (not just VLP) as needs_path_info=false\n  when no path assignment exists, reducing binding overhead.\n- find_matching_nodes() now includes an O(N) fallback scan for __kinds\n  nodes not covered by secondary_label_index.\n\nCo-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-04-09T10:40:53+10:00",
+          "tree_id": "5695f975914d7ea385e23725d9bde2c89dfe941d",
+          "url": "https://github.com/mrmagooey/kglite/commit/7dbf3b2b5892512530b7f54aa1e4b6172cc3ab73"
+        },
+        "date": 1775695538929,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_nodes",
+            "value": 1209.11185574339,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000021652245918333913",
+            "extra": "mean: 827.0533410535263 usec\nrounds: 475"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_connections",
+            "value": 827.6326171828647,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000663054985539121",
+            "extra": "mean: 1.208265574892212 msec\nrounds: 701"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_match",
+            "value": 14230.9206113318,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000003459245178790448",
+            "extra": "mean: 70.26952277449428 usec\nrounds: 6257"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_where",
+            "value": 1537.2282070940669,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00003204552434215096",
+            "extra": "mean: 650.5215005717153 usec\nrounds: 875"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_traversal",
+            "value": 659963.4925603537,
+            "unit": "iter/sec",
+            "range": "stddev: 3.969237912879869e-7",
+            "extra": "mean: 1.5152353293368725 usec\nrounds: 80007"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_shortest_path",
+            "value": 131244.58737470937,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000011170055989521521",
+            "extra": "mean: 7.619361834290001 usec\nrounds: 18818"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_enable",
+            "value": 2872.5575783230092,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000023253541388483505",
+            "extra": "mean: 348.1218296706161 usec\nrounds: 4732"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_where",
+            "value": 1505.7193489741403,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000024611239616784112",
+            "extra": "mean: 664.1343891086402 usec\nrounds: 1267"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_match",
+            "value": 14365.18182451855,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000003911073224284468",
+            "extra": "mean: 69.61276315300069 usec\nrounds: 10796"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_save_kgl",
+            "value": 1212.7480351240627,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000018778982030346655",
+            "extra": "mean: 824.5735891031159 usec\nrounds: 881"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_save_v3",
+            "value": 1235.6155925009539,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00003275177449330694",
+            "extra": "mean: 809.3131926054325 usec\nrounds: 1163"
           }
         ]
       }
