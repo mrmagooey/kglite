@@ -1145,7 +1145,10 @@ impl<'a> PatternExecutor<'a> {
                                 if let Some(ref var) = edge_pattern.variable {
                                     new_match.bindings.push((var.clone(), edge_binding));
                                 } else if edge_pattern.needs_path_info {
-                                    if matches!(edge_binding, MatchBinding::VariableLengthPath { .. }) {
+                                    if matches!(
+                                        edge_binding,
+                                        MatchBinding::VariableLengthPath { .. }
+                                    ) {
                                         let key = ANON_VLP_KEYS
                                             .get(i)
                                             .copied()
@@ -1844,8 +1847,8 @@ impl<'a> PatternExecutor<'a> {
                 // the optimizer has reversed the pattern.
                 let actual_source = edge.source();
                 let actual_target = edge.target();
+                let edge_data = edge.weight();
                 let edge_binding = if edge_pattern.variable.is_some() {
-                    let edge_data = edge.weight();
                     MatchBinding::Edge {
                         source: actual_source,
                         target: actual_target,
@@ -1854,11 +1857,13 @@ impl<'a> PatternExecutor<'a> {
                         properties: edge_data.properties_cloned(&self.graph.interner),
                     }
                 } else {
+                    // Anonymous edge — still need connection_type for path
+                    // synthesis, but skip expensive property cloning.
                     MatchBinding::Edge {
                         source: actual_source,
                         target: actual_target,
                         edge_index: edge.id(),
-                        connection_type: InternedKey::default(),
+                        connection_type: edge_data.connection_type,
                         properties: HashMap::new(),
                     }
                 };

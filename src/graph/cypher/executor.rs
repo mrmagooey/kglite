@@ -839,8 +839,10 @@ impl<'a> CypherExecutor<'a> {
                                     // Anonymous edge — build path from __anon_edge_N bindings
                                     // stored by the pattern executor when needs_path_info=true.
                                     // Fall back to synthesize_path_from_pattern for named nodes.
-                                    let pb = self.synthesize_path_from_anon_edges(pattern, row)
-                                        .or_else(|| self.synthesize_path_from_pattern(pattern, row));
+                                    let pb =
+                                        self.synthesize_path_from_anon_edges(pattern, row).or_else(
+                                            || self.synthesize_path_from_pattern(pattern, row),
+                                        );
                                     if let Some(pb) = pb {
                                         row.path_bindings.insert(pa.variable.clone(), pb);
                                     }
@@ -1369,7 +1371,7 @@ impl<'a> CypherExecutor<'a> {
         let mut hop_bindings: Vec<(usize, &EdgeBinding)> = ANON_EDGE_KEYS
             .iter()
             .enumerate()
-            .filter_map(|(idx, key)| row.edge_bindings.get(*key).map(|eb| (idx, eb)))
+            .filter_map(|(idx, key)| row.edge_bindings.get(key).map(|eb| (idx, eb)))
             .collect();
 
         if hop_bindings.is_empty() {
