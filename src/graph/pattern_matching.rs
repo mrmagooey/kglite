@@ -36,11 +36,43 @@ const ANON_VLP_KEYS: [&str; 8] = [
     "__anon_vlpath_7",
 ];
 
-/// Check whether a node matches a label.
-/// Checks `node_type` (primary) and `extra_labels` (secondary).
-/// `__kinds` properties are absorbed into `extra_labels` at ingestion/load time.
+/// Static key table for anonymous single-hop edge bindings in path-assigned patterns.
+/// When `MATCH p = (a)-[:REL]->(b)` has anonymous nodes and edge, the edge binding
+/// is stored under these keys so the executor can reconstruct the path `p`.
+/// Keys are ordered by hop index (position 0, 1, 2, ...) within the pattern.
+pub const ANON_EDGE_KEYS: [&str; 8] = [
+    "__anon_edge_0",
+    "__anon_edge_1",
+    "__anon_edge_2",
+    "__anon_edge_3",
+    "__anon_edge_4",
+    "__anon_edge_5",
+    "__anon_edge_6",
+    "__anon_edge_7",
+];
+
+/// Check whether a node matches a label, considering:
+/// 1. The primary `node_type` field.
+/// 2. The `extra_labels` vec (populated by SET n:Label in Cypher).
+/// 3. A `__kinds` JSON-array property (used by BloodHound-style imports
+///    where secondary kinds are stored as `"__kinds": '["Computer","Domain"]'`).
 pub fn node_matches_label(node: &NodeData, label: &str) -> bool {
-    node.has_label(label)
+    if node.node_type == label {
+        return true;
+    }
+    if node.extra_labels.iter().any(|l| l == label) {
+        return true;
+    }
+    if let Some(kinds_cow) = node.get_property("__kinds") {
+        if let Value::String(kinds_json) = kinds_cow.as_ref() {
+            if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str(kinds_json.as_str()) {
+                return arr
+                    .iter()
+                    .any(|item| matches!(item, serde_json::Value::String(s) if s == label));
+            }
+        }
+    }
+    false
 }
 
 // ============================================================================
@@ -1112,18 +1144,25 @@ impl<'a> PatternExecutor<'a> {
                                 let mut new_match = current_match.clone();
                                 if let Some(ref var) = edge_pattern.variable {
                                     new_match.bindings.push((var.clone(), edge_binding));
-                                } else if edge_pattern.needs_path_info
-                                    && matches!(
-                                        edge_binding,
-                                        MatchBinding::VariableLengthPath { .. }
-                                    )
-                                {
-                                    let key = ANON_VLP_KEYS
-                                        .get(i)
-                                        .copied()
-                                        .unwrap_or("__anon_vlpath_n")
-                                        .to_string();
-                                    new_match.bindings.push((key, edge_binding));
+                                } else if edge_pattern.needs_path_info {
+                                    if matches!(edge_binding, MatchBinding::VariableLengthPath { .. }) {
+                                        let key = ANON_VLP_KEYS
+                                            .get(i)
+                                            .copied()
+                                            .unwrap_or("__anon_vlpath_n")
+                                            .to_string();
+                                        new_match.bindings.push((key, edge_binding));
+                                    } else {
+                                        // Single-hop anonymous edge in a path-assigned pattern.
+                                        // Store under an anonymous key so the executor can
+                                        // reconstruct the path variable (e.g. MATCH p=()-[:REL]->()).
+                                        let key = ANON_EDGE_KEYS
+                                            .get(i)
+                                            .copied()
+                                            .unwrap_or("__anon_edge_n")
+                                            .to_string();
+                                        new_match.bindings.push((key, edge_binding));
+                                    }
                                 }
                                 if let Some(ref var) = node_pattern.variable {
                                     new_match
@@ -1232,15 +1271,25 @@ impl<'a> PatternExecutor<'a> {
                         let mut new_match = current_match.clone();
                         if let Some(ref var) = edge_pattern.variable {
                             new_match.bindings.push((var.clone(), edge_binding));
-                        } else if edge_pattern.needs_path_info
-                            && matches!(edge_binding, MatchBinding::VariableLengthPath { .. })
-                        {
-                            let key = ANON_VLP_KEYS
-                                .get(i)
-                                .copied()
-                                .unwrap_or("__anon_vlpath_n")
-                                .to_string();
-                            new_match.bindings.push((key, edge_binding));
+                        } else if edge_pattern.needs_path_info {
+                            if matches!(edge_binding, MatchBinding::VariableLengthPath { .. }) {
+                                let key = ANON_VLP_KEYS
+                                    .get(i)
+                                    .copied()
+                                    .unwrap_or("__anon_vlpath_n")
+                                    .to_string();
+                                new_match.bindings.push((key, edge_binding));
+                            } else {
+                                // Single-hop anonymous edge in a path-assigned pattern.
+                                // Store under an anonymous key so the executor can
+                                // reconstruct the path variable (e.g. MATCH p=()-[:REL]->()).
+                                let key = ANON_EDGE_KEYS
+                                    .get(i)
+                                    .copied()
+                                    .unwrap_or("__anon_edge_n")
+                                    .to_string();
+                                new_match.bindings.push((key, edge_binding));
+                            }
                         }
                         if let Some(ref var) = node_pattern.variable {
                             new_match
@@ -1334,8 +1383,9 @@ impl<'a> PatternExecutor<'a> {
                     return Ok(indexed);
                 }
             }
-            // Use type index for primary type, then secondary_label_index for O(1)
-            // secondary label lookup (extra_labels).
+            // Use type index for primary type, then use secondary_label_index for O(1)
+            // secondary label lookup (extra_labels). Fall back to O(N) scan only for
+            // __kinds nodes not covered by the index.
             let primary: &[NodeIndex] = self
                 .graph
                 .type_indices
@@ -1356,13 +1406,33 @@ impl<'a> PatternExecutor<'a> {
                     .get(node_type)
                     .map(|v| v.as_slice())
                     .unwrap_or(&[]);
-                if primary.is_empty() && secondary_indexed.is_empty() {
+                // Always scan for __kinds nodes not covered by the index.
+                // This is needed because nodes with the label in __kinds
+                // are NOT added to secondary_label_index — they are only
+                // discoverable via node_matches_label() on the full graph.
+                let secondary_kinds: Vec<NodeIndex> = self
+                    .graph
+                    .graph
+                    .node_indices()
+                    .filter(|&idx| {
+                        if let Some(node) = self.graph.graph.node_weight(idx) {
+                            node.node_type != *node_type
+                                && !node.extra_labels.contains(node_type)
+                                && node_matches_label(node, node_type)
+                        } else {
+                            false
+                        }
+                    })
+                    .collect();
+                if primary.is_empty() && secondary_indexed.is_empty() && secondary_kinds.is_empty()
+                {
                     return Ok(vec![]);
                 }
                 primary
                     .iter()
                     .copied()
                     .chain(secondary_indexed.iter().copied())
+                    .chain(secondary_kinds)
                     .collect()
             };
             if let Some(ref props) = pattern.properties {

@@ -44,12 +44,13 @@ fn optimize_nested_queries(
     }
 }
 
-/// Mark variable-length edges that don't need path tracking.
+/// Mark edges that don't need path tracking.
 ///
 /// When a MATCH clause has no path assignments (`p = ...`) and the edge
-/// has no named variable (`[r:T*1..N]`), the full path vector is never
-/// read downstream.  Setting `needs_path_info = false` lets the pattern
-/// executor use a fast BFS with global dedup instead of tracking every path.
+/// has no named variable, the full path vector is never read downstream.
+/// Setting `needs_path_info = false` lets the pattern executor skip storing
+/// edge bindings, avoiding overhead on both single-hop and variable-length
+/// traversals.
 fn mark_fast_var_length_paths(query: &mut CypherQuery) {
     for clause in &mut query.clauses {
         let mc = match clause {
@@ -65,7 +66,9 @@ fn mark_fast_var_length_paths(query: &mut CypherQuery) {
         for pattern in &mut mc.patterns {
             for element in &mut pattern.elements {
                 if let PatternElement::Edge(ep) = element {
-                    if ep.var_length.is_some() && ep.variable.is_none() {
+                    // Any anonymous edge (single-hop or VLP) in a clause with
+                    // no path assignments never has its binding read — skip it.
+                    if ep.variable.is_none() {
                         ep.needs_path_info = false;
                     }
                 }
