@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775695539355,
+  "lastUpdate": 1775696037466,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -1287,6 +1287,105 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.00003275177449330694",
             "extra": "mean: 809.3131926054325 usec\nrounds: 1163"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "05dbc9d574d34ae983a41e57d53bbbf1175a9353",
+          "message": "fix: resolve panics and lint issues from __kinds refactor\n\n- Anonymous edge bindings now populate connection_type from actual edge\n  data instead of InternedKey::default(), fixing a panic in\n  pattern_matches_to_pylist when resolving unregistered interned keys.\n- Update test_kinds_expanded_at_ingestion to expect __kinds retained in\n  storage (matching the new read-time label merging approach).\n- Fix clippy explicit_auto_deref warning (*key → key).\n- Apply cargo fmt formatting.\n\nCo-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-04-09T10:51:28+10:00",
+          "tree_id": "ba93875b2e6ec5393a1377c18668a5bf9ce5ea30",
+          "url": "https://github.com/mrmagooey/kglite/commit/05dbc9d574d34ae983a41e57d53bbbf1175a9353"
+        },
+        "date": 1775696036631,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_nodes",
+            "value": 1086.5004443312523,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00002104538073120538",
+            "extra": "mean: 920.3861859582637 usec\nrounds: 527"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_connections",
+            "value": 784.692738555554,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00006318402571145606",
+            "extra": "mean: 1.2743841644830043 msec\nrounds: 687"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_match",
+            "value": 14116.87390359933,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000004659787230805929",
+            "extra": "mean: 70.83721274474468 usec\nrounds: 7093"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_where",
+            "value": 1702.8438113110676,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000021489332894265417",
+            "extra": "mean: 587.2529197085149 usec\nrounds: 959"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_traversal",
+            "value": 683242.9911572409,
+            "unit": "iter/sec",
+            "range": "stddev: 4.078596058043363e-7",
+            "extra": "mean: 1.46360813494223 usec\nrounds: 93818"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_shortest_path",
+            "value": 130448.5416214278,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000013553634525290866",
+            "extra": "mean: 7.665858027773747 usec\nrounds: 19856"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_enable",
+            "value": 2826.0982189362358,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00001279600402481344",
+            "extra": "mean: 353.84474371750866 usec\nrounds: 5014"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_where",
+            "value": 1711.922149440132,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000021989676638991638",
+            "extra": "mean: 584.1387123398342 usec\nrounds: 1248"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_match",
+            "value": 14424.52403045623,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000004277027642387242",
+            "extra": "mean: 69.32637762525681 usec\nrounds: 11951"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_save_kgl",
+            "value": 1369.2969688405751,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000018167294856641165",
+            "extra": "mean: 730.301770000068 usec\nrounds: 1000"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_save_v3",
+            "value": 1348.3138200747085,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00001369857389554083",
+            "extra": "mean: 741.6670993883242 usec\nrounds: 1308"
           }
         ]
       }
