@@ -8638,9 +8638,7 @@ fn execute_set(
                                 // Collect new labels inside a block that borrows
                                 // graph.graph mutably, then update the index after.
                                 let new_labels: Vec<String> = {
-                                    if let Some(node) =
-                                        graph.graph.node_weight_mut(*node_idx)
-                                    {
+                                    if let Some(node) = graph.graph.node_weight_mut(*node_idx) {
                                         let mut added = Vec::new();
                                         for item in &arr {
                                             if let serde_json::Value::String(s) = item {
