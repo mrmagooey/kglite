@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775622745138,
+  "lastUpdate": 1775695729465,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -947,6 +947,124 @@ window.BENCHMARK_DATA = {
             "name": "bench_group_aggregate_wide",
             "value": 143154,
             "range": "± 896",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "7dbf3b2b5892512530b7f54aa1e4b6172cc3ab73",
+          "message": "refactor: rework __kinds handling and anonymous edge path synthesis\n\n- Keep __kinds in PropertyStorage instead of absorbing into extra_labels\n  at ingestion time. This preserves the original data and simplifies the\n  mutation path (SET __kinds no longer needs special-case expansion).\n- node_matches_label() now checks __kinds property directly via JSON\n  parse, so MATCH queries still find nodes by secondary kind labels.\n- build_labels_string() and node_to_path_json() merge __kinds into the\n  label list at read time (sorted, deduplicated).\n- resolve_node_property(\"type\") now checks stored property first, falling\n  back to virtual node_type. This lets BloodHound datasets that store\n  \"type\" as a domain property (e.g. type=\"Organization\") read it back.\n- node_type/label remain rejected in SET (only \"type\" is allowed as a\n  user property); REMOVE n.type/node_type/label is re-rejected.\n- Add ANON_EDGE_KEYS and synthesize_path_from_anon_edges() for correct\n  path reconstruction when MATCH p=()-[:REL]->() uses anonymous edges.\n- Planner marks all anonymous edges (not just VLP) as needs_path_info=false\n  when no path assignment exists, reducing binding overhead.\n- find_matching_nodes() now includes an O(N) fallback scan for __kinds\n  nodes not covered by secondary_label_index.\n\nCo-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-04-09T10:40:53+10:00",
+          "tree_id": "5695f975914d7ea385e23725d9bde2c89dfe941d",
+          "url": "https://github.com/mrmagooey/kglite/commit/7dbf3b2b5892512530b7f54aa1e4b6172cc3ab73"
+        },
+        "date": 1775695729136,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph_100_nodes_cypher",
+            "value": 954730,
+            "range": "± 4818",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_parse_match_where_return",
+            "value": 6260,
+            "range": "± 15",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "shortest_path_cost_chain_50",
+            "value": 386,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_match_node_scan_50",
+            "value": 15190,
+            "range": "± 58",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_create_5_nodes",
+            "value": 8582,
+            "range": "± 37",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "save_load_roundtrip_20_nodes",
+            "value": 513111,
+            "range": "± 17084",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_function_dispatch",
+            "value": 243741,
+            "range": "± 2107",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_count_distinct",
+            "value": 41164,
+            "range": "± 160",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_edge_type_counts",
+            "value": 124292,
+            "range": "± 405",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_rand_function",
+            "value": 17049,
+            "range": "± 57",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_iter",
+            "value": 95614,
+            "range": "± 668",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_substring",
+            "value": 238759,
+            "range": "± 638",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_scan",
+            "value": 104981,
+            "range": "± 437",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_vlp_expansion",
+            "value": 446220,
+            "range": "± 1627",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_group_by_single_key",
+            "value": 105631,
+            "range": "± 671",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_group_aggregate_wide",
+            "value": 142533,
+            "range": "± 996",
             "unit": "ns/iter"
           }
         ]
