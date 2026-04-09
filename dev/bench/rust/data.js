@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775696220628,
+  "lastUpdate": 1775717912297,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -1183,6 +1183,124 @@ window.BENCHMARK_DATA = {
             "name": "bench_group_aggregate_wide",
             "value": 146567,
             "range": "± 2643",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "b146f06056911769dbde77bdb4bedc81ce3d6501",
+          "message": "chore: apply cargo fmt\n\nCo-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-04-09T16:53:15+10:00",
+          "tree_id": "96ccdeb32001d131d00e20e464a975829b6a8a33",
+          "url": "https://github.com/mrmagooey/kglite/commit/b146f06056911769dbde77bdb4bedc81ce3d6501"
+        },
+        "date": 1775717911843,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph_100_nodes_cypher",
+            "value": 947506,
+            "range": "± 22543",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_parse_match_where_return",
+            "value": 5896,
+            "range": "± 153",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "shortest_path_cost_chain_50",
+            "value": 378,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_match_node_scan_50",
+            "value": 15852,
+            "range": "± 344",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_create_5_nodes",
+            "value": 8598,
+            "range": "± 211",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "save_load_roundtrip_20_nodes",
+            "value": 515428,
+            "range": "± 12706",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_function_dispatch",
+            "value": 245351,
+            "range": "± 5178",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_count_distinct",
+            "value": 41587,
+            "range": "± 871",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_edge_type_counts",
+            "value": 125258,
+            "range": "± 2372",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_rand_function",
+            "value": 16697,
+            "range": "± 384",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_iter",
+            "value": 95973,
+            "range": "± 2121",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_substring",
+            "value": 244047,
+            "range": "± 4089",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_scan",
+            "value": 105899,
+            "range": "± 2105",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_vlp_expansion",
+            "value": 444333,
+            "range": "± 7904",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_group_by_single_key",
+            "value": 103854,
+            "range": "± 2896",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_group_aggregate_wide",
+            "value": 141750,
+            "range": "± 3421",
             "unit": "ns/iter"
           }
         ]
