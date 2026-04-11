@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775717912297,
+  "lastUpdate": 1775945695474,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -1301,6 +1301,124 @@ window.BENCHMARK_DATA = {
             "name": "bench_group_aggregate_wide",
             "value": 141750,
             "range": "± 3421",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "1faa6c94c377dc61e117c5f2a5405e4ed8d86ea4",
+          "message": "fix: add property-only fallback in MERGE to prevent cross-label duplicates\n\nWhen MERGE (n:SCIM {objectid: X}) encounters an existing (m:Base {objectid: X})\nnode with no SCIM label, the label-scoped lookups all fail and a duplicate node\nis created. This adds a property-only fallback (both index-based and linear scan)\nthat finds the existing node by property alone when all label-scoped lookups miss.\nThe caller's SET clause then adds the missing label.\n\nCo-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-04-12T08:09:40+10:00",
+          "tree_id": "8496a44439a0c1ba59a48c86efaea79cd8a04b86",
+          "url": "https://github.com/mrmagooey/kglite/commit/1faa6c94c377dc61e117c5f2a5405e4ed8d86ea4"
+        },
+        "date": 1775945695157,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph_100_nodes_cypher",
+            "value": 954827,
+            "range": "± 10691",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_parse_match_where_return",
+            "value": 6638,
+            "range": "± 25",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "shortest_path_cost_chain_50",
+            "value": 384,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_match_node_scan_50",
+            "value": 15476,
+            "range": "± 35",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_create_5_nodes",
+            "value": 8379,
+            "range": "± 29",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "save_load_roundtrip_20_nodes",
+            "value": 507793,
+            "range": "± 14941",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_function_dispatch",
+            "value": 243745,
+            "range": "± 3425",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_count_distinct",
+            "value": 40620,
+            "range": "± 4020",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_edge_type_counts",
+            "value": 122415,
+            "range": "± 613",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_rand_function",
+            "value": 16754,
+            "range": "± 51",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_iter",
+            "value": 94132,
+            "range": "± 425",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_substring",
+            "value": 242313,
+            "range": "± 2168",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_scan",
+            "value": 104653,
+            "range": "± 3405",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_vlp_expansion",
+            "value": 439619,
+            "range": "± 2140",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_group_by_single_key",
+            "value": 104267,
+            "range": "± 393",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_group_aggregate_wide",
+            "value": 141195,
+            "range": "± 565",
             "unit": "ns/iter"
           }
         ]
