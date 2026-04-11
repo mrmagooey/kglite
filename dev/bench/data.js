@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775717735502,
+  "lastUpdate": 1775945529743,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -1485,6 +1485,105 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.000014181257284055531",
             "extra": "mean: 723.9916207943661 usec\nrounds: 1308"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "1faa6c94c377dc61e117c5f2a5405e4ed8d86ea4",
+          "message": "fix: add property-only fallback in MERGE to prevent cross-label duplicates\n\nWhen MERGE (n:SCIM {objectid: X}) encounters an existing (m:Base {objectid: X})\nnode with no SCIM label, the label-scoped lookups all fail and a duplicate node\nis created. This adds a property-only fallback (both index-based and linear scan)\nthat finds the existing node by property alone when all label-scoped lookups miss.\nThe caller's SET clause then adds the missing label.\n\nCo-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-04-12T08:09:40+10:00",
+          "tree_id": "8496a44439a0c1ba59a48c86efaea79cd8a04b86",
+          "url": "https://github.com/mrmagooey/kglite/commit/1faa6c94c377dc61e117c5f2a5405e4ed8d86ea4"
+        },
+        "date": 1775945529301,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_nodes",
+            "value": 1046.1653692307489,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000027546180046933932",
+            "extra": "mean: 955.8718242941892 usec\nrounds: 461"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_connections",
+            "value": 780.5988743438085,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00003970720169877845",
+            "extra": "mean: 1.281067694135001 msec\nrounds: 631"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_match",
+            "value": 13364.884663635126,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000056613755502743745",
+            "extra": "mean: 74.82294274644411 usec\nrounds: 4384"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_where",
+            "value": 1636.6519026653364,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00003095709389239094",
+            "extra": "mean: 611.0034750648383 usec\nrounds: 762"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_traversal",
+            "value": 706678.1433126075,
+            "unit": "iter/sec",
+            "range": "stddev: 4.524046968827454e-7",
+            "extra": "mean: 1.4150713581043048 usec\nrounds: 70938"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_shortest_path",
+            "value": 133679.49846484058,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000012834697970889536",
+            "extra": "mean: 7.48057863385097 usec\nrounds: 20144"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_enable",
+            "value": 2708.0916566889914,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00004986279712316764",
+            "extra": "mean: 369.26372027697 usec\nrounds: 2742"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_where",
+            "value": 1666.6375005115885,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000025899006448571448",
+            "extra": "mean: 600.0104999995749 usec\nrounds: 1156"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_match",
+            "value": 14382.529060825245,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000054078088918436705",
+            "extra": "mean: 69.52880093416766 usec\nrounds: 8565"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_save_kgl",
+            "value": 1293.2745540918716,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00019529763691334312",
+            "extra": "mean: 773.2310179892105 usec\nrounds: 945"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_save_v3",
+            "value": 1336.0908924304438,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000023562797840523366",
+            "extra": "mean: 748.4520743801563 usec\nrounds: 1210"
           }
         ]
       }
