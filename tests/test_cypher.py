@@ -776,6 +776,33 @@ class TestMergeClause:
         """)
         assert cypher_graph.last_mutation_stats["relationships_created"] == 1
 
+    def test_merge_cross_label_property_fallback(self):
+        """MERGE with a different label finds existing node by property alone.
+
+        Reproduces the BloodHound ingestion pattern where:
+        1. AD data creates (n:Base {objectid: X})
+        2. SCIM data does MERGE (n:SCIM {objectid: X}) for the same objectid
+        3. The node should be found (not duplicated) even though it has no SCIM label
+        """
+        g = KnowledgeGraph()
+        g.cypher("CREATE (:Base {objectid: 'abc123', name: 'testnode'})")
+        assert g.cypher("MATCH (n) RETURN count(*) AS cnt")[0]["cnt"] == 1
+
+        # MERGE with a different label but same objectid should find the existing node
+        g.cypher("MERGE (n:SCIM {objectid: 'abc123'})")
+        assert g.cypher("MATCH (n) RETURN count(*) AS cnt")[0]["cnt"] == 1
+        assert g.last_mutation_stats["nodes_created"] == 0
+
+    def test_merge_cross_label_does_not_match_wrong_property(self):
+        """Cross-label fallback must still require property match."""
+        g = KnowledgeGraph()
+        g.cypher("CREATE (:Base {objectid: 'abc123'})")
+
+        # Different objectid — should create a new node
+        g.cypher("MERGE (n:SCIM {objectid: 'xyz789'})")
+        assert g.cypher("MATCH (n) RETURN count(*) AS cnt")[0]["cnt"] == 2
+        assert g.last_mutation_stats["nodes_created"] == 1
+
 
 # ============================================================================
 # Mutation stats return format

@@ -9175,6 +9175,25 @@ fn try_match_merge_pattern(
                             }
                         }
                     }
+                    // Fallback: property-only match across all type indexes.
+                    // BloodHound ingestion uses objectid as the universal node identity.
+                    // When the MERGE label doesn't match any existing label on the node
+                    // (primary, extra_labels, or __kinds), we still want to find the
+                    // node by property alone — the caller will add the label via SET.
+                    for other_type in graph.type_indices.keys() {
+                        if other_type.as_str() == label {
+                            continue; // already checked in primary lookup
+                        }
+                        if let Some(candidates) =
+                            graph.lookup_by_index(other_type, index_key, value)
+                        {
+                            for &idx in &candidates {
+                                if node_matches_all(idx, &expected_props) {
+                                    return Ok(Some(build_result(idx)));
+                                }
+                            }
+                        }
+                    }
                     // No index hit — fall through to linear scan
                 }
 
@@ -9220,6 +9239,16 @@ fn try_match_merge_pattern(
                         {
                             return Ok(Some(build_result(idx)));
                         }
+                    }
+                }
+                // Property-only fallback: find node by property alone, ignoring label.
+                // BloodHound ingestion uses objectid as the universal node identity.
+                // When the MERGE label doesn't match any existing label on the node
+                // (primary, extra_labels, or __kinds), we still want to find the
+                // node by property alone — the caller will add the label via SET.
+                for idx in graph.graph.node_indices() {
+                    if node_matches_all(idx, &expected_props) {
+                        return Ok(Some(build_result(idx)));
                     }
                 }
                 Ok(None)
