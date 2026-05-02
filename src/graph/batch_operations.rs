@@ -433,9 +433,13 @@ impl ConnectionBatchProcessor {
         graph: &mut DirGraph,
         connection_type: &str,
     ) -> Result<(), String> {
-        // Skip existence check on initial load (no existing edges of this type)
-        if !self.skip_existence_check {
-            // Check if an edge of the same type already exists between these nodes
+        // Skip existence check on initial load (no existing edges of this type).
+        // For Skip-mode we still short-circuit here so we don't even buffer the
+        // duplicate; for Update/Replace/Preserve/Sum the lookup is amortised by
+        // the per-source index built once in flush_chunk (see below). Doing the
+        // O(degree(src)) lookup *both* here and in flush_chunk was the root
+        // cause of the analysis post-processing hang on large Azure datasets.
+        if !self.skip_existence_check && self.conflict_mode == ConflictHandling::Skip {
             let conn_type_key = graph.interner.get_or_intern(connection_type);
             let existing_edge = graph
                 .graph
@@ -443,8 +447,7 @@ impl ConnectionBatchProcessor {
                 .find(|e| e.weight().connection_type == conn_type_key)
                 .map(|e| e.id());
 
-            // If edge exists and conflict mode is Skip, don't add it
-            if existing_edge.is_some() && self.conflict_mode == ConflictHandling::Skip {
+            if existing_edge.is_some() {
                 return Ok(());
             }
         }
@@ -482,18 +485,46 @@ impl ConnectionBatchProcessor {
         // Pre-intern the connection type for edge type comparison
         let conn_type_key = graph.interner.get_or_intern(connection_type);
 
+        // Build a per-source index of existing edges of `conn_type_key` so
+        // that the per-edge existence check below is O(1) instead of
+        // O(degree(src)). The previous implementation called
+        // `edges_connecting(src, dst)` for every edge, which scaled
+        // quadratically when post-processing repeatedly added edges from a
+        // hub source (e.g. Azure AZMG* edges from a service-principal source
+        // to many targets), causing analysis to hang on large datasets.
+        //
+        // We collect the set of unique source NodeIndexes referenced by this
+        // chunk, then iterate each source's outgoing edges once to fill the
+        // (src, dst) -> edge_id map. After that, the per-edge lookup is a
+        // single hash probe.
+        let mut existing_edges: HashMap<(NodeIndex, NodeIndex), petgraph::graph::EdgeIndex> =
+            HashMap::new();
+        if !self.skip_existence_check && !self.connections.is_empty() {
+            let mut sources: HashSet<NodeIndex> =
+                HashSet::with_capacity(self.connections.len());
+            for conn in &self.connections {
+                sources.insert(conn.source_idx);
+            }
+            existing_edges.reserve(self.connections.len());
+            for src in sources {
+                for edge_ref in graph.graph.edges(src) {
+                    if edge_ref.weight().connection_type == conn_type_key {
+                        existing_edges.insert((src, edge_ref.target()), edge_ref.id());
+                    }
+                }
+            }
+        }
+
         // Create or update edges in current chunk
         for conn in self.connections.drain(..) {
             // On initial load, skip existence check for performance (no existing edges).
-            // When checking, find an edge of the SAME connection type (not just any edge).
+            // Otherwise look up via the precomputed index — O(1).
             let existing_edge = if self.skip_existence_check {
                 None
             } else {
-                graph
-                    .graph
-                    .edges_connecting(conn.source_idx, conn.target_idx)
-                    .find(|e| e.weight().connection_type == conn_type_key)
-                    .map(|e| e.id())
+                existing_edges
+                    .get(&(conn.source_idx, conn.target_idx))
+                    .copied()
             };
 
             if let Some(edge_idx) = existing_edge {
@@ -604,9 +635,16 @@ impl ConnectionBatchProcessor {
                     conn.properties,
                     &mut graph.interner,
                 );
-                graph
-                    .graph
-                    .add_edge(conn.source_idx, conn.target_idx, edge_data);
+                let new_id =
+                    graph
+                        .graph
+                        .add_edge(conn.source_idx, conn.target_idx, edge_data);
+                // Keep the per-chunk index in sync so a later duplicate
+                // (src,dst) within the same chunk hits the update branch
+                // instead of creating a parallel edge of the same type.
+                if !self.skip_existence_check {
+                    existing_edges.insert((conn.source_idx, conn.target_idx), new_id);
+                }
                 stats.connections_created += 1;
             }
         }
