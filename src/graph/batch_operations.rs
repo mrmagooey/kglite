@@ -497,9 +497,19 @@ impl ConnectionBatchProcessor {
         // chunk, then iterate each source's outgoing edges once to fill the
         // (src, dst) -> edge_id map. After that, the per-edge lookup is a
         // single hash probe.
+        //
+        // Fast path: when the graph contains no edges of `conn_type_key` yet
+        // (common during analysis post-processing, where each derived edge
+        // type is brand-new), the index would be empty after walking every
+        // source's full adjacency list — pure waste. Skip the build; the
+        // per-loop `existing_edges.insert` after each create still keeps
+        // within-chunk dedup correct. We register the type with the graph
+        // after the first add so subsequent flush_chunks within the same
+        // execute() call see it as existing and resume building the index.
+        let type_existed = graph.has_connection_type(connection_type);
         let mut existing_edges: HashMap<(NodeIndex, NodeIndex), petgraph::graph::EdgeIndex> =
             HashMap::new();
-        if !self.skip_existence_check && !self.connections.is_empty() {
+        if !self.skip_existence_check && type_existed && !self.connections.is_empty() {
             let mut sources: HashSet<NodeIndex> =
                 HashSet::with_capacity(self.connections.len());
             for conn in &self.connections {
@@ -534,13 +544,16 @@ impl ConnectionBatchProcessor {
                         continue;
                     }
                     ConflictHandling::Replace => {
-                        // Remove the existing edge and create a new one
+                        // Remove the existing edge and create a new one.
+                        // conn_type_key is already interned for this chunk;
+                        // use new_interned to skip a redundant intern lookup.
                         graph.graph.remove_edge(edge_idx);
-                        let edge_data = EdgeData::new(
-                            connection_type.to_string(),
-                            conn.properties,
-                            &mut graph.interner,
-                        );
+                        let interned_props: Vec<(InternedKey, Value)> = conn
+                            .properties
+                            .into_iter()
+                            .map(|(k, v)| (graph.interner.get_or_intern(&k), v))
+                            .collect();
+                        let edge_data = EdgeData::new_interned(conn_type_key, interned_props);
                         graph
                             .graph
                             .add_edge(conn.source_idx, conn.target_idx, edge_data);
@@ -629,12 +642,13 @@ impl ConnectionBatchProcessor {
                     }
                 }
             } else {
-                // Create new edge
-                let edge_data = EdgeData::new(
-                    connection_type.to_string(),
-                    conn.properties,
-                    &mut graph.interner,
-                );
+                // Create new edge. Reuse pre-interned conn_type_key.
+                let interned_props: Vec<(InternedKey, Value)> = conn
+                    .properties
+                    .into_iter()
+                    .map(|(k, v)| (graph.interner.get_or_intern(&k), v))
+                    .collect();
+                let edge_data = EdgeData::new_interned(conn_type_key, interned_props);
                 let new_id =
                     graph
                         .graph
@@ -651,6 +665,14 @@ impl ConnectionBatchProcessor {
 
         // Invalidate edge type count cache after edge mutations
         graph.invalidate_edge_type_counts_cache();
+
+        // If we created any edges of this type and the type wasn't registered
+        // before this chunk, register it now so a subsequent flush_chunk in
+        // the same execute() call sees the type as existing and rebuilds the
+        // (src,dst) index against the edges we just added.
+        if !type_existed && stats.connections_created > 0 {
+            graph.connection_types.insert(conn_type_key);
+        }
 
         // Update metrics
         self.metrics.processing_time += start.elapsed().as_secs_f64();
@@ -751,5 +773,136 @@ mod tests {
     fn test_sum_values_null_cases() {
         assert_eq!(sum_values(&Value::Null, &Value::Int64(5)), Value::Int64(5));
         assert_eq!(sum_values(&Value::Int64(5), &Value::Null), Value::Null);
+    }
+
+    /// When the connection type is brand-new, flush_chunk skips the
+    /// per-source adjacency scan but still de-dups duplicates created within
+    /// the same chunk via the existing_edges insert-on-add path.
+    #[test]
+    fn test_connection_batch_new_type_dedups_within_chunk() {
+        use crate::graph::schema::NodeData;
+
+        let mut g = DirGraph::new();
+        let src = g.graph.add_node(NodeData::new(
+            Value::Int64(1),
+            Value::String("Hub".to_string()),
+            "Person".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        ));
+        let dst = g.graph.add_node(NodeData::new(
+            Value::Int64(2),
+            Value::String("Target".to_string()),
+            "Person".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        ));
+
+        let mut p = ConnectionBatchProcessor::new(2);
+        p.add_connection(src, dst, HashMap::new(), &mut g, "FreshType")
+            .unwrap();
+        p.add_connection(src, dst, HashMap::new(), &mut g, "FreshType")
+            .unwrap();
+        p.execute(&mut g, "FreshType".to_string()).unwrap();
+
+        // Same (src,dst,FreshType) entered twice — should yield exactly one
+        // edge after dedup-within-chunk.
+        assert_eq!(g.graph.edge_count(), 1);
+    }
+
+    /// When the connection type already has edges in the graph, flush_chunk
+    /// builds the per-source index and matches an incoming duplicate to the
+    /// pre-existing edge (Update mode merges properties rather than creating
+    /// a parallel edge).
+    #[test]
+    fn test_connection_batch_existing_type_uses_index() {
+        use crate::graph::schema::{EdgeData, NodeData};
+
+        let mut g = DirGraph::new();
+        let src = g.graph.add_node(NodeData::new(
+            Value::Int64(1),
+            Value::String("Hub".to_string()),
+            "Person".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        ));
+        let dst = g.graph.add_node(NodeData::new(
+            Value::Int64(2),
+            Value::String("Target".to_string()),
+            "Person".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        ));
+
+        // Pre-seed an edge of type "Existing" so flush_chunk takes the
+        // index-build path.
+        let edge_data = EdgeData::new("Existing".to_string(), HashMap::new(), &mut g.interner);
+        g.graph.add_edge(src, dst, edge_data);
+        g.register_connection_type("Existing".to_string());
+        assert_eq!(g.graph.edge_count(), 1);
+
+        // Add a duplicate (src,dst,Existing) via the batch processor — should
+        // hit the Update branch (merge), not create a second parallel edge.
+        let mut props = HashMap::new();
+        props.insert("isacl".to_string(), Value::Boolean(true));
+        let mut p = ConnectionBatchProcessor::new(1);
+        p.add_connection(src, dst, props, &mut g, "Existing").unwrap();
+        p.execute(&mut g, "Existing".to_string()).unwrap();
+
+        assert_eq!(g.graph.edge_count(), 1);
+        // The merged property should be present.
+        let edge = g.graph.edge_weights().next().unwrap();
+        let isacl_key = g.interner.get_or_intern("isacl");
+        let found = edge.properties.iter().any(|(k, _)| *k == isacl_key);
+        assert!(found, "expected merged property on existing edge");
+    }
+
+    /// Two consecutive flush_chunks of the same brand-new type within one
+    /// execute() must dedup against each other: the second chunk needs to
+    /// see edges added by the first.
+    #[test]
+    fn test_connection_batch_new_type_registers_after_first_chunk() {
+        use crate::graph::schema::NodeData;
+
+        let mut g = DirGraph::new();
+        let src = g.graph.add_node(NodeData::new(
+            Value::Int64(1),
+            Value::String("Hub".to_string()),
+            "Person".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        ));
+        let dst = g.graph.add_node(NodeData::new(
+            Value::Int64(2),
+            Value::String("Target".to_string()),
+            "Person".to_string(),
+            HashMap::new(),
+            &mut g.interner,
+        ));
+
+        // Force two flush_chunks by exceeding LARGE_BATCH_CHUNK_SIZE.
+        // First chunk: type doesn't exist → skip-build path.
+        // After the first chunk's edge is created, the type is registered.
+        // Second chunk: type now exists → index-build picks up the edge from
+        // chunk 1, so a duplicate (src,dst) hits the Update branch.
+        let mut p =
+            ConnectionBatchProcessor::new(LARGE_BATCH_CHUNK_SIZE + LARGE_BATCH_CHUNK_SIZE / 2);
+        // First chunk: 1000 distinct dst-shifted edges (none duplicate)
+        // We only have one dst so just push (src,dst) over and over —
+        // within-chunk dedup keeps just one in chunk 1.
+        for _ in 0..LARGE_BATCH_CHUNK_SIZE {
+            p.add_connection(src, dst, HashMap::new(), &mut g, "AcrossChunks")
+                .unwrap();
+        }
+        // Second chunk attempts another (src,dst) of the same type.
+        for _ in 0..(LARGE_BATCH_CHUNK_SIZE / 2) {
+            p.add_connection(src, dst, HashMap::new(), &mut g, "AcrossChunks")
+                .unwrap();
+        }
+        p.execute(&mut g, "AcrossChunks".to_string()).unwrap();
+
+        // Across both chunks, exactly one edge of (src,dst,AcrossChunks)
+        // should exist.
+        assert_eq!(g.graph.edge_count(), 1);
     }
 }

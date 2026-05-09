@@ -226,6 +226,7 @@ pub fn clause_display_name(clause: &Clause) -> String {
         Clause::FusedCountAll { .. } => "FusedCountAll".into(),
         Clause::FusedCountByType { .. } => "FusedCountByType".into(),
         Clause::FusedCountEdgesByType { .. } => "FusedCountEdgesByType".into(),
+        Clause::FusedCountAllEdges { .. } => "FusedCountAllEdges".into(),
         Clause::FusedCountTypedNode { node_type, .. } => {
             format!("FusedCountTypedNode :{node_type}")
         }
@@ -476,8 +477,17 @@ impl<'a> CypherExecutor<'a> {
                     columns: vec![type_alias.clone(), count_alias.clone()],
                 })
             }
+            Clause::FusedCountAllEdges { alias } => {
+                let count = self.graph.graph.edge_count() as i64;
+                let mut projected = Bindings::with_capacity(1);
+                projected.insert(alias.clone(), Value::Int64(count));
+                Ok(ResultSet {
+                    rows: vec![ResultRow::from_projected(projected)],
+                    columns: vec![alias.clone()],
+                })
+            }
             Clause::FusedCountTypedNode { node_type, alias } => {
-                let count = self.graph.nodes_matching_label(node_type.as_str()).len() as i64;
+                let count = self.graph.count_nodes_matching_label(node_type.as_str()) as i64;
                 let mut projected = Bindings::with_capacity(1);
                 projected.insert(alias.clone(), Value::Int64(count));
                 Ok(ResultSet {
@@ -486,8 +496,7 @@ impl<'a> CypherExecutor<'a> {
                 })
             }
             Clause::FusedCountTypedEdge { edge_type, alias } => {
-                let counts = self.graph.get_edge_type_counts();
-                let count = counts.get(edge_type.as_str()).copied().unwrap_or(0) as i64;
+                let count = self.graph.count_edges_of_type(edge_type.as_str()) as i64;
                 let mut projected = Bindings::with_capacity(1);
                 projected.insert(alias.clone(), Value::Int64(count));
                 Ok(ResultSet {
@@ -12504,7 +12513,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fused_count_typed_edge_uses_cache() {
+    fn test_fused_count_typed_edge() {
         let mut graph = build_test_graph(); // has 1 KNOWS edge
 
         let params = HashMap::new();
@@ -12530,12 +12539,14 @@ mod tests {
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0][0], Value::Int64(1));
 
-        // Cache should now be populated
+        // FusedCountTypedEdge populates the all-types cache on first call so
+        // subsequent queries are O(1). (Cache key by InternedKey internally;
+        // resolved to String only when materialized.)
         {
             let cached = graph.edge_type_counts_cache.read().unwrap();
             assert!(
                 cached.is_some(),
-                "cache should be populated after first query"
+                "all-types cache should be populated after first typed-edge query"
             );
             assert_eq!(cached.as_ref().unwrap().get("KNOWS").copied(), Some(1));
         }
@@ -12551,17 +12562,24 @@ mod tests {
         graph.graph.add_edge(alice_idx, bob_idx, edge);
         graph.invalidate_edge_type_counts_cache();
 
-        // Cache should be invalidated
-        {
-            let cached = graph.edge_type_counts_cache.read().unwrap();
-            assert!(cached.is_none(), "cache should be None after invalidation");
-        }
-
         // Query again — should return 2
         let executor2 = CypherExecutor::with_params(&graph, &params, None);
         let result2 = executor2.execute(&q).unwrap();
         assert_eq!(result2.rows.len(), 1);
         assert_eq!(result2.rows[0][0], Value::Int64(2));
+
+        // If the all-types cache happens to be populated (e.g. a prior
+        // FusedCountEdgesByType query ran), the typed-edge path should still
+        // return the correct count by reading from the cache.
+        let _ = graph.get_edge_type_counts(); // populate cache
+        {
+            let cached = graph.edge_type_counts_cache.read().unwrap();
+            assert!(cached.is_some(), "cache must be populated after explicit build");
+            assert_eq!(cached.as_ref().unwrap().get("KNOWS").copied(), Some(2));
+        }
+        let executor_cached = CypherExecutor::with_params(&graph, &params, None);
+        let result_cached = executor_cached.execute(&q).unwrap();
+        assert_eq!(result_cached.rows[0][0], Value::Int64(2));
 
         // Test count for non-existent type returns 0
         let mut q_none =
@@ -12573,7 +12591,7 @@ mod tests {
         assert_eq!(result3.rows.len(), 1);
         assert_eq!(result3.rows[0][0], Value::Int64(0));
 
-        // Test deletion invalidates cache: use Cypher DELETE
+        // Test deletion: use Cypher DELETE
         let del_q = super::super::parser::parse_cypher("MATCH ()-[r:KNOWS]->() DELETE r").unwrap();
         execute_mutable(&mut graph, &del_q, HashMap::new(), None).unwrap();
 
@@ -12582,6 +12600,100 @@ mod tests {
         let result4 = executor4.execute(&q).unwrap();
         assert_eq!(result4.rows.len(), 1);
         assert_eq!(result4.rows[0][0], Value::Int64(0));
+    }
+
+    #[test]
+    fn test_fused_count_all_edges() {
+        // Build a graph with a few edges of mixed types so we can verify the
+        // O(1) total-edge count fusion (MATCH ()-[r]->() RETURN count(r)).
+        let mut graph = build_test_graph(); // 2 Person nodes, 1 KNOWS edge
+        let alice_idx = graph.type_indices["Person"][0];
+        let bob_idx = graph.type_indices["Person"][1];
+
+        // Add a third Person (Charlie) so we can wire two more edges.
+        let charlie = crate::graph::schema::NodeData::new(
+            Value::UniqueId(3),
+            Value::String("Charlie".to_string()),
+            "Person".to_string(),
+            HashMap::from([("name".to_string(), Value::String("Charlie".to_string()))]),
+            &mut graph.interner,
+        );
+        let charlie_idx = graph.graph.add_node(charlie);
+        graph
+            .type_indices
+            .entry("Person".to_string())
+            .or_default()
+            .push(charlie_idx);
+
+        // Add LIKES (Alice -> Charlie) and another KNOWS (Bob -> Charlie).
+        let likes = crate::graph::schema::EdgeData::new(
+            "LIKES".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        graph.graph.add_edge(alice_idx, charlie_idx, likes);
+        let knows2 = crate::graph::schema::EdgeData::new(
+            "KNOWS".to_string(),
+            HashMap::new(),
+            &mut graph.interner,
+        );
+        graph.graph.add_edge(bob_idx, charlie_idx, knows2);
+        graph.register_connection_type("LIKES".to_string());
+        graph.invalidate_edge_type_counts_cache();
+
+        let params = HashMap::new();
+
+        // Each of the canonical phrasings should be planned as FusedCountAllEdges.
+        for cypher in [
+            "MATCH ()-[r]->() RETURN count(r)",
+            "MATCH ()-[r]->() RETURN count(*)",
+            "MATCH ()-[r]->() RETURN count(r) AS c",
+        ] {
+            let mut q = super::super::parser::parse_cypher(cypher).unwrap();
+            super::super::optimize(&mut q, &graph, &params);
+            assert!(
+                matches!(
+                    &q.clauses[0],
+                    super::super::ast::Clause::FusedCountAllEdges { .. }
+                ),
+                "expected FusedCountAllEdges for {:?}, got {:?}",
+                cypher,
+                q.clauses[0]
+            );
+            let executor = CypherExecutor::with_params(&graph, &params, None);
+            let result = executor.execute(&q).unwrap();
+            assert_eq!(result.rows.len(), 1);
+            assert_eq!(result.rows[0][0], Value::Int64(3));
+        }
+
+        // Fusion must NOT fire when the edge has property filters: those would
+        // reject some edges. (Detection lives in fuse_count_short_circuits.)
+        let mut q_props =
+            super::super::parser::parse_cypher("MATCH ()-[r {since: 2024}]->() RETURN count(r)")
+                .unwrap();
+        super::super::optimize(&mut q_props, &graph, &params);
+        assert!(
+            !matches!(
+                &q_props.clauses[0],
+                super::super::ast::Clause::FusedCountAllEdges { .. }
+            ),
+            "must not fuse when edge has property filter"
+        );
+
+        // Fusion must NOT fire on bidirectional edges: () -[r]- () is undirected
+        // and the executor scans both directions, which is a different semantic
+        // for matching, not for counting — but we keep the directed check tight
+        // for parity with the existing FusedCountEdgesByType guard.
+        let mut q_undirected =
+            super::super::parser::parse_cypher("MATCH ()-[r]-() RETURN count(r)").unwrap();
+        super::super::optimize(&mut q_undirected, &graph, &params);
+        assert!(
+            !matches!(
+                &q_undirected.clauses[0],
+                super::super::ast::Clause::FusedCountAllEdges { .. }
+            ),
+            "must not fuse undirected edge pattern"
+        );
     }
 
     #[test]

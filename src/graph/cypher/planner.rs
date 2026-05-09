@@ -146,6 +146,7 @@ fn mark_skip_target_type_check(query: &mut CypherQuery, graph: &DirGraph) {
 /// - `MATCH (n) RETURN count(n)` → `FusedCountAll` (O(1))
 /// - `MATCH (n) RETURN n.type, count(n)` → `FusedCountByType` (O(types))
 /// - `MATCH ()-[r]->() RETURN type(r), count(*)` → `FusedCountEdgesByType` (O(E) single pass)
+/// - `MATCH ()-[r]->() RETURN count(r)` → `FusedCountAllEdges` (O(1))
 ///
 /// Any trailing ORDER BY / LIMIT clauses are left in place since they
 /// operate on the tiny fused result set.
@@ -304,6 +305,17 @@ fn fuse_count_short_circuits(query: &mut CypherQuery) {
                     },
                 );
             }
+            return;
+        }
+
+        // Sub-pattern C2a: Untyped total edge count — MATCH ()-[r]->() RETURN count(r)
+        // (single return item, just count over all edges regardless of type)
+        if return_clause.items.len() == 1
+            && is_count_of_var_or_star(&return_clause.items[0].expression, edge_var)
+        {
+            let alias = return_item_column_name(&return_clause.items[0]);
+            query.clauses.drain(0..2);
+            query.clauses.insert(0, Clause::FusedCountAllEdges { alias });
             return;
         }
 

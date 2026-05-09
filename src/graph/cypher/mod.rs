@@ -200,6 +200,10 @@ pub fn generate_explain_plan(query: &CypherQuery, graph: &DirGraph) -> String {
                     .to_string(),
                 None,
             ),
+            Clause::FusedCountAllEdges { .. } => (
+                "FusedCountAllEdges (optimized MATCH ()-[r]->() RETURN count(r))".to_string(),
+                Some(1),
+            ),
             Clause::FusedCountTypedNode { node_type, .. } => {
                 let count = graph
                     .type_indices
@@ -284,7 +288,8 @@ pub fn generate_explain_result(query: &CypherQuery, graph: &DirGraph) -> result:
             Clause::FusedCountAll { .. }
             | Clause::FusedMatchReturnAggregate { .. }
             | Clause::FusedOptionalMatchAggregate { .. }
-            | Clause::FusedCountTypedEdge { .. } => Value::Int64(1),
+            | Clause::FusedCountTypedEdge { .. }
+            | Clause::FusedCountAllEdges { .. } => Value::Int64(1),
             Clause::FusedCountTypedNode { node_type, .. } => {
                 let n = graph
                     .type_indices
@@ -320,6 +325,7 @@ pub fn generate_explain_result(query: &CypherQuery, graph: &DirGraph) -> result:
             | Clause::FusedCountEdgesByType { .. }
             | Clause::FusedCountTypedNode { .. }
             | Clause::FusedCountTypedEdge { .. }
+            | Clause::FusedCountAllEdges { .. }
             | Clause::FusedMatchReturnAggregate { .. } => {
                 optimizations.push("count_fusion");
             }

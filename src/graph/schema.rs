@@ -1723,6 +1723,10 @@ impl DirGraph {
     /// Compute edge counts grouped by connection type. Lazily cached.
     /// Returns an `Arc`-wrapped map so callers get a cheap reference-counted
     /// pointer rather than a full heap clone.
+    ///
+    /// The hot loop counts by `InternedKey` (u64) to avoid allocating a fresh
+    /// `String` per edge — only `O(types)` allocations happen at the end, when
+    /// the map is materialized.
     pub fn get_edge_type_counts(&self) -> Arc<HashMap<String, usize>> {
         // Fast path: return cached Arc (cheap clone)
         {
@@ -1731,12 +1735,15 @@ impl DirGraph {
                 return Arc::clone(cached);
             }
         }
-        // Slow path: compute O(E) and cache
-        let mut counts: HashMap<String, usize> = HashMap::new();
+        // Slow path: count by InternedKey, then resolve once at the end.
+        let mut spur_counts: HashMap<InternedKey, usize> = HashMap::new();
         for edge in self.graph.edge_weights() {
-            let ct_str = self.interner.resolve(edge.connection_type).to_string();
-            *counts.entry(ct_str).or_insert(0) += 1;
+            *spur_counts.entry(edge.connection_type).or_insert(0) += 1;
         }
+        let counts: HashMap<String, usize> = spur_counts
+            .into_iter()
+            .map(|(k, v)| (self.interner.resolve(k).to_string(), v))
+            .collect();
         let arc = Arc::new(counts);
         let mut write = self.edge_type_counts_cache.write().unwrap();
         *write = Some(Arc::clone(&arc));
@@ -1746,6 +1753,14 @@ impl DirGraph {
     /// Invalidate the edge type count cache (call after edge mutations).
     pub(crate) fn invalidate_edge_type_counts_cache(&self) {
         *self.edge_type_counts_cache.write().unwrap() = None;
+    }
+
+    /// Count edges of a single connection type. Goes through the cached
+    /// per-type counts map — populating it on cold cache so subsequent queries
+    /// (whether single-type or by-type) are O(1).
+    pub fn count_edges_of_type(&self, conn_type: &str) -> usize {
+        let counts = self.get_edge_type_counts();
+        counts.get(conn_type).copied().unwrap_or(0)
     }
 
     // ========================================================================
@@ -1799,6 +1814,14 @@ impl DirGraph {
 
     pub fn has_node_type(&self, node_type: &str) -> bool {
         self.type_indices.contains_key(node_type) || self.node_type_metadata.contains_key(node_type)
+    }
+
+    /// Count nodes matching a label without allocating the full index list.
+    /// Equivalent to `nodes_matching_label(label).len()` but cheaper.
+    pub fn count_nodes_matching_label(&self, label: &str) -> usize {
+        let primary = self.type_indices.get(label).map_or(0, |v| v.len());
+        let secondary = self.secondary_label_index.get(label).map_or(0, |v| v.len());
+        primary + secondary
     }
 
     /// Return all node indices matching a label (primary `node_type` or `extra_labels`).

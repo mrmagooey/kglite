@@ -112,6 +112,10 @@ pub enum Clause {
         type_alias: String,
         count_alias: String,
     },
+    /// Optimizer-generated: MATCH ()-[r]->() RETURN count(r) → graph.edge_count() in O(1).
+    FusedCountAllEdges {
+        alias: String,
+    },
     /// Optimizer-generated: MATCH (n:Type) RETURN count(n) → type_indices[type].len() in O(1).
     FusedCountTypedNode {
         node_type: String,
