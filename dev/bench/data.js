@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775945529743,
+  "lastUpdate": 1778327607443,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -1584,6 +1584,105 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 0.000023562797840523366",
             "extra": "mean: 748.4520743801563 usec\nrounds: 1210"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "86ef7fbfd7b835352b4d18fa823b2ff15e0725ce",
+          "message": "chore: fix 20 pre-existing clippy lints (rust 1.95)\n\nNewer clippy lints surfaced once the toolchain advanced; all 20 were\npre-existing on main, unrelated to the batch-edge perf work on this\nbranch. Mechanical fixes following clippy's own suggestions:\n\n* 13x collapsible_match — move single-condition `if cond { ... }` inside\n  match arm bodies into match-arm guards (cypher/executor.rs,\n  cypher/planner.rs, filtering_methods.rs, schema.rs x2, temporal.rs x8).\n\n* 3x unnecessary_sort_by — `sort_by(|a, b| b.X.cmp(&a.X))` →\n  `sort_by_key(|b| std::cmp::Reverse(b.X))` (introspection.rs x2,\n  schema.rs).\n\n* 3x useless_conversion — drop redundant `.into_iter()` calls before\n  `PropertyStorage::from_compact`, which already accepts\n  `impl IntoIterator` (schema.rs x3).\n\n* 1x manual_checked_ops — `if elem_size > 0 { file_len / elem_size }\n  else { len }` → `file_len.checked_div(elem_size).unwrap_or(len)`\n  (mmap_vec.rs).\n\nVerified: cargo clippy --no-deps -- -D warnings is now clean,\ncargo test --no-default-features still 1790 pass / 0 fail,\ncargo fmt -- --check clean.\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-05-09T11:47:08Z",
+          "tree_id": "5c0a43a665132cd0225e43b4522a3597f01e3861",
+          "url": "https://github.com/mrmagooey/kglite/commit/86ef7fbfd7b835352b4d18fa823b2ff15e0725ce"
+        },
+        "date": 1778327606524,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_nodes",
+            "value": 1526.2408449716784,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00001855988481469501",
+            "extra": "mean: 655.2045853670993 usec\nrounds: 533"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_add_connections",
+            "value": 940.487309215269,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000027642006971236946",
+            "extra": "mean: 1.0632785686756236 msec\nrounds: 830"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_match",
+            "value": 17066.72845916063,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000025616291706737308",
+            "extra": "mean: 58.59353785307613 usec\nrounds: 6829"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_cypher_where",
+            "value": 2093.096036909138,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000024241248764711972",
+            "extra": "mean: 477.7611644980675 usec\nrounds: 1076"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_traversal",
+            "value": 868125.7908743395,
+            "unit": "iter/sec",
+            "range": "stddev: 3.021764401438705e-7",
+            "extra": "mean: 1.1519067979685782 usec\nrounds: 125126"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_shortest_path",
+            "value": 174550.657677793,
+            "unit": "iter/sec",
+            "range": "stddev: 6.230642307902303e-7",
+            "extra": "mean: 5.728995887520073 usec\nrounds: 21641"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_enable",
+            "value": 3594.929533972846,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000007663213432463771",
+            "extra": "mean: 278.1695692640949 usec\nrounds: 5082"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_where",
+            "value": 2060.771091039307,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000021638646238996325",
+            "extra": "mean: 485.2552543794036 usec\nrounds: 1427"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_cypher_match",
+            "value": 17124.91314663955,
+            "unit": "iter/sec",
+            "range": "stddev: 0.0000026609557138492126",
+            "extra": "mean: 58.394456744805844 usec\nrounds: 13351"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_columnar_save_kgl",
+            "value": 1017.143558021163,
+            "unit": "iter/sec",
+            "range": "stddev: 0.003480690683675479",
+            "extra": "mean: 983.1453899639146 usec\nrounds: 1136"
+          },
+          {
+            "name": "tests/benchmarks/test_bench_core.py::test_bench_save_v3",
+            "value": 1583.8806474604153,
+            "unit": "iter/sec",
+            "range": "stddev: 0.00005538732414078082",
+            "extra": "mean: 631.3607036006117 usec\nrounds: 1444"
           }
         ]
       }
