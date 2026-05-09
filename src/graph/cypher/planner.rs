@@ -747,10 +747,8 @@ fn estimate_node_selectivity(
                                 return 1;
                             }
                         }
-                        PropertyMatcher::EqualsParam(_) => {
-                            if prop == "id" {
-                                return 1;
-                            }
+                        PropertyMatcher::EqualsParam(_) if prop == "id" => {
+                            return 1;
                         }
                         PropertyMatcher::In(vals) => return vals.len(),
                         _ => {}

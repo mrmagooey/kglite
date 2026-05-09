@@ -1633,15 +1633,11 @@ impl DirGraph {
                     }
                     // Normalize: check Int64 ↔ UniqueId
                     match (id, node_id) {
-                        (Value::Int64(i), Value::UniqueId(u)) => {
-                            if *i >= 0 && *i as u32 == *u {
-                                return Some(node_idx);
-                            }
+                        (Value::Int64(i), Value::UniqueId(u)) if *i >= 0 && *i as u32 == *u => {
+                            return Some(node_idx);
                         }
-                        (Value::UniqueId(u), Value::Int64(i)) => {
-                            if *i >= 0 && *u == *i as u32 {
-                                return Some(node_idx);
-                            }
+                        (Value::UniqueId(u), Value::Int64(i)) if *i >= 0 && *u == *i as u32 => {
+                            return Some(node_idx);
                         }
                         _ => {}
                     }
@@ -2496,7 +2492,7 @@ impl DirGraph {
                         },
                     );
                     if let PropertyStorage::Map(map) = old {
-                        node.properties = PropertyStorage::from_compact(map.into_iter(), schema);
+                        node.properties = PropertyStorage::from_compact(map, schema);
                     }
                 }
             }
@@ -2589,7 +2585,7 @@ impl DirGraph {
                         },
                     );
                     if let PropertyStorage::Map(map) = old {
-                        node.properties = PropertyStorage::from_compact(map.into_iter(), schema);
+                        node.properties = PropertyStorage::from_compact(map, schema);
                     }
                 }
             }
@@ -2689,7 +2685,7 @@ impl DirGraph {
                     .iter()
                     .map(|(t, s)| (t.clone(), s.heap_bytes()))
                     .collect();
-                by_size.sort_by(|a, b| b.1.cmp(&a.1));
+                by_size.sort_by_key(|b| std::cmp::Reverse(b.1));
                 let mut remaining = total;
                 for (type_name, bytes) in by_size {
                     if remaining <= limit {
@@ -2738,7 +2734,7 @@ impl DirGraph {
             if let PropertyStorage::Columnar { store, row_id } = &node.properties {
                 let pairs = store.row_properties(*row_id);
                 if let Some(schema) = self.type_schemas.get(&node.node_type) {
-                    node.properties = PropertyStorage::from_compact(pairs.into_iter(), schema);
+                    node.properties = PropertyStorage::from_compact(pairs, schema);
                 } else {
                     // Fallback to Map
                     let map: HashMap<InternedKey, Value> = pairs.into_iter().collect();

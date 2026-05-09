@@ -486,7 +486,7 @@ fn compute_join_candidates(
     }
 
     // Sort by overlap descending, truncate
-    candidates.sort_by(|a, b| b.overlap.cmp(&a.overlap));
+    candidates.sort_by_key(|b| std::cmp::Reverse(b.overlap));
     candidates.truncate(max_candidates);
     candidates
 }
@@ -1208,7 +1208,7 @@ fn write_connections_detail(
             *pair_counts.entry((src_type, tgt_type)).or_insert(0) += 1;
         }
         let mut pairs: Vec<((String, String), usize)> = pair_counts.into_iter().collect();
-        pairs.sort_by(|a, b| b.1.cmp(&a.1));
+        pairs.sort_by_key(|b| std::cmp::Reverse(b.1));
 
         xml.push_str("    <endpoints>\n");
         for ((src, tgt), count) in &pairs {

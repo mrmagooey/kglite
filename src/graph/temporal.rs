@@ -23,10 +23,8 @@ pub fn is_temporally_valid(
     // Check valid_from: must be <= reference (or missing/null = unbounded start)
     if let Some((_, from_val)) = properties.iter().find(|(k, _)| *k == from_key) {
         match from_val {
-            Value::DateTime(d) => {
-                if d > reference {
-                    return false;
-                }
+            Value::DateTime(d) if d > reference => {
+                return false;
             }
             Value::Null => {} // unbounded
             _ => {}           // non-date value, skip check
@@ -36,10 +34,8 @@ pub fn is_temporally_valid(
     // Check valid_to: must be >= reference (or missing/null = still active)
     if let Some((_, to_val)) = properties.iter().find(|(k, _)| *k == to_key) {
         match to_val {
-            Value::DateTime(d) => {
-                if d < reference {
-                    return false;
-                }
+            Value::DateTime(d) if d < reference => {
+                return false;
             }
             Value::Null => {} // unbounded (still active)
             _ => {}           // non-date value, skip check
@@ -60,10 +56,8 @@ pub fn node_is_temporally_valid(
     // Check valid_from
     if let Some(val) = node.get_field_ref(&config.valid_from) {
         match &*val {
-            Value::DateTime(d) => {
-                if d > reference {
-                    return false;
-                }
+            Value::DateTime(d) if d > reference => {
+                return false;
             }
             Value::Null => {}
             _ => {}
@@ -73,10 +67,8 @@ pub fn node_is_temporally_valid(
     // Check valid_to
     if let Some(val) = node.get_field_ref(&config.valid_to) {
         match &*val {
-            Value::DateTime(d) => {
-                if d < reference {
-                    return false;
-                }
+            Value::DateTime(d) if d < reference => {
+                return false;
             }
             Value::Null => {}
             _ => {}
@@ -101,10 +93,8 @@ pub fn overlaps_range(
     // Check valid_from <= end
     if let Some((_, from_val)) = properties.iter().find(|(k, _)| *k == from_key) {
         match from_val {
-            Value::DateTime(d) => {
-                if d > end {
-                    return false;
-                }
+            Value::DateTime(d) if d > end => {
+                return false;
             }
             Value::Null => {}
             _ => {}
@@ -114,10 +104,8 @@ pub fn overlaps_range(
     // Check valid_to >= start
     if let Some((_, to_val)) = properties.iter().find(|(k, _)| *k == to_key) {
         match to_val {
-            Value::DateTime(d) => {
-                if d < start {
-                    return false;
-                }
+            Value::DateTime(d) if d < start => {
+                return false;
             }
             Value::Null => {}
             _ => {}
@@ -139,10 +127,8 @@ pub fn node_overlaps_range(
     // Check valid_from <= end
     if let Some(val) = node.get_field_ref(&config.valid_from) {
         match &*val {
-            Value::DateTime(d) => {
-                if d > end {
-                    return false;
-                }
+            Value::DateTime(d) if d > end => {
+                return false;
             }
             Value::Null => {}
             _ => {}
@@ -152,10 +138,8 @@ pub fn node_overlaps_range(
     // Check valid_to >= start
     if let Some(val) = node.get_field_ref(&config.valid_to) {
         match &*val {
-            Value::DateTime(d) => {
-                if d < start {
-                    return false;
-                }
+            Value::DateTime(d) if d < start => {
+                return false;
             }
             Value::Null => {} // unbounded (still active)
             _ => {}
