@@ -510,8 +510,7 @@ impl ConnectionBatchProcessor {
         let mut existing_edges: HashMap<(NodeIndex, NodeIndex), petgraph::graph::EdgeIndex> =
             HashMap::new();
         if !self.skip_existence_check && type_existed && !self.connections.is_empty() {
-            let mut sources: HashSet<NodeIndex> =
-                HashSet::with_capacity(self.connections.len());
+            let mut sources: HashSet<NodeIndex> = HashSet::with_capacity(self.connections.len());
             for conn in &self.connections {
                 sources.insert(conn.source_idx);
             }
@@ -649,10 +648,9 @@ impl ConnectionBatchProcessor {
                     .map(|(k, v)| (graph.interner.get_or_intern(&k), v))
                     .collect();
                 let edge_data = EdgeData::new_interned(conn_type_key, interned_props);
-                let new_id =
-                    graph
-                        .graph
-                        .add_edge(conn.source_idx, conn.target_idx, edge_data);
+                let new_id = graph
+                    .graph
+                    .add_edge(conn.source_idx, conn.target_idx, edge_data);
                 // Keep the per-chunk index in sync so a later duplicate
                 // (src,dst) within the same chunk hits the update branch
                 // instead of creating a parallel edge of the same type.
@@ -846,7 +844,8 @@ mod tests {
         let mut props = HashMap::new();
         props.insert("isacl".to_string(), Value::Boolean(true));
         let mut p = ConnectionBatchProcessor::new(1);
-        p.add_connection(src, dst, props, &mut g, "Existing").unwrap();
+        p.add_connection(src, dst, props, &mut g, "Existing")
+            .unwrap();
         p.execute(&mut g, "Existing".to_string()).unwrap();
 
         assert_eq!(g.graph.edge_count(), 1);

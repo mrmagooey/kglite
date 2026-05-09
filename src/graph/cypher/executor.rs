@@ -12574,7 +12574,10 @@ mod tests {
         let _ = graph.get_edge_type_counts(); // populate cache
         {
             let cached = graph.edge_type_counts_cache.read().unwrap();
-            assert!(cached.is_some(), "cache must be populated after explicit build");
+            assert!(
+                cached.is_some(),
+                "cache must be populated after explicit build"
+            );
             assert_eq!(cached.as_ref().unwrap().get("KNOWS").copied(), Some(2));
         }
         let executor_cached = CypherExecutor::with_params(&graph, &params, None);

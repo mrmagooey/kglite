@@ -315,7 +315,9 @@ fn fuse_count_short_circuits(query: &mut CypherQuery) {
         {
             let alias = return_item_column_name(&return_clause.items[0]);
             query.clauses.drain(0..2);
-            query.clauses.insert(0, Clause::FusedCountAllEdges { alias });
+            query
+                .clauses
+                .insert(0, Clause::FusedCountAllEdges { alias });
             return;
         }
 
