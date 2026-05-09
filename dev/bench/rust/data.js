@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1775945695474,
+  "lastUpdate": 1778327825180,
   "repoUrl": "https://github.com/mrmagooey/kglite",
   "entries": {
     "Benchmark": [
@@ -1419,6 +1419,124 @@ window.BENCHMARK_DATA = {
             "name": "bench_group_aggregate_wide",
             "value": 141195,
             "range": "± 565",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "committer": {
+            "email": "640316+mrmagooey@users.noreply.github.com.com",
+            "name": "mrmagooey"
+          },
+          "distinct": true,
+          "id": "86ef7fbfd7b835352b4d18fa823b2ff15e0725ce",
+          "message": "chore: fix 20 pre-existing clippy lints (rust 1.95)\n\nNewer clippy lints surfaced once the toolchain advanced; all 20 were\npre-existing on main, unrelated to the batch-edge perf work on this\nbranch. Mechanical fixes following clippy's own suggestions:\n\n* 13x collapsible_match — move single-condition `if cond { ... }` inside\n  match arm bodies into match-arm guards (cypher/executor.rs,\n  cypher/planner.rs, filtering_methods.rs, schema.rs x2, temporal.rs x8).\n\n* 3x unnecessary_sort_by — `sort_by(|a, b| b.X.cmp(&a.X))` →\n  `sort_by_key(|b| std::cmp::Reverse(b.X))` (introspection.rs x2,\n  schema.rs).\n\n* 3x useless_conversion — drop redundant `.into_iter()` calls before\n  `PropertyStorage::from_compact`, which already accepts\n  `impl IntoIterator` (schema.rs x3).\n\n* 1x manual_checked_ops — `if elem_size > 0 { file_len / elem_size }\n  else { len }` → `file_len.checked_div(elem_size).unwrap_or(len)`\n  (mmap_vec.rs).\n\nVerified: cargo clippy --no-deps -- -D warnings is now clean,\ncargo test --no-default-features still 1790 pass / 0 fail,\ncargo fmt -- --check clean.\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-05-09T11:47:08Z",
+          "tree_id": "5c0a43a665132cd0225e43b4522a3597f01e3861",
+          "url": "https://github.com/mrmagooey/kglite/commit/86ef7fbfd7b835352b4d18fa823b2ff15e0725ce"
+        },
+        "date": 1778327824824,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "build_graph_100_nodes_cypher",
+            "value": 948440,
+            "range": "± 7441",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_parse_match_where_return",
+            "value": 6238,
+            "range": "± 38",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "shortest_path_cost_chain_50",
+            "value": 384,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_match_node_scan_50",
+            "value": 15980,
+            "range": "± 96",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cypher_create_5_nodes",
+            "value": 8496,
+            "range": "± 27",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "save_load_roundtrip_20_nodes",
+            "value": 525812,
+            "range": "± 27213",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_function_dispatch",
+            "value": 258310,
+            "range": "± 2508",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_count_distinct",
+            "value": 42720,
+            "range": "± 112",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_edge_type_counts",
+            "value": 128055,
+            "range": "± 1690",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_rand_function",
+            "value": 16379,
+            "range": "± 79",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_iter",
+            "value": 96276,
+            "range": "± 438",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_substring",
+            "value": 246713,
+            "range": "± 1311",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_property_scan",
+            "value": 106385,
+            "range": "± 662",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_vlp_expansion",
+            "value": 444874,
+            "range": "± 1812",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_group_by_single_key",
+            "value": 104389,
+            "range": "± 632",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bench_group_aggregate_wide",
+            "value": 147820,
+            "range": "± 411",
             "unit": "ns/iter"
           }
         ]
